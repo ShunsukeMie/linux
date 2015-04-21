@@ -120,6 +120,9 @@ static void __copy_timestamp(struct vb2_buffer *vb, const void *pb)
 	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
 	struct vb2_queue *q = vb->vb2_queue;
 
+	if (!pb)
+		return;
+
 	if (q->is_output) {
 		/*
 		 * For output buffers copy the timestamp if needed,
@@ -192,6 +195,9 @@ static void __fill_v4l2_buffer(struct vb2_buffer *vb, void *pb)
 	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
 	struct vb2_queue *q = vb->vb2_queue;
 	unsigned int plane;
+
+	if (!pb)
+		return;
 
 	/* Copy back data such as timestamp, flags, etc. */
 	b->index = vb->index;
@@ -621,6 +627,31 @@ int vb2_qbuf(struct vb2_queue *q, struct v4l2_buffer *b)
 	return vb2_internal_qbuf(q, b);
 }
 EXPORT_SYMBOL_GPL(vb2_qbuf);
+
+int vb2_qbuf_request(struct vb2_queue *q, u16 request, struct vb2_buffer **p_buf)
+{
+	unsigned int buffer;
+
+	for (buffer = 0; buffer < q->num_buffers; buffer++) {
+		struct vb2_buffer *vb = q->bufs[buffer];
+		struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
+
+		if (vbuf->request == request &&
+		    vb->state == VB2_BUF_STATE_PREPARED) {
+			if (p_buf)
+				*p_buf = vb;
+			/*
+			 * The buffer has already been prepared so we can skip
+			 * the vb2_queue_or_prepare_buf() call in vb2_qbuf() and
+			 * call the core function directly.
+			 */
+			return vb2_core_qbuf(q, vb->index, NULL);
+		}
+	}
+
+	return -ENOENT;
+}
+EXPORT_SYMBOL_GPL(vb2_qbuf_request);
 
 static int vb2_internal_dqbuf(struct vb2_queue *q, struct v4l2_buffer *b,
 		bool nonblocking)
