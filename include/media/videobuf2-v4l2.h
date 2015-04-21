@@ -30,6 +30,7 @@
  * @field:	enum v4l2_field; field order of the image in the buffer
  * @timecode:	frame timecode
  * @sequence:	sequence count of this frame
+ * @request:	request used by the buffer
  * Should contain enough information to be able to cover all the fields
  * of struct v4l2_buffer at videodev2.h
  */
@@ -40,6 +41,7 @@ struct vb2_v4l2_buffer {
 	__u32			field;
 	struct v4l2_timecode	timecode;
 	__u32			sequence;
+	__u32			request;
 };
 
 /*
