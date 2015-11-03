@@ -15,6 +15,7 @@
 
 #include <linux/types.h>
 
+struct v4l2_device;
 struct vsp1_device;
 struct vsp1_dl_fragment;
 struct vsp1_dl_list;

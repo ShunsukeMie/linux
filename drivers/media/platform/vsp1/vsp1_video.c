@@ -32,6 +32,7 @@
 #include "vsp1_dl.h"
 #include "vsp1_entity.h"
 #include "vsp1_pipe.h"
+#include "vsp1_request.h"
 #include "vsp1_rwpf.h"
 #include "vsp1_uds.h"
 #include "vsp1_video.h"
@@ -250,28 +251,49 @@ static void vsp1_video_frame_end(struct vsp1_pipeline *pipe,
 static void vsp1_video_pipeline_run(struct vsp1_pipeline *pipe)
 {
 	struct vsp1_device *vsp1 = pipe->output->entity.vsp1;
+	struct vsp1_dl_list *dl;
 	unsigned int i;
 
-	if (!pipe->dl)
-		pipe->dl = vsp1_dl_list_get(pipe->output->dlm);
+	/* Get the display list from first available location:
+	 *
+	 * - the next request (when the request API is in use)
+	 * - the pipeline if set (for the first run after streamon)
+	 * - the request pool (for subsequent runs)
+	 */
+	dl = pipe->dl;
+	pipe->dl = NULL;
+
+	if (!list_empty(&pipe->requests)) {
+		struct vsp1_request *req;
+
+		req = list_first_entry(&pipe->requests, typeof(*req), list);
+		list_del(&req->list);
+
+		vsp1_dl_list_put(dl);
+		dl = req->dl;
+		media_device_request_put(&req->req);
+
+	}
+
+	if (!dl)
+		dl = vsp1_dl_list_get(pipe->output->dlm);
 
 	for (i = 0; i < vsp1->info->rpf_count; ++i) {
 		struct vsp1_rwpf *rwpf = pipe->inputs[i].rpf;
 
 		if (rwpf)
-			vsp1_rwpf_set_memory(rwpf, pipe->dl);
+			vsp1_rwpf_set_memory(rwpf, dl);
 	}
 
 	if (!pipe->lif)
-		vsp1_rwpf_set_memory(pipe->output, pipe->dl);
+		vsp1_rwpf_set_memory(pipe->output, dl);
 
-	vsp1_dl_list_commit(pipe->dl);
-	pipe->dl = NULL;
+	vsp1_dl_list_commit(dl);
 
 	vsp1_pipeline_run(pipe);
 }
 
-static void vsp1_video_pipeline_frame_end(struct vsp1_pipeline *pipe)
+void vsp1_video_pipeline_frame_end(struct vsp1_pipeline *pipe)
 {
 	struct vsp1_device *vsp1 = pipe->output->entity.vsp1;
 	enum vsp1_pipeline_state state;
@@ -601,59 +623,22 @@ static void vsp1_video_buffer_queue(struct vb2_buffer *vb)
 	spin_unlock_irqrestore(&pipe->irqlock, flags);
 }
 
-static int vsp1_video_setup_pipeline(struct vsp1_pipeline *pipe)
-{
-	struct vsp1_entity *entity;
-
-	/* Prepare the display list. */
-	pipe->dl = vsp1_dl_list_get(pipe->output->dlm);
-	if (!pipe->dl)
-		return -ENOMEM;
-
-	if (pipe->uds) {
-		struct vsp1_uds *uds = to_uds(&pipe->uds->subdev);
-
-		/* If a BRU is present in the pipeline before the UDS, the alpha
-		 * component doesn't need to be scaled as the BRU output alpha
-		 * value is fixed to 255. Otherwise we need to scale the alpha
-		 * component only when available at the input RPF.
-		 */
-		if (pipe->uds_input->type == VSP1_ENTITY_BRU) {
-			uds->scale_alpha = false;
-		} else {
-			const struct vsp1_format_info *info;
-			struct vsp1_rwpf *rpf =
-				to_rwpf(&pipe->uds_input->subdev);
-
-			info = vsp1_get_format_info(rpf->format.pixelformat);
-			uds->scale_alpha = info->alpha;
-		}
-	}
-
-	list_for_each_entry(entity, &pipe->entities, list_pipe) {
-		vsp1_entity_route_setup(entity, pipe, pipe->dl);
-
-		if (entity->ops->configure)
-			entity->ops->configure(entity, pipe, pipe->dl, NULL);
-	}
-
-	return 0;
-}
-
 static int vsp1_video_start_streaming(struct vb2_queue *vq, unsigned int count)
 {
 	struct vsp1_video *video = vb2_get_drv_priv(vq);
 	struct vsp1_pipeline *pipe = video->rwpf->pipe;
 	unsigned long flags;
-	int ret;
 
 	mutex_lock(&pipe->lock);
 	if (pipe->stream_count == pipe->num_inputs) {
-		ret = vsp1_video_setup_pipeline(pipe);
-		if (ret < 0) {
+		/* Prepare the display list. */
+		pipe->dl = vsp1_dl_list_get(pipe->output->dlm);
+		if (!pipe->dl) {
 			mutex_unlock(&pipe->lock);
-			return ret;
+			return -ENOMEM;
 		}
+
+		vsp1_pipeline_setup(pipe, pipe->dl, NULL);
 	}
 
 	pipe->stream_count++;
@@ -997,6 +982,7 @@ struct vsp1_video *vsp1_video_create(struct vsp1_device *vsp1,
 	video->queue.ops = &vsp1_video_queue_qops;
 	video->queue.mem_ops = &vb2_dma_contig_memops;
 	video->queue.timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_COPY;
+	video->queue.allow_requests = true;
 	ret = vb2_queue_init(&video->queue);
 	if (ret < 0) {
 		dev_err(video->vsp1->dev, "failed to initialize vb2 queue\n");

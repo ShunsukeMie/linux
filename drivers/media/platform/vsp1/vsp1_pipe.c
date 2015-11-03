@@ -25,8 +25,10 @@
 #include "vsp1_entity.h"
 #include "vsp1_hgo.h"
 #include "vsp1_pipe.h"
+#include "vsp1_request.h"
 #include "vsp1_rwpf.h"
 #include "vsp1_uds.h"
+#include "vsp1_video.h"
 
 /* -----------------------------------------------------------------------------
  * Helper Functions
@@ -158,6 +160,40 @@ const struct vsp1_format_info *vsp1_get_format_info(u32 fourcc)
 	return NULL;
 }
 
+
+/* -----------------------------------------------------------------------------
+ * Requests Management
+ */
+
+void vsp1_pipeline_queue_request(struct vsp1_pipeline *pipe,
+				 struct vsp1_request *req)
+{
+	struct vsp1_video *video;
+	unsigned long flags;
+	unsigned int i;
+
+	media_device_request_get(&req->req);
+
+	spin_lock_irqsave(&pipe->irqlock, flags);
+	list_add_tail(&req->list, &pipe->requests);
+	spin_unlock_irqrestore(&pipe->irqlock, flags);
+
+	for (i = 0; i < ARRAY_SIZE(pipe->inputs); ++i) {
+		if (!pipe->inputs[i].rpf)
+			continue;
+
+		video = pipe->inputs[i].rpf->video;
+		mutex_lock(&video->lock);
+		vb2_qbuf_request(&video->queue, req->req.id, NULL);
+		mutex_unlock(&video->lock);
+	}
+
+	video = pipe->output->video;
+	mutex_lock(&video->lock);
+	vb2_qbuf_request(&video->queue, req->req.id, NULL);
+	mutex_unlock(&video->lock);
+}
+
 /* -----------------------------------------------------------------------------
  * Pipeline Management
  */
@@ -178,6 +214,7 @@ void vsp1_pipeline_reset(struct vsp1_pipeline *pipe)
 	pipe->output = NULL;
 
 	INIT_LIST_HEAD(&pipe->entities);
+	INIT_LIST_HEAD(&pipe->requests);
 	pipe->state = VSP1_PIPELINE_STOPPED;
 	pipe->buffers_ready = 0;
 	pipe->num_inputs = 0;
@@ -195,6 +232,7 @@ void vsp1_pipeline_init(struct vsp1_pipeline *pipe)
 	kref_init(&pipe->kref);
 
 	INIT_LIST_HEAD(&pipe->entities);
+	INIT_LIST_HEAD(&pipe->requests);
 	pipe->state = VSP1_PIPELINE_STOPPED;
 }
 
@@ -277,6 +315,39 @@ bool vsp1_pipeline_ready(struct vsp1_pipeline *pipe)
 		mask |= 1 << 0;
 
 	return pipe->buffers_ready == mask;
+}
+
+void vsp1_pipeline_setup(struct vsp1_pipeline *pipe, struct vsp1_dl_list *dl,
+			 struct media_device_request *req)
+{
+	struct vsp1_entity *entity;
+
+	if (pipe->uds) {
+		struct vsp1_uds *uds = to_uds(&pipe->uds->subdev);
+
+		/* If a BRU is present in the pipeline before the UDS, the alpha
+		 * component doesn't need to be scaled as the BRU output alpha
+		 * value is fixed to 255. Otherwise we need to scale the alpha
+		 * component only when available at the input RPF.
+		 */
+		if (pipe->uds_input->type == VSP1_ENTITY_BRU) {
+			uds->scale_alpha = false;
+		} else {
+			const struct vsp1_format_info *info;
+			struct vsp1_rwpf *rpf =
+				to_rwpf(&pipe->uds_input->subdev);
+
+			info = vsp1_get_format_info(rpf->format.pixelformat);
+			uds->scale_alpha = info->alpha;
+		}
+	}
+
+	list_for_each_entry(entity, &pipe->entities, list_pipe) {
+		vsp1_entity_route_setup(entity, pipe, dl);
+
+		if (entity->ops->configure)
+			entity->ops->configure(entity, pipe, dl, req);
+	}
 }
 
 void vsp1_pipeline_frame_end(struct vsp1_pipeline *pipe)

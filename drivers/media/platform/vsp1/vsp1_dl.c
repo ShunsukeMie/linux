@@ -16,8 +16,11 @@
 #include <linux/gfp.h>
 #include <linux/slab.h>
 
+#include <media/v4l2-device.h>
+
 #include "vsp1.h"
 #include "vsp1_dl.h"
+#include "vsp1_video.h"
 
 #define VSP1_DL_NUM_ENTRIES		256
 #define VSP1_DL_NUM_LISTS		3

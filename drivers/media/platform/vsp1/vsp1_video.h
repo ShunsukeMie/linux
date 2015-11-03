@@ -60,5 +60,6 @@ static inline struct vsp1_video *to_vsp1_video(struct video_device *vdev)
 struct vsp1_video *vsp1_video_create(struct vsp1_device *vsp1,
 				     struct vsp1_rwpf *rwpf);
 void vsp1_video_cleanup(struct vsp1_video *video);
+void vsp1_video_pipeline_frame_end(struct vsp1_pipeline *pipe);
 
 #endif /* __VSP1_VIDEO_H__ */
