@@ -281,6 +281,15 @@ struct media_entity_notify {
 };
 
 /**
+ * struct media_device_ops - Media device operations
+ * @link_notify: Link state change notification callback
+ */
+struct media_device_ops {
+	int (*link_notify)(struct media_link *link, u32 flags,
+			   unsigned int notification);
+};
+
+/**
  * struct media_device - Media device
  * @dev:	Parent device
  * @devnode:	Media device node
@@ -313,7 +322,7 @@ struct media_entity_notify {
  * @enable_source: Enable Source Handler function pointer
  * @disable_source: Disable Source Handler function pointer
  *
- * @link_notify: Link state change notification callback
+ * @ops:	Operation handler callbacks
  *
  * This structure represents an abstract high-level media device. It allows easy
  * access to entities and provides basic media device-level support. The
@@ -382,8 +391,7 @@ struct media_device {
 			     struct media_pipeline *pipe);
 	void (*disable_source)(struct media_entity *entity);
 
-	int (*link_notify)(struct media_link *link, u32 flags,
-			   unsigned int notification);
+	const struct media_device_ops *ops;
 };
 
 /* We don't need to include pci.h or usb.h here */
