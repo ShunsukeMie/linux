@@ -38,11 +38,167 @@
 
 struct media_device_fh {
 	struct media_devnode_fh fh;
+	struct list_head requests;
 };
 
 static inline struct media_device_fh *media_device_fh(struct file *filp)
 {
 	return container_of(filp->private_data, struct media_device_fh, fh);
+}
+
+/* -----------------------------------------------------------------------------
+ * Requests
+ */
+
+/**
+ * media_device_request_find - Find a request based from its ID
+ * @mdev: The media device
+ * @reqid: The request ID
+ *
+ * Find and return the request associated with the given ID, or NULL if no such
+ * request exists.
+ *
+ * When the function returns a non-NULL request it increases its reference
+ * count. The caller is responsible for releasing the reference by calling
+ * media_device_request_put() on the request.
+ */
+struct media_device_request *
+media_device_request_find(struct media_device *mdev, u16 reqid)
+{
+	struct media_device_request *req;
+	unsigned long flags;
+	bool found = false;
+
+	spin_lock_irqsave(&mdev->req_lock, flags);
+	list_for_each_entry(req, &mdev->requests, list) {
+		if (req->id == reqid) {
+			kref_get(&req->kref);
+			found = true;
+			break;
+		}
+	}
+	spin_unlock_irqrestore(&mdev->req_lock, flags);
+
+	return found ? req : NULL;
+}
+EXPORT_SYMBOL_GPL(media_device_request_find);
+
+void media_device_request_get(struct media_device_request *req)
+{
+	kref_get(&req->kref);
+}
+EXPORT_SYMBOL_GPL(media_device_request_get);
+
+static void media_device_request_release(struct kref *kref)
+{
+	struct media_device_request *req =
+		container_of(kref, struct media_device_request, kref);
+	struct media_device *mdev = req->mdev;
+
+	mdev->ops->req_free(mdev, req);
+}
+
+void media_device_request_put(struct media_device_request *req)
+{
+	kref_put(&req->kref, media_device_request_release);
+}
+EXPORT_SYMBOL_GPL(media_device_request_put);
+
+static int media_device_request_alloc(struct media_device *mdev,
+				      struct media_device_fh *fh,
+				      struct media_request_cmd *cmd)
+{
+	struct media_device_request *req;
+	unsigned long flags;
+
+	req = mdev->ops->req_alloc(mdev);
+	if (!req)
+		return -ENOMEM;
+
+	req->mdev = mdev;
+	kref_init(&req->kref);
+
+	spin_lock_irqsave(&mdev->req_lock, flags);
+	req->id = ++mdev->req_id;
+	list_add_tail(&req->list, &mdev->requests);
+	list_add_tail(&req->fh_list, &fh->requests);
+	spin_unlock_irqrestore(&mdev->req_lock, flags);
+
+	cmd->request = req->id;
+	return 0;
+}
+
+static void media_device_request_delete(struct media_device *mdev,
+					struct media_device_request *req)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&mdev->req_lock, flags);
+	list_del(&req->list);
+	spin_unlock_irqrestore(&mdev->req_lock, flags);
+
+	media_device_request_put(req);
+}
+
+static long media_device_request_cmd(struct media_device *mdev,
+				     struct media_device_fh *fh,
+				     struct media_request_cmd __user *_cmd)
+{
+	struct media_device_request *req = NULL;
+	struct media_request_cmd cmd;
+	int ret;
+
+	if (!mdev->ops || !mdev->ops->req_alloc || !mdev->ops->req_free)
+		return -ENOTTY;
+
+	if (copy_from_user(&cmd, _cmd, sizeof(cmd)))
+		return -EFAULT;
+
+	if (cmd.cmd != MEDIA_REQ_CMD_ALLOC) {
+		req = media_device_request_find(mdev, cmd.request);
+		if (!req)
+			return -EINVAL;
+	}
+
+	switch (cmd.cmd) {
+	case MEDIA_REQ_CMD_ALLOC:
+		ret = media_device_request_alloc(mdev, fh, &cmd);
+		break;
+
+	case MEDIA_REQ_CMD_DELETE:
+		media_device_request_delete(mdev, req);
+		ret = 0;
+		break;
+
+	case MEDIA_REQ_CMD_APPLY:
+		if (!mdev->ops->req_apply)
+			return -ENOSYS;
+
+		ret = mdev->ops->req_apply(mdev, req);
+		break;
+
+	case MEDIA_REQ_CMD_QUEUE:
+		if (!mdev->ops->req_queue)
+			return -ENOSYS;
+
+		ret = mdev->ops->req_queue(mdev, req);
+		break;
+
+	default:
+		ret = -EINVAL;
+		break;
+	}
+
+	if (req)
+		media_device_request_put(req);
+
+	if (ret < 0)
+		return ret;
+
+	if (copy_to_user(_cmd, &cmd, sizeof(cmd)))
+		return -EFAULT;
+
+	return 0;
 }
 
 /* -----------------------------------------------------------------------------
@@ -62,6 +218,7 @@ static int media_device_open(struct file *filp)
 	if (!fh)
 		return -ENOMEM;
 
+	INIT_LIST_HEAD(&fh->requests);
 	filp->private_data = &fh->fh;
 
 	return 0;
@@ -70,6 +227,15 @@ static int media_device_open(struct file *filp)
 static int media_device_close(struct file *filp)
 {
 	struct media_device_fh *fh = media_device_fh(filp);
+	struct media_device *mdev = to_media_device(fh->fh.devnode);
+	struct media_device_request *req, *next;
+
+	spin_lock_irq(&mdev->req_lock);
+	list_for_each_entry_safe(req, next, &fh->requests, fh_list) {
+		list_del(&req->fh_list);
+		media_device_request_put(req);
+	}
+	spin_unlock_irq(&mdev->req_lock);
 
 	kfree(fh);
 
@@ -427,6 +593,7 @@ static long media_device_ioctl(struct file *filp, unsigned int cmd,
 {
 	struct media_devnode *devnode = media_devnode_data(filp);
 	struct media_device *dev = to_media_device(devnode);
+	struct media_device_fh *fh = media_device_fh(filp);
 	long ret;
 
 	switch (cmd) {
@@ -459,6 +626,11 @@ static long media_device_ioctl(struct file *filp, unsigned int cmd,
 		ret = media_device_get_topology(dev,
 				(struct media_v2_topology __user *)arg);
 		mutex_unlock(&dev->graph_mutex);
+		break;
+
+	case MEDIA_IOC_REQUEST_CMD:
+		ret = media_device_request_cmd(dev, fh,
+				(struct media_request_cmd __user *)arg);
 		break;
 
 	default:
@@ -722,6 +894,9 @@ int __must_check __media_device_register(struct media_device *mdev,
 					 struct module *owner)
 {
 	int ret;
+
+	spin_lock_init(&mdev->req_lock);
+	INIT_LIST_HEAD(&mdev->requests);
 
 	/* Register the device node. */
 	mdev->devnode.fops = &media_device_fops;
