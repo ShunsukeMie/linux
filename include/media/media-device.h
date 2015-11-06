@@ -273,6 +273,7 @@ struct media_device;
  * @kref: Reference count
  * @list: List entry in the media device requests list
  * @fh_list: List entry in the media file handle requests list
+ * @data: Per-entity data list
  */
 struct media_device_request {
 	u32 id;
@@ -280,6 +281,7 @@ struct media_device_request {
 	struct kref kref;
 	struct list_head list;
 	struct list_head fh_list;
+	struct list_head data;
 };
 
 /**
@@ -656,6 +658,11 @@ struct media_device_request *
 media_device_request_find(struct media_device *mdev, u16 reqid);
 void media_device_request_get(struct media_device_request *req);
 void media_device_request_put(struct media_device_request *req);
+struct media_entity_request_data *
+media_device_request_get_entity_data(struct media_device_request *req,
+				     struct media_entity *entity);
+void media_device_request_set_entity_data(struct media_device_request *req,
+	struct media_entity *entity, struct media_entity_request_data *data);
 
 /* Iterate over all entities. */
 #define media_device_for_each_entity(entity, mdev)			\
