@@ -791,6 +791,23 @@ void vb2_queue_release(struct vb2_queue *q)
 }
 EXPORT_SYMBOL_GPL(vb2_queue_release);
 
+bool vb2_queue_has_request(struct vb2_queue *q, unsigned int request)
+{
+	unsigned int i;
+
+	for (i = 0; i < q->num_buffers; i++) {
+		struct vb2_buffer *vb = q->bufs[i];
+		struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
+
+		if (vb->state == VB2_BUF_STATE_PREPARED &&
+		    vbuf->request == request)
+			return true;
+	}
+
+	return false;
+}
+EXPORT_SYMBOL_GPL(vb2_queue_has_request);
+
 /**
  * vb2_poll() - implements poll userspace operation
  * @q:		videobuf2 queue
