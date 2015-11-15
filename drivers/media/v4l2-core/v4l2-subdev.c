@@ -83,6 +83,8 @@ static int subdev_open(struct file *file)
 	}
 #endif
 
+	v4l2_subdev_call(sd, pad, init_cfg, subdev_fh->pad);
+
 	if (sd->internal_ops && sd->internal_ops->open) {
 		ret = sd->internal_ops->open(sd, subdev_fh);
 		if (ret < 0)
