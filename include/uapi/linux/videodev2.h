@@ -1980,6 +1980,7 @@ struct v4l2_plane_pix_format {
  * @ycbcr_enc:		enum v4l2_ycbcr_encoding, Y'CbCr encoding
  * @quantization:	enum v4l2_quantization, colorspace quantization
  * @xfer_func:		enum v4l2_xfer_func, colorspace transfer function
+ * @request:		request ID
  */
 struct v4l2_pix_format_mplane {
 	__u32				width;
@@ -1994,7 +1995,8 @@ struct v4l2_pix_format_mplane {
 	__u8				ycbcr_enc;
 	__u8				quantization;
 	__u8				xfer_func;
-	__u8				reserved[7];
+	__u8				reserved[3];
+	__u32				request;
 } __attribute__ ((packed));
 
 /**
