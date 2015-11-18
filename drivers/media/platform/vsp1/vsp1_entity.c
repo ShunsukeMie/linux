@@ -91,6 +91,39 @@ vsp1_entity_get_pad_config(struct vsp1_entity *entity,
 }
 
 /**
+ * vsp1_entity_get_req_pad_config - Get a pad configuration from a request
+ * @entity: the entity
+ * @req: the request
+ *
+ * Return the pad configuration stored in the request for the given entity. If
+ * the request argument is NULL or doesn't contain pad configuration for the
+ * entity the function will instead return the ACTIVE configuration stored in
+ * the entity.
+ */
+struct v4l2_subdev_pad_config *
+vsp1_entity_get_req_pad_config(struct vsp1_entity *entity,
+			       struct media_device_request *req)
+{
+	struct media_entity_request_data *data;
+	struct v4l2_subdev_request_data *sddata;
+
+	/* If there's no request or if the request doesn't contain subdev data
+	 * return the entity active configuration.
+	 */
+	if (!req)
+		return entity->config;
+
+	data = media_device_request_get_entity_data(req,
+						    &entity->subdev.entity);
+	if (!data)
+		return entity->config;
+
+	/* Otherwise return the configuration stored in the request. */
+	sddata = to_v4l2_subdev_request_data(data);
+	return sddata->pad;
+}
+
+/**
  * vsp1_entity_get_pad_format - Get a pad format from storage for an entity
  * @entity: the entity
  * @cfg: the configuration storage

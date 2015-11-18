@@ -60,9 +60,11 @@ static void rpf_set_memory(struct vsp1_entity *entity, struct vsp1_dl_list *dl)
 
 static void rpf_configure(struct vsp1_entity *entity,
 			  struct vsp1_pipeline *pipe,
-			  struct vsp1_dl_list *dl)
+			  struct vsp1_dl_list *dl,
+			  struct media_device_request *req)
 {
 	struct vsp1_rwpf *rpf = to_rwpf(&entity->subdev);
+	struct v4l2_subdev_pad_config *config;
 	const struct vsp1_format_info *fmtinfo = rpf->fmtinfo;
 	const struct v4l2_pix_format_mplane *format = &rpf->format;
 	const struct v4l2_mbus_framefmt *source_format;
@@ -73,13 +75,15 @@ static void rpf_configure(struct vsp1_entity *entity,
 	u32 pstride;
 	u32 infmt;
 
+	config = vsp1_entity_get_req_pad_config(entity, req);
+
 	/* Source size, stride and crop offsets.
 	 *
 	 * The crop offsets correspond to the location of the crop rectangle top
 	 * left corner in the plane buffer. Only two offsets are needed, as
 	 * planes 2 and 3 always have identical strides.
 	 */
-	crop = vsp1_rwpf_get_crop(rpf, rpf->entity.config);
+	crop = vsp1_rwpf_get_crop(rpf, config);
 
 	vsp1_rpf_write(rpf, dl, VI6_RPF_SRC_BSIZE,
 		       (crop->width << VI6_RPF_SRC_BSIZE_BHSIZE_SHIFT) |
@@ -105,11 +109,9 @@ static void rpf_configure(struct vsp1_entity *entity,
 	vsp1_rpf_write(rpf, dl, VI6_RPF_SRCM_PSTRIDE, pstride);
 
 	/* Format */
-	sink_format = vsp1_entity_get_pad_format(&rpf->entity,
-						 rpf->entity.config,
+	sink_format = vsp1_entity_get_pad_format(&rpf->entity, config,
 						 RWPF_PAD_SINK);
-	source_format = vsp1_entity_get_pad_format(&rpf->entity,
-						   rpf->entity.config,
+	source_format = vsp1_entity_get_pad_format(&rpf->entity, config,
 						   RWPF_PAD_SOURCE);
 
 	infmt = VI6_RPF_INFMT_CIPM
@@ -128,12 +130,13 @@ static void rpf_configure(struct vsp1_entity *entity,
 
 	/* Output location */
 	if (pipe->bru) {
+		struct v4l2_subdev_pad_config *bru_config;
 		const struct v4l2_rect *compose;
 		unsigned int bru_pad;
 
+		bru_config = vsp1_entity_get_req_pad_config(pipe->bru, req);
 		bru_pad = pipe->inputs[rpf->entity.index].bru_pad;
-		compose = vsp1_entity_get_pad_selection(pipe->bru,
-							pipe->bru->config,
+		compose = vsp1_entity_get_pad_selection(pipe->bru, bru_config,
 							bru_pad,
 							V4L2_SEL_TGT_COMPOSE);
 		left = compose->left;

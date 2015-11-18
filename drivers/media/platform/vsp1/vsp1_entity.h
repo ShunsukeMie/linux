@@ -18,6 +18,7 @@
 
 #include <media/v4l2-subdev.h>
 
+struct media_device_request;
 struct vsp1_device;
 struct vsp1_dl_list;
 struct vsp1_pipeline;
@@ -74,7 +75,7 @@ struct vsp1_entity_operations {
 	void (*destroy)(struct vsp1_entity *);
 	void (*set_memory)(struct vsp1_entity *, struct vsp1_dl_list *dl);
 	void (*configure)(struct vsp1_entity *, struct vsp1_pipeline *,
-			  struct vsp1_dl_list *);
+			  struct vsp1_dl_list *, struct media_device_request *);
 };
 
 struct vsp1_entity {
@@ -120,6 +121,9 @@ struct v4l2_subdev_pad_config *
 vsp1_entity_get_pad_config(struct vsp1_entity *entity,
 			   struct v4l2_subdev_pad_config *cfg,
 			   enum v4l2_subdev_format_whence which);
+struct v4l2_subdev_pad_config *
+vsp1_entity_get_req_pad_config(struct vsp1_entity *entity,
+			       struct media_device_request *req);
 struct v4l2_mbus_framefmt *
 vsp1_entity_get_pad_format(struct vsp1_entity *entity,
 			   struct v4l2_subdev_pad_config *cfg,

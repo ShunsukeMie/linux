@@ -122,15 +122,19 @@ static struct v4l2_subdev_ops lif_ops = {
 
 static void lif_configure(struct vsp1_entity *entity,
 			  struct vsp1_pipeline *pipe,
-			  struct vsp1_dl_list *dl)
+			  struct vsp1_dl_list *dl,
+			  struct media_device_request *req)
 {
 	const struct v4l2_mbus_framefmt *format;
 	struct vsp1_lif *lif = to_lif(&entity->subdev);
+	struct v4l2_subdev_pad_config *config;
 	unsigned int hbth = 1300;
 	unsigned int obth = 400;
 	unsigned int lbth = 200;
 
-	format = vsp1_entity_get_pad_format(&lif->entity, lif->entity.config,
+	config = vsp1_entity_get_req_pad_config(entity, req);
+
+	format = vsp1_entity_get_pad_format(&lif->entity, config,
 					    LIF_PAD_SOURCE);
 
 	obth = min(obth, (format->width + 1) / 2 * format->height - 4);
