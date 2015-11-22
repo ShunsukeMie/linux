@@ -320,7 +320,7 @@ int vsp1_du_atomic_update(struct device *dev, unsigned int rpf_index,
 		return -EINVAL;
 	}
 
-	rpf->fmtinfo = fmtinfo;
+	rpf->format.pixelformat = pixelformat;
 	rpf->format.num_planes = fmtinfo->planes;
 	rpf->format.plane_fmt[0].bytesperline = pitch;
 	rpf->format.plane_fmt[1].bytesperline = pitch;

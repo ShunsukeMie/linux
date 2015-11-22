@@ -27,6 +27,39 @@ struct v4l2_rect *vsp1_rwpf_get_crop(struct vsp1_rwpf *rwpf,
 					RWPF_PAD_SINK);
 }
 
+/**
+ * vsp1_rwpf_get_pixformat - Get a pixel format from a request
+ * @entity: the [RW]PF
+ * @req: the request
+ *
+ * Return the pixel format stored in the request for the given [RW]PF. If
+ * the request argument is NULL or doesn't contain pad configuration for the
+ * entity the function will instead return the ACTIVE pixel format stored in the
+ * [RW]PF.
+ */
+const struct v4l2_pix_format_mplane *
+vsp1_rwpf_get_pixformat(struct vsp1_rwpf *rwpf,
+			struct media_device_request *req)
+{
+	struct media_entity_request_data *data;
+	struct video_device_request_data *vdata;
+
+	/* If there's no request or if the request doesn't contain video device
+	 * data return the rwpf active format.
+	 */
+	if (!req)
+		return &rwpf->format;
+
+	data = media_device_request_get_entity_data(req,
+					&rwpf->entity.subdev.entity);
+	if (!data)
+		return &rwpf->format;
+
+	/* Otherwise return the format stored in the request. */
+	vdata = to_video_device_request_data(data);
+	return &vdata->format;
+}
+
 /* -----------------------------------------------------------------------------
  * V4L2 Subdevice Pad Operations
  */

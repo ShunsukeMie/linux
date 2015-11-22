@@ -65,8 +65,8 @@ static void rpf_configure(struct vsp1_entity *entity,
 {
 	struct vsp1_rwpf *rpf = to_rwpf(&entity->subdev);
 	struct v4l2_subdev_pad_config *config;
-	const struct vsp1_format_info *fmtinfo = rpf->fmtinfo;
-	const struct v4l2_pix_format_mplane *format = &rpf->format;
+	const struct vsp1_format_info *fmtinfo;
+	const struct v4l2_pix_format_mplane *format;
 	const struct v4l2_mbus_framefmt *source_format;
 	const struct v4l2_mbus_framefmt *sink_format;
 	const struct v4l2_rect *crop;
@@ -91,6 +91,9 @@ static void rpf_configure(struct vsp1_entity *entity,
 	vsp1_rpf_write(rpf, dl, VI6_RPF_SRC_ESIZE,
 		       (crop->width << VI6_RPF_SRC_ESIZE_EHSIZE_SHIFT) |
 		       (crop->height << VI6_RPF_SRC_ESIZE_EVSIZE_SHIFT));
+
+	format = vsp1_rwpf_get_pixformat(rpf, req);
+	fmtinfo = vsp1_get_format_info(format->pixelformat);
 
 	rpf->offsets[0] = crop->top * format->plane_fmt[0].bytesperline
 			+ crop->left * fmtinfo->bpp[0] / 8;

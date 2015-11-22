@@ -44,7 +44,6 @@ struct vsp1_rwpf {
 	unsigned int max_height;
 
 	struct v4l2_pix_format_mplane format;
-	const struct vsp1_format_info *fmtinfo;
 
 	unsigned int alpha;
 
@@ -73,6 +72,10 @@ extern const struct v4l2_subdev_pad_ops vsp1_rwpf_pad_ops;
 
 struct v4l2_rect *vsp1_rwpf_get_crop(struct vsp1_rwpf *rwpf,
 				     struct v4l2_subdev_pad_config *config);
+const struct v4l2_pix_format_mplane *
+vsp1_rwpf_get_pixformat(struct vsp1_rwpf *rwpf,
+			struct media_device_request *req);
+
 /**
  * vsp1_rwpf_set_memory - Configure DMA addresses for a [RW]PF
  * @rwpf: the [RW]PF instance

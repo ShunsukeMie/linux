@@ -123,8 +123,11 @@ static void wpf_configure(struct vsp1_entity *entity,
 						   RWPF_PAD_SOURCE);
 
 	if (!pipe->lif) {
-		const struct v4l2_pix_format_mplane *format = &wpf->format;
-		const struct vsp1_format_info *fmtinfo = wpf->fmtinfo;
+		const struct v4l2_pix_format_mplane *format;
+		const struct vsp1_format_info *fmtinfo;
+
+		format = vsp1_rwpf_get_pixformat(wpf, req);
+		fmtinfo = vsp1_get_format_info(format->pixelformat);
 
 		outfmt = fmtinfo->hwfmt << VI6_WPF_OUTFMT_WRFMT_SHIFT;
 
