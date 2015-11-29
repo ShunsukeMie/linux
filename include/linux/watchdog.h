@@ -19,6 +19,7 @@
 struct watchdog_ops;
 struct watchdog_device;
 struct watchdog_core_data;
+struct watchdog_governor;
 
 /** struct watchdog_ops - The watchdog-devices operations
  *
@@ -59,6 +60,7 @@ struct watchdog_ops {
  *		watchdog device.
  * @info:	Pointer to a watchdog_info structure.
  * @ops:	Pointer to the list of watchdog operations.
+ * @gov:	Pointer to watchdog pretimeout governor.
  * @bootstatus:	Status of the watchdog device at boot.
  * @timeout:	The watchdog devices timeout value (in seconds).
  * @min_timeout:The watchdog devices minimum timeout value (in seconds).
@@ -94,6 +96,7 @@ struct watchdog_device {
 	const struct attribute_group **groups;
 	const struct watchdog_info *info;
 	const struct watchdog_ops *ops;
+	struct watchdog_governor *gov;
 	unsigned int bootstatus;
 	unsigned int timeout;
 	unsigned int min_timeout;
@@ -183,5 +186,12 @@ extern void watchdog_unregister_device(struct watchdog_device *);
 
 /* devres register variant */
 int devm_watchdog_register_device(struct device *dev, struct watchdog_device *);
+
+/* drivers/watchdog/watchdog_pretimeout.c */
+#ifdef CONFIG_WATCHDOG_PRETIMEOUT_GOV
+void watchdog_notify_pretimeout(struct watchdog_device *wdd);
+#else
+static inline void watchdog_notify_pretimeout(struct watchdog_device *wdd) {}
+#endif
 
 #endif  /* ifndef _LINUX_WATCHDOG_H */
