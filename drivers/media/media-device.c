@@ -479,10 +479,12 @@ static long media_device_setup_link(struct media_device *mdev,
 	struct media_link_desc ulink;
 	struct media_entity *source;
 	struct media_entity *sink;
-	int ret;
+	int ret = -EINVAL;
 
 	if (copy_from_user(&ulink, _ulink, sizeof(ulink)))
 		return -EFAULT;
+
+	mutex_lock(&dev->graph_mutex);
 
 	/* Find the source and sink entities and link.
 	 */
@@ -490,22 +492,25 @@ static long media_device_setup_link(struct media_device *mdev,
 	sink = find_entity(mdev, ulink.sink.entity);
 
 	if (source == NULL || sink == NULL)
-		return -EINVAL;
+		goto out;
 
 	if (ulink.source.index >= source->num_pads ||
 	    ulink.sink.index >= sink->num_pads)
-		return -EINVAL;
+		goto out;
 
 	link = media_entity_find_link(&source->pads[ulink.source.index],
 				      &sink->pads[ulink.sink.index]);
 	if (link == NULL)
-		return -EINVAL;
+		goto out;
 
 	/* Setup the link on both entities. */
 	ret = __media_entity_setup_link(link, ulink.flags);
 
-	if (copy_to_user(_ulink, &ulink, sizeof(ulink)))
-		return -EFAULT;
+out:
+	mutex_unlock(&dev->graph_mutex);
+
+	if (!ret && copy_to_user(_ulink, &ulink, sizeof(ulink)))
+		ret = -EFAULT;
 
 	return ret;
 }
@@ -693,10 +698,8 @@ static long media_device_ioctl(struct file *filp, unsigned int cmd,
 		break;
 
 	case MEDIA_IOC_SETUP_LINK:
-		mutex_lock(&dev->graph_mutex);
 		ret = media_device_setup_link(dev,
 				(struct media_link_desc __user *)arg);
-		mutex_unlock(&dev->graph_mutex);
 		break;
 
 	case MEDIA_IOC_G_TOPOLOGY:
