@@ -279,6 +279,18 @@ struct media_entity {
 };
 
 /**
+ * struct media_request_link - Request link state changes
+ * @list: List head for the list in struct media_device_request.links
+ * @link: The link the state of which is to be changed
+ * @enabled: Whether the link is to be enabled or not
+ */
+struct media_request_link {
+	struct list_head list;
+	struct media_link *link;
+	bool enabled;
+};
+
+/**
  * struct media_entity_request_data - Per-entity request data
  * @entity: Entity this data belongs to
  * @release: Release operation to free the data

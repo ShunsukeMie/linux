@@ -91,14 +91,19 @@ EXPORT_SYMBOL_GPL(media_device_request_get);
 
 static void media_device_request_release(struct kref *kref)
 {
-	struct media_entity_request_data *data, *next;
+	struct media_entity_request_data *data, *data_safe;
 	struct media_device_request *req =
 		container_of(kref, struct media_device_request, kref);
 	struct media_device *mdev = req->mdev;
+	struct media_request_link *rlnk, *rlnk_safe;
 
-	list_for_each_entry_safe(data, next, &req->data, list) {
+	list_for_each_entry_safe(data, data_safe, &req->data, list) {
 		list_del(&data->list);
 		data->release(data);
+	}
+	list_for_each_entry_safe(rlnk, rlnk_safe, &req->links, list) {
+		list_del(&rlnk->list);
+		kfree(rlnk);
 	}
 
 	mdev->ops->req_free(mdev, req);
@@ -109,6 +114,19 @@ void media_device_request_put(struct media_device_request *req)
 	kref_put(&req->kref, media_device_request_release);
 }
 EXPORT_SYMBOL_GPL(media_device_request_put);
+
+struct media_request_link *media_device_request_link_find(
+	struct media_device_request *req, struct media_link *link)
+{
+	struct media_request_link *rlnk;
+
+	list_for_each_entry(rlnk, &req->links, list) {
+		if (rlnk->link == link)
+			return rlnk;
+	}
+
+	return NULL;
+}
 
 /**
  * media_device_request_get_entity_data - Get per-entity data
@@ -187,6 +205,7 @@ static int media_device_request_alloc(struct media_device *mdev,
 
 	req->mdev = mdev;
 	kref_init(&req->kref);
+	INIT_LIST_HEAD(&req->links);
 	INIT_LIST_HEAD(&req->data);
 
 	spin_lock_irqsave(&mdev->req_lock, flags);
@@ -477,6 +496,7 @@ static long media_device_setup_link(struct media_device *mdev,
 {
 	struct media_link *link = NULL;
 	struct media_link_desc ulink;
+	struct media_device_request *req = NULL;
 	struct media_entity *source;
 	struct media_entity *sink;
 	int ret = -EINVAL;
@@ -484,7 +504,13 @@ static long media_device_setup_link(struct media_device *mdev,
 	if (copy_from_user(&ulink, _ulink, sizeof(ulink)))
 		return -EFAULT;
 
-	mutex_lock(&dev->graph_mutex);
+	if (ulink.request) {
+		req = media_device_request_find(mdev, ulink.request);
+		if (!req)
+			return -ENOENT;
+	}
+
+	mutex_lock(&mdev->graph_mutex);
 
 	/* Find the source and sink entities and link.
 	 */
@@ -503,11 +529,33 @@ static long media_device_setup_link(struct media_device *mdev,
 	if (link == NULL)
 		goto out;
 
-	/* Setup the link on both entities. */
-	ret = __media_entity_setup_link(link, ulink.flags);
+	if (req) {
+		struct media_request_link *rlnk =
+			media_device_request_link_find(req, link);
+
+		if (rlnk) {
+			list_del(&rlnk->list);
+		} else {
+			rlnk = kmalloc(sizeof(*rlnk), GFP_KERNEL);
+			if (!rlnk) {
+				ret = -ENOMEM;
+				goto out;
+			}
+		}
+
+		rlnk->link = link;
+		rlnk->enabled = ulink.flags & MEDIA_LNK_FL_ENABLED;
+		list_add(&rlnk->list, &req->links);
+	} else {
+		/* Setup the link on both entities. */
+		ret = __media_entity_setup_link(link, ulink.flags);
+	}
 
 out:
-	mutex_unlock(&dev->graph_mutex);
+	mutex_unlock(&mdev->graph_mutex);
+
+	if (req)
+		media_device_request_put(req);
 
 	if (!ret && copy_to_user(_ulink, &ulink, sizeof(ulink)))
 		ret = -EFAULT;

@@ -273,6 +273,8 @@ struct media_device;
  * @kref: Reference count
  * @list: List entry in the media device requests list
  * @fh_list: List entry in the media file handle requests list
+ * @links: List of links state changes included in the request
+ *	   (struct media_request_link)
  * @data: Per-entity data list
  */
 struct media_device_request {
@@ -281,6 +283,7 @@ struct media_device_request {
 	struct kref kref;
 	struct list_head list;
 	struct list_head fh_list;
+	struct list_head links;
 	struct list_head data;
 };
 
