@@ -29,10 +29,6 @@ struct vsp1_bru {
 
 	struct v4l2_ctrl_handler ctrls;
 
-	struct {
-		struct vsp1_rwpf *rpf;
-	} inputs[VSP1_MAX_RPF];
-
 	u32 bgcolor;
 };
 

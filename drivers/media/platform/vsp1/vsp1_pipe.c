@@ -166,16 +166,12 @@ void vsp1_pipeline_reset(struct vsp1_pipeline *pipe)
 {
 	unsigned int i;
 
-	if (pipe->bru) {
-		struct vsp1_bru *bru = to_bru(&pipe->bru->subdev);
-
-		for (i = 0; i < ARRAY_SIZE(bru->inputs); ++i)
-			bru->inputs[i].rpf = NULL;
-	}
+	for (i = 0; i < ARRAY_SIZE(pipe->bru_inputs); ++i)
+		pipe->bru_inputs[i] = NULL;
 
 	for (i = 0; i < pipe->num_inputs; ++i) {
-		pipe->inputs[i]->pipe = NULL;
-		pipe->inputs[i] = NULL;
+		pipe->inputs[i].rpf->pipe = NULL;
+		pipe->inputs[i].rpf = NULL;
 	}
 
 	pipe->output->pipe = NULL;

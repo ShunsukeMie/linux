@@ -68,12 +68,14 @@ enum vsp1_pipeline_state {
  * @stream_count: number of streaming video nodes
  * @buffers_ready: bitmask of RPFs and WPFs with at least one buffer available
  * @num_inputs: number of RPFs
- * @inputs: array of RPFs in the pipeline (indexed by RPF index)
+ * @inputs.rpf: RPFs in the pipeline (indexed by RPF index)
+ * @inputs.bru_pad: BRU input pad for each RPF (indexed by RPF index)
  * @output: WPF at the output of the pipeline
  * @bru: BRU entity, if present
  * @hgo: HGO entity, if present
  * @lif: LIF entity, if present
  * @uds: UDS entity, if present
+ * @bru_inputs: RPFs at the inputs of the BRU, if the BRU is present
  * @uds_input: entity at the input of the UDS, if the UDS is present
  * @entities: list of entities in the pipeline
  * @dl: display list associated with the pipeline
@@ -93,12 +95,17 @@ struct vsp1_pipeline {
 	unsigned int buffers_ready;
 
 	unsigned int num_inputs;
-	struct vsp1_rwpf *inputs[VSP1_MAX_RPF];
+	struct {
+		struct vsp1_rwpf *rpf;
+		unsigned int bru_pad;
+	} inputs[VSP1_MAX_RPF];
 	struct vsp1_rwpf *output;
 	struct vsp1_entity *bru;
 	struct vsp1_entity *hgo;
 	struct vsp1_entity *lif;
 	struct vsp1_entity *uds;
+
+	struct vsp1_rwpf *bru_inputs[VSP1_MAX_RPF];
 	struct vsp1_entity *uds_input;
 
 	struct list_head entities;

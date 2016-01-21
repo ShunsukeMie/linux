@@ -160,7 +160,7 @@ static void wpf_configure(struct vsp1_entity *entity,
 	 * layer.
 	 */
 	for (i = 0; i < vsp1->info->rpf_count; ++i) {
-		struct vsp1_rwpf *input = pipe->inputs[i];
+		struct vsp1_rwpf *input = pipe->inputs[i].rpf;
 
 		if (!input)
 			continue;

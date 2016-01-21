@@ -257,7 +257,7 @@ static void vsp1_video_pipeline_run(struct vsp1_pipeline *pipe)
 		pipe->dl = vsp1_dl_list_get(pipe->output->dlm);
 
 	for (i = 0; i < vsp1->info->rpf_count; ++i) {
-		struct vsp1_rwpf *rwpf = pipe->inputs[i];
+		struct vsp1_rwpf *rwpf = pipe->inputs[i].rpf;
 
 		if (rwpf)
 			vsp1_rwpf_set_memory(rwpf, pipe->dl);
@@ -281,10 +281,10 @@ static void vsp1_video_pipeline_frame_end(struct vsp1_pipeline *pipe)
 
 	/* Complete buffers on all video nodes. */
 	for (i = 0; i < vsp1->info->rpf_count; ++i) {
-		if (!pipe->inputs[i])
+		if (!pipe->inputs[i].rpf)
 			continue;
 
-		vsp1_video_frame_end(pipe, pipe->inputs[i]);
+		vsp1_video_frame_end(pipe, pipe->inputs[i].rpf);
 	}
 
 	vsp1_video_frame_end(pipe, pipe->output);
@@ -341,13 +341,11 @@ static int vsp1_video_pipeline_build_branch(struct vsp1_pipeline *pipe,
 			media_entity_to_v4l2_subdev(pad->entity));
 
 		/* A BRU is present in the pipeline, store the BRU input pad
-		 * number in the input RPF for use when configuring the RPF.
+		 * number for use when configuring the RPF.
 		 */
 		if (entity->type == VSP1_ENTITY_BRU) {
-			struct vsp1_bru *bru = to_bru(&entity->subdev);
-
-			bru->inputs[pad->index].rpf = input;
-			input->bru_input = pad->index;
+			pipe->bru_inputs[pad->index] = input;
+			pipe->inputs[input->entity.index].bru_pad = pad->index;
 
 			bru_found = true;
 		}
@@ -420,7 +418,7 @@ static int vsp1_video_pipeline_build(struct vsp1_pipeline *pipe,
 
 		if (e->type == VSP1_ENTITY_RPF) {
 			rwpf = to_rwpf(subdev);
-			pipe->inputs[rwpf->entity.index] = rwpf;
+			pipe->inputs[rwpf->entity.index].rpf = rwpf;
 			rwpf->video->pipe_index = ++pipe->num_inputs;
 			rwpf->pipe = pipe;
 		} else if (e->type == VSP1_ENTITY_WPF) {
@@ -447,10 +445,11 @@ static int vsp1_video_pipeline_build(struct vsp1_pipeline *pipe,
 	 * contains no loop and that all branches end at the output WPF.
 	 */
 	for (i = 0; i < video->vsp1->info->rpf_count; ++i) {
-		if (!pipe->inputs[i])
+		if (!pipe->inputs[i].rpf)
 			continue;
 
-		ret = vsp1_video_pipeline_build_branch(pipe, pipe->inputs[i],
+		ret = vsp1_video_pipeline_build_branch(pipe,
+						       pipe->inputs[i].rpf,
 						       pipe->output);
 		if (ret < 0)
 			return ret;

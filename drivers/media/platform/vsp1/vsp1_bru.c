@@ -321,10 +321,10 @@ static void bru_configure(struct vsp1_entity *entity,
 		 * disabled BRU inputs are used in ROP NOP mode to ignore the
 		 * SRC input.
 		 */
-		if (bru->inputs[i].rpf) {
+		if (pipe->bru_inputs[i]) {
 			ctrl |= VI6_BRU_CTRL_RBC;
 
-			premultiplied = bru->inputs[i].rpf->format.flags
+			premultiplied = pipe->bru_inputs[i]->format.flags
 				      & V4L2_PIX_FMT_FLAG_PREMUL_ALPHA;
 		} else {
 			ctrl |= VI6_BRU_CTRL_CROP(VI6_ROP_NOP)

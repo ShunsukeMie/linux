@@ -93,8 +93,8 @@ int vsp1_du_setup_lif(struct device *dev, unsigned int width,
 		media_entity_pipeline_stop(&pipe->output->entity.subdev.entity);
 
 		for (i = 0; i < bru->entity.source_pad; ++i) {
-			bru->inputs[i].rpf = NULL;
-			pipe->inputs[i] = NULL;
+			pipe->bru_inputs[i] = NULL;
+			pipe->inputs[i].rpf = NULL;
 		}
 
 		pipe->num_inputs = 0;
@@ -290,12 +290,12 @@ int vsp1_du_atomic_update(struct device *dev, unsigned int rpf_index,
 
 		spin_lock_irqsave(&pipe->irqlock, flags);
 
-		if (pipe->inputs[rpf_index]) {
+		if (pipe->inputs[rpf_index].rpf) {
 			/* Remove the RPF from the pipeline if it was previously
 			 * enabled.
 			 */
-			vsp1->bru->inputs[rpf_index].rpf = NULL;
-			pipe->inputs[rpf_index] = NULL;
+			pipe->bru_inputs[rpf_index] = NULL;
+			pipe->inputs[rpf_index].rpf = NULL;
 
 			pipe->num_inputs--;
 		}
@@ -411,7 +411,7 @@ int vsp1_du_atomic_update(struct device *dev, unsigned int rpf_index,
 		sel.pad);
 
 	/* Store the BRU input pad number in the RPF. */
-	rpf->bru_input = rpf->entity.index;
+	pipe->inputs[rpf->entity.index].bru_pad = rpf->entity.index;
 
 	/* Cache the memory buffer address but don't apply the values to the
 	 * hardware as the crop offsets haven't been computed yet.
@@ -425,9 +425,9 @@ int vsp1_du_atomic_update(struct device *dev, unsigned int rpf_index,
 	/* If the RPF was previously stopped set the BRU input to the RPF and
 	 * store the RPF in the pipeline inputs array.
 	 */
-	if (!pipe->inputs[rpf->entity.index]) {
-		vsp1->bru->inputs[rpf_index].rpf = rpf;
-		pipe->inputs[rpf->entity.index] = rpf;
+	if (!pipe->inputs[rpf->entity.index].rpf) {
+		pipe->bru_inputs[rpf_index] = rpf;
+		pipe->inputs[rpf->entity.index].rpf = rpf;
 		pipe->num_inputs++;
 	}
 
@@ -454,7 +454,7 @@ void vsp1_du_atomic_flush(struct device *dev)
 		if (entity->type == VSP1_ENTITY_RPF) {
 			struct vsp1_rwpf *rpf = to_rwpf(&entity->subdev);
 
-			if (!pipe->inputs[rpf->entity.index]) {
+			if (!pipe->inputs[rpf->entity.index].rpf) {
 				vsp1_dl_list_write(pipe->dl, entity->route->reg,
 						   VI6_DPR_NODE_UNUSED);
 				continue;

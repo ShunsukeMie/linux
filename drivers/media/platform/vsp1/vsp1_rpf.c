@@ -129,10 +129,12 @@ static void rpf_configure(struct vsp1_entity *entity,
 	/* Output location */
 	if (pipe->bru) {
 		const struct v4l2_rect *compose;
+		unsigned int bru_pad;
 
+		bru_pad = pipe->inputs[rpf->entity.index].bru_pad;
 		compose = vsp1_entity_get_pad_selection(pipe->bru,
 							pipe->bru->config,
-							rpf->bru_input,
+							bru_pad,
 							V4L2_SEL_TGT_COMPOSE);
 		left = compose->left;
 		top = compose->top;
