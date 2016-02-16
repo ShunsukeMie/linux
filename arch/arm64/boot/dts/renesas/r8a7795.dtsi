@@ -1277,7 +1277,6 @@
 			renesas,has-sru;
 			renesas,#rpf = <5>;
 			renesas,#wpf = <1>;
-			status = "disabled";
 		};
 
 		fcpvb1: fcp@fe92f000 {
@@ -1298,7 +1297,6 @@
 
 			renesas,#rpf = <5>;
 			renesas,#wpf = <1>;
-			status = "disabled";
 		};
 
 		fcpvb0: fcp@fe96f000 {
@@ -1322,7 +1320,6 @@
 			renesas,#rpf = <1>;
 			renesas,#uds = <3>;
 			renesas,#wpf = <1>;
-			status = "disabled";
 		};
 
 		fcpvi0: fcp@fe9af000 {
@@ -1346,7 +1343,6 @@
 			renesas,#rpf = <1>;
 			renesas,#uds = <1>;
 			renesas,#wpf = <1>;
-			status = "disabled";
 		};
 
 		fcpvi1: fcp@fe9bf000 {
@@ -1370,7 +1366,6 @@
 			renesas,#rpf = <1>;
 			renesas,#uds = <1>;
 			renesas,#wpf = <1>;
-			status = "disabled";
 		};
 
 		fcpvi2: fcp@fe9cf000 {
