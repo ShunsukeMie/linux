@@ -67,13 +67,13 @@ void vsp1_entity_route_setup(struct vsp1_entity *entity,
 /**
  * vsp1_entity_get_pad_config - Get the pad configuration for an entity
  * @entity: the entity
- * @cfg: the TRY pad configuration
- * @which: configuration selector (ACTIVE or TRY)
+ * @cfg: the TRY or REQUEST pad configuration
+ * @which: configuration selector (ACTIVE, TRY or REQUEST)
  *
- * Return the pad configuration requested by the which argument. The TRY
- * configuration is passed explicitly to the function through the cfg argument
- * and simply returned when requested. The ACTIVE configuration comes from the
- * entity structure.
+ * Return the pad configuration requested by the which argument. The TRY and
+ * REQUEST configurations are passed explicitly to the function through the cfg
+ * argument and simply returned when requested. The ACTIVE configuration comes
+ * from the entity structure.
  */
 struct v4l2_subdev_pad_config *
 vsp1_entity_get_pad_config(struct vsp1_entity *entity,
@@ -84,6 +84,7 @@ vsp1_entity_get_pad_config(struct vsp1_entity *entity,
 	case V4L2_SUBDEV_FORMAT_ACTIVE:
 		return entity->config;
 	case V4L2_SUBDEV_FORMAT_TRY:
+	case V4L2_SUBDEV_FORMAT_REQUEST:
 	default:
 		return cfg;
 	}
@@ -96,7 +97,7 @@ vsp1_entity_get_pad_config(struct vsp1_entity *entity,
  * @pad: the pad number
  *
  * Return the format stored in the given configuration for an entity's pad. The
- * configuration can be an ACTIVE or TRY configuration.
+ * configuration can be an ACTIVE, TRY or REQUEST configuration.
  */
 struct v4l2_mbus_framefmt *
 vsp1_entity_get_pad_format(struct vsp1_entity *entity,
