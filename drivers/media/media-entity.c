@@ -46,41 +46,41 @@ static inline const char *intf_type(struct media_interface *intf)
 {
 	switch (intf->type) {
 	case MEDIA_INTF_T_DVB_FE:
-		return "frontend";
+		return "dvb-frontend";
 	case MEDIA_INTF_T_DVB_DEMUX:
-		return "demux";
+		return "dvb-demux";
 	case MEDIA_INTF_T_DVB_DVR:
-		return "DVR";
+		return "dvb-dvr";
 	case MEDIA_INTF_T_DVB_CA:
-		return  "CA";
+		return  "dvb-ca";
 	case MEDIA_INTF_T_DVB_NET:
-		return "dvbnet";
+		return "dvb-net";
 	case MEDIA_INTF_T_V4L_VIDEO:
-		return "video";
+		return "v4l-video";
 	case MEDIA_INTF_T_V4L_VBI:
-		return "vbi";
+		return "v4l-vbi";
 	case MEDIA_INTF_T_V4L_RADIO:
-		return "radio";
+		return "v4l-radio";
 	case MEDIA_INTF_T_V4L_SUBDEV:
-		return "v4l2-subdev";
+		return "v4l-subdev";
 	case MEDIA_INTF_T_V4L_SWRADIO:
-		return "swradio";
+		return "v4l-swradio";
 	case MEDIA_INTF_T_ALSA_PCM_CAPTURE:
-		return "pcm-capture";
+		return "alsa-pcm-capture";
 	case MEDIA_INTF_T_ALSA_PCM_PLAYBACK:
-		return "pcm-playback";
+		return "alsa-pcm-playback";
 	case MEDIA_INTF_T_ALSA_CONTROL:
 		return "alsa-control";
 	case MEDIA_INTF_T_ALSA_COMPRESS:
-		return "compress";
+		return "alsa-compress";
 	case MEDIA_INTF_T_ALSA_RAWMIDI:
-		return "rawmidi";
+		return "alsa-rawmidi";
 	case MEDIA_INTF_T_ALSA_HWDEP:
-		return "hwdep";
+		return "alsa-hwdep";
 	case MEDIA_INTF_T_ALSA_SEQUENCER:
-		return "sequencer";
+		return "alsa-sequencer";
 	case MEDIA_INTF_T_ALSA_TIMER:
-		return "timer";
+		return "alsa-timer";
 	default:
 		return "unknown-intf";
 	}
@@ -806,17 +806,18 @@ int __media_entity_setup_link(struct media_link *link, u32 flags)
 
 	mdev = source->graph_obj.mdev;
 
-	if (mdev->link_notify) {
-		ret = mdev->link_notify(link, flags,
-					MEDIA_DEV_NOTIFY_PRE_LINK_CH);
+	if (mdev->ops && mdev->ops->link_notify) {
+		ret = mdev->ops->link_notify(link, flags,
+					     MEDIA_DEV_NOTIFY_PRE_LINK_CH);
 		if (ret < 0)
 			return ret;
 	}
 
 	ret = __media_entity_setup_link_notify(link, flags);
 
-	if (mdev->link_notify)
-		mdev->link_notify(link, flags, MEDIA_DEV_NOTIFY_POST_LINK_CH);
+	if (mdev->ops && mdev->ops->link_notify)
+		mdev->ops->link_notify(link, flags,
+				       MEDIA_DEV_NOTIFY_POST_LINK_CH);
 
 	return ret;
 }

@@ -240,7 +240,9 @@ int v4l_vb2q_enable_media_source(struct vb2_queue *q)
 {
 	struct v4l2_fh *fh = q->owner;
 
-	return v4l_enable_media_source(fh->vdev);
+	if (fh && fh->vdev)
+		return v4l_enable_media_source(fh->vdev);
+	return 0;
 }
 EXPORT_SYMBOL_GPL(v4l_vb2q_enable_media_source);
 
@@ -279,7 +281,7 @@ static int pipeline_pm_use_count(struct media_entity *entity,
 	media_entity_graph_walk_start(graph, entity);
 
 	while ((entity = media_entity_graph_walk_next(graph))) {
-		if (is_media_entity_v4l2_io(entity))
+		if (is_media_entity_v4l2_video_device(entity))
 			use += entity->use_count;
 	}
 
