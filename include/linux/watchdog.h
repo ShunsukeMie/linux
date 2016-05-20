@@ -198,6 +198,9 @@ extern void watchdog_unregister_device(struct watchdog_device *);
 /* devres register variant */
 int devm_watchdog_register_device(struct device *dev, struct watchdog_device *);
 
+/* drivers/watchdog/watchdog_dev.c */
+void watchdog_dev_uevent(struct watchdog_device *wdd);
+
 /* drivers/watchdog/watchdog_pretimeout.c */
 #ifdef CONFIG_WATCHDOG_PRETIMEOUT_GOV
 void watchdog_notify_pretimeout(struct watchdog_device *wdd);
