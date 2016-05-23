@@ -106,6 +106,15 @@ struct sh_mobile_sdhi {
 	struct pinctrl_state *pins_default, *pins_uhs;
 };
 
+#if IS_ENABLED(MMC_SDHI_SYSC_DMA)
+int tmio_mmc_init_dma(void);
+#else
+static int tmio_mmc_init_dma(void)
+{
+       return -EINVAL;
+}
+#endif
+
 static void sh_mobile_sdhi_sdbuf_width(struct tmio_mmc_host *host, int width)
 {
 	u32 val;
@@ -362,6 +371,10 @@ static int sh_mobile_sdhi_probe(struct platform_device *pdev)
 		dma_priv->dma_buswidth = of_data->dma_buswidth;
 		host->bus_shift = of_data->bus_shift;
 	}
+
+	ret = tmio_mmc_init_dma();
+	if (ret < 0)
+		goto efree;
 
 	host->dma		= dma_priv;
 	host->write16_hook	= sh_mobile_sdhi_write16_hook;
