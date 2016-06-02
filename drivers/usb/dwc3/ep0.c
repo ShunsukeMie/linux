@@ -576,6 +576,10 @@ static int dwc3_ep0_set_config(struct dwc3 *dwc, struct usb_ctrlrequest *ctrl)
 		/* if the cfg matches and the cfg is non zero */
 		if (cfg && (!ret || (ret == USB_GADGET_DELAYED_STATUS))) {
 
+			if (dwc->current_configuration != cfg)
+				dwc->start_config_issued = false;
+			dwc->current_configuration = cfg;
+
 			/*
 			 * only change state if set_config has already
 			 * been processed. If gadget driver returns
@@ -598,9 +602,11 @@ static int dwc3_ep0_set_config(struct dwc3 *dwc, struct usb_ctrlrequest *ctrl)
 
 	case USB_STATE_CONFIGURED:
 		ret = dwc3_ep0_delegate_req(dwc, ctrl);
-		if (!cfg && !ret)
+		if (!cfg && !ret) {
 			usb_gadget_set_state(&dwc->gadget,
 					USB_STATE_ADDRESS);
+			dwc->current_configuration = 0;
+		}
 		break;
 	default:
 		ret = -EINVAL;
@@ -710,6 +716,35 @@ static int dwc3_ep0_set_isoch_delay(struct dwc3 *dwc, struct usb_ctrlrequest *ct
 	return 0;
 }
 
+static int dwc3_ep0_set_interface(struct dwc3 *dwc,
+		struct usb_ctrlrequest *ctrl)
+{
+	int ret;
+	u16 intf;
+	u16 alt;
+
+	intf = le16_to_cpu(ctrl->wIndex);
+	alt = le16_to_cpu(ctrl->wValue);
+
+	ret = dwc3_ep0_delegate_req(dwc, ctrl);
+	if (ret == 0) {
+		u16 curr;
+
+		curr  = dwc->current_interface;
+		if (curr != intf)
+			dwc->start_config_issued = false;
+
+		curr = dwc->current_alt_setting;
+		if (curr != alt)
+			dwc->start_config_issued = false;
+
+		dwc->current_interface = intf;
+		dwc->current_alt_setting = alt;
+	}
+
+	return ret;
+}
+
 static int dwc3_ep0_std_request(struct dwc3 *dwc, struct usb_ctrlrequest *ctrl)
 {
 	int ret;
@@ -742,6 +777,10 @@ static int dwc3_ep0_std_request(struct dwc3 *dwc, struct usb_ctrlrequest *ctrl)
 	case USB_REQ_SET_ISOCH_DELAY:
 		dwc3_trace(trace_dwc3_ep0, "USB_REQ_SET_ISOCH_DELAY");
 		ret = dwc3_ep0_set_isoch_delay(dwc, ctrl);
+		break;
+	case USB_REQ_SET_INTERFACE:
+		dwc3_trace(trace_dwc3_ep0, "USB_REQ_SET_INTERFACE");
+		ret = dwc3_ep0_set_interface(dwc, ctrl);
 		break;
 	default:
 		dwc3_trace(trace_dwc3_ep0, "Forwarding to gadget driver");

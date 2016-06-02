@@ -768,6 +768,9 @@ struct dwc3_scratchpad_array {
  * @test_mode_nr: test feature selector
  * @lpm_nyet_threshold: LPM NYET response threshold
  * @hird_threshold: HIRD threshold
+ * @current_configuration: current configuration number
+ * @current_alt_setting: current alternate setting
+ * @current_interface: current interface number
  * @hsphy_interface: "utmi" or "ulpi"
  * @connected: true when we're connected to a host, false otherwise
  * @delayed_status: true when gadget driver asks for delayed status
@@ -913,6 +916,10 @@ struct dwc3 {
 	u8			lpm_nyet_threshold;
 	u8			hird_threshold;
 
+	u16			current_configuration;
+	u16			current_alt_setting;
+	u16			current_interface;
+
 	const char		*hsphy_interface;
 
 	unsigned		connected:1;
@@ -926,6 +933,7 @@ struct dwc3 {
 	unsigned		pending_events:1;
 	unsigned		pullups_connected:1;
 	unsigned		setup_packet_pending:1;
+	unsigned		start_config_issued:1;
 	unsigned		three_stage_setup:1;
 	unsigned		usb3_lpm_capable:1;
 
