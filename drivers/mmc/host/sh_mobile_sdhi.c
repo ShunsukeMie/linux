@@ -107,9 +107,9 @@ struct sh_mobile_sdhi {
 };
 
 #if IS_ENABLED(MMC_SDHI_SYSC_DMA)
-int tmio_mmc_init_dma(void);
+int sdhi_sysc_dmac_init_dma(void);
 #else
-static int tmio_mmc_init_dma(void)
+static int sdhi_sysc_dmac_init_dma(void)
 {
        return -EINVAL;
 }
@@ -372,7 +372,7 @@ static int sh_mobile_sdhi_probe(struct platform_device *pdev)
 		host->bus_shift = of_data->bus_shift;
 	}
 
-	ret = tmio_mmc_init_dma();
+	ret = sdhi_sysc_dmac_init_dma();
 	if (ret < 0)
 		goto efree;
 
