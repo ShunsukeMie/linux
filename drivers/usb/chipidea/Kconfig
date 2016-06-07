@@ -19,6 +19,7 @@ config USB_CHIPIDEA_OF
 config USB_CHIPIDEA_PCI
 	tristate
 	depends on PCI
+	depends on USB_GADGET=y || USB_GADGET=NOP_USB_XCEIV
 	depends on NOP_USB_XCEIV
 	default USB_CHIPIDEA
 

@@ -98,8 +98,7 @@ static int dwc3_ep0_start_trans(struct dwc3 *dwc, u8 epnum, dma_addr_t buf_dma,
 
 	trace_dwc3_prepare_trb(dep, trb);
 
-	ret = dwc3_send_gadget_ep_cmd(dwc, dep->number,
-			DWC3_DEPCMD_STARTTRANSFER, &params);
+	ret = dwc3_send_gadget_ep_cmd(dep, DWC3_DEPCMD_STARTTRANSFER, &params);
 	if (ret < 0) {
 		dwc3_trace(trace_dwc3_ep0, "%s STARTTRANSFER failed",
 				dep->name);
@@ -107,9 +106,7 @@ static int dwc3_ep0_start_trans(struct dwc3 *dwc, u8 epnum, dma_addr_t buf_dma,
 	}
 
 	dep->flags |= DWC3_EP_BUSY;
-	dep->resource_index = dwc3_gadget_ep_get_transfer_index(dwc,
-			dep->number);
-
+	dep->resource_index = dwc3_gadget_ep_get_transfer_index(dep);
 	dwc->ep0_next_event = DWC3_EP0_COMPLETE;
 
 	return 0;
@@ -499,7 +496,7 @@ static int dwc3_ep0_handle_feature(struct dwc3 *dwc,
 	case USB_RECIP_ENDPOINT:
 		switch (wValue) {
 		case USB_ENDPOINT_HALT:
-			dep = dwc3_wIndex_to_dep(dwc, wIndex);
+			dep = dwc3_wIndex_to_dep(dwc, ctrl->wIndex);
 			if (!dep)
 				return -EINVAL;
 			if (set == 0 && (dep->flags & DWC3_EP_WEDGE))
@@ -579,6 +576,10 @@ static int dwc3_ep0_set_config(struct dwc3 *dwc, struct usb_ctrlrequest *ctrl)
 		/* if the cfg matches and the cfg is non zero */
 		if (cfg && (!ret || (ret == USB_GADGET_DELAYED_STATUS))) {
 
+			if (dwc->current_configuration != cfg)
+				dwc->start_config_issued = false;
+			dwc->current_configuration = cfg;
+
 			/*
 			 * only change state if set_config has already
 			 * been processed. If gadget driver returns
@@ -601,9 +602,11 @@ static int dwc3_ep0_set_config(struct dwc3 *dwc, struct usb_ctrlrequest *ctrl)
 
 	case USB_STATE_CONFIGURED:
 		ret = dwc3_ep0_delegate_req(dwc, ctrl);
-		if (!cfg && !ret)
+		if (!cfg && !ret) {
 			usb_gadget_set_state(&dwc->gadget,
 					USB_STATE_ADDRESS);
+			dwc->current_configuration = 0;
+		}
 		break;
 	default:
 		ret = -EINVAL;
@@ -622,8 +625,8 @@ static void dwc3_ep0_set_sel_cmpl(struct usb_ep *ep, struct usb_request *req)
 	struct timing {
 		u8	u1sel;
 		u8	u1pel;
-		u16	u2sel;
-		u16	u2pel;
+		__le16	u2sel;
+		__le16	u2pel;
 	} __packed timing;
 
 	int		ret;
@@ -713,6 +716,35 @@ static int dwc3_ep0_set_isoch_delay(struct dwc3 *dwc, struct usb_ctrlrequest *ct
 	return 0;
 }
 
+static int dwc3_ep0_set_interface(struct dwc3 *dwc,
+		struct usb_ctrlrequest *ctrl)
+{
+	int ret;
+	u16 intf;
+	u16 alt;
+
+	intf = le16_to_cpu(ctrl->wIndex);
+	alt = le16_to_cpu(ctrl->wValue);
+
+	ret = dwc3_ep0_delegate_req(dwc, ctrl);
+	if (ret == 0) {
+		u16 curr;
+
+		curr  = dwc->current_interface;
+		if (curr != intf)
+			dwc->start_config_issued = false;
+
+		curr = dwc->current_alt_setting;
+		if (curr != alt)
+			dwc->start_config_issued = false;
+
+		dwc->current_interface = intf;
+		dwc->current_alt_setting = alt;
+	}
+
+	return ret;
+}
+
 static int dwc3_ep0_std_request(struct dwc3 *dwc, struct usb_ctrlrequest *ctrl)
 {
 	int ret;
@@ -745,6 +777,10 @@ static int dwc3_ep0_std_request(struct dwc3 *dwc, struct usb_ctrlrequest *ctrl)
 	case USB_REQ_SET_ISOCH_DELAY:
 		dwc3_trace(trace_dwc3_ep0, "USB_REQ_SET_ISOCH_DELAY");
 		ret = dwc3_ep0_set_isoch_delay(dwc, ctrl);
+		break;
+	case USB_REQ_SET_INTERFACE:
+		dwc3_trace(trace_dwc3_ep0, "USB_REQ_SET_INTERFACE");
+		ret = dwc3_ep0_set_interface(dwc, ctrl);
 		break;
 	default:
 		dwc3_trace(trace_dwc3_ep0, "Forwarding to gadget driver");
@@ -980,7 +1016,7 @@ static void __dwc3_ep0_do_control_data(struct dwc3 *dwc,
 		ret = usb_gadget_map_request(&dwc->gadget, &req->request,
 				dep->number);
 		if (ret) {
-			dwc3_trace(trace_dwc3_ep0, "failed to map request\n");
+			dwc3_trace(trace_dwc3_ep0, "failed to map request");
 			return;
 		}
 
@@ -1008,7 +1044,7 @@ static void __dwc3_ep0_do_control_data(struct dwc3 *dwc,
 		ret = usb_gadget_map_request(&dwc->gadget, &req->request,
 				dep->number);
 		if (ret) {
-			dwc3_trace(trace_dwc3_ep0, "failed to map request\n");
+			dwc3_trace(trace_dwc3_ep0, "failed to map request");
 			return;
 		}
 
@@ -1058,7 +1094,7 @@ static void dwc3_ep0_end_control_data(struct dwc3 *dwc, struct dwc3_ep *dep)
 	cmd |= DWC3_DEPCMD_CMDIOC;
 	cmd |= DWC3_DEPCMD_PARAM(dep->resource_index);
 	memset(&params, 0, sizeof(params));
-	ret = dwc3_send_gadget_ep_cmd(dwc, dep->number, cmd, &params);
+	ret = dwc3_send_gadget_ep_cmd(dep, cmd, &params);
 	WARN_ON_ONCE(ret);
 	dep->resource_index = 0;
 }
@@ -1112,11 +1148,8 @@ static void dwc3_ep0_xfernotready(struct dwc3 *dwc,
 void dwc3_ep0_interrupt(struct dwc3 *dwc,
 		const struct dwc3_event_depevt *event)
 {
-	u8			epnum = event->endpoint_number;
-
-	dwc3_trace(trace_dwc3_ep0, "%s while ep%d%s in state '%s'",
-			dwc3_ep_event_string(event->endpoint_event),
-			epnum >> 1, (epnum & 1) ? "in" : "out",
+	dwc3_trace(trace_dwc3_ep0, "%s: state '%s'",
+			dwc3_ep_event_string(event),
 			dwc3_ep0_state_string(dwc->ep0state));
 
 	switch (event->endpoint_event) {
