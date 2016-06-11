@@ -399,13 +399,16 @@ static struct v4l2_subdev_ops hgo_ops = {
 
 static void hgo_configure(struct vsp1_entity *entity,
 			  struct vsp1_pipeline *pipe,
-			  struct vsp1_dl_list *dl)
+			  struct vsp1_dl_list *dl, bool full)
 {
 	struct vsp1_hgo *hgo = to_hgo(&entity->subdev);
 	struct v4l2_rect *compose;
 	struct v4l2_rect *crop;
 	unsigned int hratio;
 	unsigned int vratio;
+
+	if (!full)
+		return;
 
 	crop = vsp1_entity_get_pad_selection(entity, entity->config,
 					     HGO_PAD_SINK, V4L2_SEL_TGT_CROP);
