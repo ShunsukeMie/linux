@@ -165,7 +165,7 @@ static const struct v4l2_subdev_pad_ops vsp1_wpf_pad_ops = {
 	.s_stream = wpf_s_stream,
 };
 
-static struct v4l2_subdev_ops wpf_ops = {
+static const struct v4l2_subdev_ops wpf_ops = {
 	.pad    = &vsp1_wpf_pad_ops,
 };
 

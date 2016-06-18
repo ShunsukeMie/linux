@@ -48,7 +48,7 @@ static const struct v4l2_subdev_pad_ops vsp1_rpf_pad_ops = {
 	.set_selection = vsp1_rwpf_set_selection,
 };
 
-static struct v4l2_subdev_ops rpf_ops = {
+static const struct v4l2_subdev_ops rpf_ops = {
 	.pad    = &vsp1_rpf_pad_ops,
 };
 
