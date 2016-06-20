@@ -111,8 +111,11 @@ static void wpf_configure(struct vsp1_entity *entity,
 	u32 outfmt = 0;
 	u32 srcrpf = 0;
 
-	if (!full)
+	if (!full) {
+		vsp1_wpf_write(wpf, dl, VI6_WPF_OUTFMT, wpf->outfmt |
+			       (wpf->alpha << VI6_WPF_OUTFMT_PDV_SHIFT));
 		return;
+	}
 
 	/* Cropping */
 	crop = vsp1_rwpf_get_crop(wpf, wpf->entity.config);
@@ -158,8 +161,7 @@ static void wpf_configure(struct vsp1_entity *entity,
 	if (sink_format->code != source_format->code)
 		outfmt |= VI6_WPF_OUTFMT_CSC;
 
-	outfmt |= wpf->alpha << VI6_WPF_OUTFMT_PDV_SHIFT;
-	vsp1_wpf_write(wpf, dl, VI6_WPF_OUTFMT, outfmt);
+	wpf->outfmt = outfmt;
 
 	vsp1_dl_list_write(dl, VI6_DPR_WPF_FPORCH(wpf->entity.index),
 			   VI6_DPR_WPF_FPORCH_FP_WPFN);
@@ -245,6 +247,8 @@ struct vsp1_rwpf *vsp1_wpf_create(struct vsp1_device *vsp1, unsigned int index)
 			index);
 		goto error;
 	}
+
+	v4l2_ctrl_handler_setup(&wpf->ctrls);
 
 	return wpf;
 
