@@ -1035,7 +1035,7 @@ static int rvin_start_streaming(struct vb2_queue *vq, unsigned int count)
 	int ret;
 
 	sd = vin_to_source(vin);
-	v4l2_subdev_call(sd, video, s_stream, 1);
+	v4l2_subdev_call(sd, pad, s_stream, 0, 1);
 
 	spin_lock_irqsave(&vin->qlock, flags);
 
@@ -1060,7 +1060,7 @@ out:
 	/* Return all buffers if something went wrong */
 	if (ret) {
 		return_all_buffers(vin, VB2_BUF_STATE_QUEUED);
-		v4l2_subdev_call(sd, video, s_stream, 0);
+		v4l2_subdev_call(sd, pad, s_stream, 0, 0);
 	}
 
 	spin_unlock_irqrestore(&vin->qlock, flags);
@@ -1111,7 +1111,7 @@ static void rvin_stop_streaming(struct vb2_queue *vq)
 	spin_unlock_irqrestore(&vin->qlock, flags);
 
 	sd = vin_to_source(vin);
-	v4l2_subdev_call(sd, video, s_stream, 0);
+	v4l2_subdev_call(sd, pad, s_stream, 0, 0);
 
 	/* disable interrupts */
 	rvin_disable_interrupts(vin);

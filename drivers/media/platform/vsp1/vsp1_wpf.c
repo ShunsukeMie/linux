@@ -40,7 +40,8 @@ static inline void vsp1_wpf_write(struct vsp1_rwpf *wpf,
  * V4L2 Subdevice Core Operations
  */
 
-static int wpf_s_stream(struct v4l2_subdev *subdev, int enable)
+static int wpf_s_stream(struct v4l2_subdev *subdev, unsigned int pad,
+			int enable)
 {
 	struct vsp1_rwpf *wpf = to_rwpf(subdev);
 	struct vsp1_device *vsp1 = wpf->entity.vsp1;
@@ -70,14 +71,10 @@ static const struct v4l2_subdev_pad_ops vsp1_wpf_pad_ops = {
 	.set_fmt = vsp1_rwpf_set_format,
 	.get_selection = vsp1_rwpf_get_selection,
 	.set_selection = vsp1_rwpf_set_selection,
-};
-
-static struct v4l2_subdev_video_ops wpf_video_ops = {
 	.s_stream = wpf_s_stream,
 };
 
 static struct v4l2_subdev_ops wpf_ops = {
-	.video	= &wpf_video_ops,
 	.pad    = &vsp1_wpf_pad_ops,
 };
 
