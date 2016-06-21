@@ -62,13 +62,23 @@ static int wpf_s_stream(struct v4l2_subdev *subdev, int enable)
  * V4L2 Subdevice Operations
  */
 
+static const struct v4l2_subdev_pad_ops vsp1_wpf_pad_ops = {
+	.init_cfg = vsp1_entity_init_cfg,
+	.enum_mbus_code = vsp1_rwpf_enum_mbus_code,
+	.enum_frame_size = vsp1_rwpf_enum_frame_size,
+	.get_fmt = vsp1_subdev_get_pad_format,
+	.set_fmt = vsp1_rwpf_set_format,
+	.get_selection = vsp1_rwpf_get_selection,
+	.set_selection = vsp1_rwpf_set_selection,
+};
+
 static struct v4l2_subdev_video_ops wpf_video_ops = {
 	.s_stream = wpf_s_stream,
 };
 
 static struct v4l2_subdev_ops wpf_ops = {
 	.video	= &wpf_video_ops,
-	.pad    = &vsp1_rwpf_pad_ops,
+	.pad    = &vsp1_wpf_pad_ops,
 };
 
 /* -----------------------------------------------------------------------------
