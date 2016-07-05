@@ -1466,7 +1466,8 @@ static int tc358743_g_mbus_config(struct v4l2_subdev *sd,
 	return 0;
 }
 
-static int tc358743_s_stream(struct v4l2_subdev *sd, int enable)
+static int tc358743_s_stream(struct v4l2_subdev *sd, unsigned int pad,
+			     int enable)
 {
 	enable_stream(sd, enable);
 
@@ -1640,7 +1641,6 @@ static const struct v4l2_subdev_video_ops tc358743_video_ops = {
 	.g_dv_timings = tc358743_g_dv_timings,
 	.query_dv_timings = tc358743_query_dv_timings,
 	.g_mbus_config = tc358743_g_mbus_config,
-	.s_stream = tc358743_s_stream,
 };
 
 static const struct v4l2_subdev_pad_ops tc358743_pad_ops = {
@@ -1650,6 +1650,7 @@ static const struct v4l2_subdev_pad_ops tc358743_pad_ops = {
 	.set_edid = tc358743_s_edid,
 	.enum_dv_timings = tc358743_enum_dv_timings,
 	.dv_timings_cap = tc358743_dv_timings_cap,
+	.s_stream = tc358743_s_stream,
 };
 
 static const struct v4l2_subdev_ops tc358743_ops = {
