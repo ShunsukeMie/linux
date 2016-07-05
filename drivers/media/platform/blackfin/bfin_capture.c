@@ -272,7 +272,7 @@ static int bcap_start_streaming(struct vb2_queue *vq, unsigned int count)
 	int ret;
 
 	/* enable streamon on the sub device */
-	ret = v4l2_subdev_call(bcap_dev->sd, video, s_stream, 1);
+	ret = v4l2_subdev_call(bcap_dev->sd, pad, s_stream, 0, 1);
 	if (ret && (ret != -ENOIOCTLCMD)) {
 		v4l2_err(&bcap_dev->v4l2_dev, "stream on failed in subdev\n");
 		goto err;
@@ -363,7 +363,7 @@ static void bcap_stop_streaming(struct vb2_queue *vq)
 	wait_for_completion(&bcap_dev->comp);
 	ppi->ops->stop(ppi);
 	ppi->ops->detach_irq(ppi);
-	ret = v4l2_subdev_call(bcap_dev->sd, video, s_stream, 0);
+	ret = v4l2_subdev_call(bcap_dev->sd, pad, s_stream, 0, 0);
 	if (ret && (ret != -ENOIOCTLCMD))
 		v4l2_err(&bcap_dev->v4l2_dev,
 				"stream off failed in subdev\n");
