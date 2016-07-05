@@ -142,7 +142,7 @@ struct sh_mobile_sdhi {
 	void __iomem *scc_ctl;
 };
 
-#if IS_ENABLED(MMC_SDHI_SYSC_DMA)
+#if IS_ENABLED(CONFIG_MMC_SDHI_SYSC_DMA)
 int sdhi_sysc_dmac_init_dma(void);
 #else
 static int sdhi_sysc_dmac_init_dma(void)
