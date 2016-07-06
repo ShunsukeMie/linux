@@ -481,7 +481,8 @@ static int rvin_enum_input(struct file *file, void *priv,
 	struct rvin_input_item *item;
 	int ret;
 
-	if (i->index >= RVIN_INPUT_MAX)
+	if (i->index >= RVIN_INPUT_MAX ||
+	    vin->inputs[i->index].type == RVIN_INPUT_NONE)
 		return -EINVAL;
 
 	item = &vin->inputs[i->index];
@@ -526,7 +527,7 @@ static int rvin_s_input(struct file *file, void *priv, unsigned int i)
 	struct rvin_dev *vin = video_drvdata(file);
 	int ret;
 
-	if (i >= RVIN_INPUT_MAX)
+	if (i >= RVIN_INPUT_MAX || vin->inputs[i].type == RVIN_INPUT_NONE)
 		return -EINVAL;
 
 	rvin_detach_subdevices(vin);
