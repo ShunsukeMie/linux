@@ -97,24 +97,26 @@ static int __rvin_try_format_source(struct rvin_dev *vin,
 				    struct v4l2_pix_format *pix,
 				    struct rvin_source_fmt *source)
 {
-	struct v4l2_subdev *sd;
 	struct v4l2_subdev_pad_config *pad_cfg;
 	struct v4l2_subdev_format format = {
 		.which = which,
 	};
+	u32 code;
 	int ret;
 
-	sd = vin_to_source(vin);
+	ret = rvin_subdev_get_code(vin, &code);
+	if (ret)
+		return -EINVAL;
 
-	v4l2_fill_mbus_format(&format.format, pix, vin->digital.code);
+	v4l2_fill_mbus_format(&format.format, pix, code);
 
-	pad_cfg = v4l2_subdev_alloc_pad_config(sd);
+	pad_cfg = rvin_subdev_alloc_pad_config(vin);
 	if (pad_cfg == NULL)
 		return -ENOMEM;
 
 	format.pad = vin->src_pad_idx;
 
-	ret = v4l2_subdev_call(sd, pad, set_fmt, pad_cfg, &format);
+	ret = rvin_subdev_call(vin, pad, set_fmt, pad_cfg, &format);
 	if (ret < 0 && ret != -ENOIOCTLCMD)
 		goto done;
 
@@ -380,35 +382,46 @@ static int rvin_cropcap(struct file *file, void *priv,
 			struct v4l2_cropcap *crop)
 {
 	struct rvin_dev *vin = video_drvdata(file);
-	struct v4l2_subdev *sd = vin_to_source(vin);
 
 	if (crop->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
 		return -EINVAL;
 
-	return v4l2_subdev_call(sd, video, cropcap, crop);
+	return rvin_subdev_call(vin, video, cropcap, crop);
 }
 
 static int rvin_enum_input(struct file *file, void *priv,
 			   struct v4l2_input *i)
 {
 	struct rvin_dev *vin = video_drvdata(file);
-	struct v4l2_subdev *sd = vin_to_source(vin);
+	struct v4l2_dv_timings_cap cap;
 	int ret;
 
 	if (i->index != 0)
 		return -EINVAL;
 
-	ret = v4l2_subdev_call(sd, video, g_input_status, &i->status);
+
+	ret = rvin_subdev_call_input(vin, i->index, video,
+				     g_input_status, &i->status);
+
 	if (ret < 0 && ret != -ENOIOCTLCMD && ret != -ENODEV)
 		return ret;
 
 	i->type = V4L2_INPUT_TYPE_CAMERA;
-	i->std = vin->vdev.tvnorms;
+	strlcpy(i->name, "Digital", sizeof(i->name));
 
-	if (v4l2_subdev_has_op(sd, pad, dv_timings_cap))
+	/* Test if pad supports dv_timings_cap */
+	ret = rvin_subdev_call_input(vin, i->index, pad, dv_timings_cap, &cap);
+	if (ret) {
+		i->capabilities = V4L2_IN_CAP_STD;
+		ret = rvin_subdev_call_input(vin, i->index, video, g_tvnorms,
+					     &i->std);
+		if (ret < 0 && ret != -ENOIOCTLCMD && ret != -ENODEV)
+			return ret;
+
+	} else {
 		i->capabilities = V4L2_IN_CAP_DV_TIMINGS;
-
-	strlcpy(i->name, "Camera", sizeof(i->name));
+		i->std = 0;
+	}
 
 	return 0;
 }
@@ -429,26 +442,25 @@ static int rvin_s_input(struct file *file, void *priv, unsigned int i)
 static int rvin_querystd(struct file *file, void *priv, v4l2_std_id *a)
 {
 	struct rvin_dev *vin = video_drvdata(file);
-	struct v4l2_subdev *sd = vin_to_source(vin);
 
-	return v4l2_subdev_call(sd, video, querystd, a);
+	return rvin_subdev_call(vin, video, querystd, a);
 }
 
 static int rvin_s_std(struct file *file, void *priv, v4l2_std_id a)
 {
 	struct rvin_dev *vin = video_drvdata(file);
-	struct v4l2_subdev *sd = vin_to_source(vin);
 	struct v4l2_subdev_format fmt = {
 		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
 	};
 	struct v4l2_mbus_framefmt *mf = &fmt.format;
-	int ret = v4l2_subdev_call(sd, video, s_std, a);
+	int ret;
 
+	ret = rvin_subdev_call(vin, video, s_std, a);
 	if (ret < 0)
 		return ret;
 
 	/* Changing the standard will change the width/height */
-	ret = v4l2_subdev_call(sd, pad, get_fmt, NULL, &fmt);
+	ret = rvin_subdev_call(vin, pad, get_fmt, NULL, &fmt);
 	if (ret) {
 		vin_err(vin, "Failed to get initial format\n");
 		return ret;
@@ -471,9 +483,8 @@ static int rvin_s_std(struct file *file, void *priv, v4l2_std_id a)
 static int rvin_g_std(struct file *file, void *priv, v4l2_std_id *a)
 {
 	struct rvin_dev *vin = video_drvdata(file);
-	struct v4l2_subdev *sd = vin_to_source(vin);
 
-	return v4l2_subdev_call(sd, video, g_std, a);
+	return rvin_subdev_call(vin, video, g_std, a);
 }
 
 static int rvin_subscribe_event(struct v4l2_fh *fh,
@@ -490,15 +501,10 @@ static int rvin_enum_dv_timings(struct file *file, void *priv_fh,
 				struct v4l2_enum_dv_timings *timings)
 {
 	struct rvin_dev *vin = video_drvdata(file);
-	struct v4l2_subdev *sd = vin_to_source(vin);
-	int pad, ret;
+	int ret;
 
-	pad = timings->pad;
-	timings->pad = vin->src_pad_idx;
-
-	ret = v4l2_subdev_call(sd, pad, enum_dv_timings, timings);
-
-	timings->pad = pad;
+	ret = rvin_subdev_call_input(vin, timings->pad, pad, enum_dv_timings,
+				     timings);
 
 	return ret;
 }
@@ -507,10 +513,9 @@ static int rvin_s_dv_timings(struct file *file, void *priv_fh,
 			     struct v4l2_dv_timings *timings)
 {
 	struct rvin_dev *vin = video_drvdata(file);
-	struct v4l2_subdev *sd = vin_to_source(vin);
 	int ret;
 
-	ret = v4l2_subdev_call(sd, video, s_dv_timings, timings);
+	ret = rvin_subdev_call(vin, video, s_dv_timings, timings);
 	if (ret)
 		return ret;
 
@@ -526,33 +531,25 @@ static int rvin_g_dv_timings(struct file *file, void *priv_fh,
 			     struct v4l2_dv_timings *timings)
 {
 	struct rvin_dev *vin = video_drvdata(file);
-	struct v4l2_subdev *sd = vin_to_source(vin);
 
-	return v4l2_subdev_call(sd, video, g_dv_timings, timings);
+	return rvin_subdev_call(vin, video, g_dv_timings, timings);
 }
 
 static int rvin_query_dv_timings(struct file *file, void *priv_fh,
 				 struct v4l2_dv_timings *timings)
 {
 	struct rvin_dev *vin = video_drvdata(file);
-	struct v4l2_subdev *sd = vin_to_source(vin);
 
-	return v4l2_subdev_call(sd, video, query_dv_timings, timings);
+	return rvin_subdev_call(vin, video, query_dv_timings, timings);
 }
 
 static int rvin_dv_timings_cap(struct file *file, void *priv_fh,
 			       struct v4l2_dv_timings_cap *cap)
 {
 	struct rvin_dev *vin = video_drvdata(file);
-	struct v4l2_subdev *sd = vin_to_source(vin);
-	int pad, ret;
+	int ret;
 
-	pad = cap->pad;
-	cap->pad = vin->src_pad_idx;
-
-	ret = v4l2_subdev_call(sd, pad, dv_timings_cap, cap);
-
-	cap->pad = pad;
+	ret = rvin_subdev_call_input(vin, cap->pad, pad, dv_timings_cap, cap);
 
 	return ret;
 }
