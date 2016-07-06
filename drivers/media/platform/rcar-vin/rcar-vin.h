@@ -35,6 +35,21 @@ enum chip_id {
 	RCAR_GEN2,
 };
 
+#define RVIN_INPUT_MAX 1
+#define RVIN_INPUT_NAME_SIZE 32
+
+/**
+ * struct rvin_input_item - One possible input for the channel
+ * @name:       User-friendly name of the input
+ * @sink_idx:   Sink pad number from the subdevice associated with the input
+ * @source_idx: Source pad number from the subdevice associated with the input
+ */
+struct rvin_input_item {
+	char name[RVIN_INPUT_NAME_SIZE];
+	int sink_idx;
+	int source_idx;
+};
+
 /**
  * STOPPED  - No operation in progress
  * RUNNING  - Operation in progress have buffers
@@ -113,6 +128,9 @@ struct rvin_graph_entity {
  *
  * @crop:		active cropping
  * @compose:		active composing
+ *
+ * @current_input:	currently used input in @inputs
+ * @inputs:		list of valid inputs sources
  */
 struct rvin_dev {
 	struct device *dev;
@@ -142,9 +160,10 @@ struct rvin_dev {
 
 	struct v4l2_rect crop;
 	struct v4l2_rect compose;
-};
 
-#define vin_to_source(vin)		vin->digital.subdev
+	int current_input;
+	struct rvin_input_item inputs[RVIN_INPUT_MAX];
+};
 
 /* Debug */
 #define vin_dbg(d, fmt, arg...)		dev_dbg(d->dev, fmt, ##arg)
@@ -172,6 +191,10 @@ void rvin_crop_scale_comp(struct rvin_dev *vin);
 #define rvin_subdev_call_input(v, i, o, f, args...)			\
 	(v->digital.subdev ?						\
 	 v4l2_subdev_call(v->digital.subdev, o, f, ##args) : -ENODEV)
+
+int rvin_subdev_get(struct rvin_dev *vin);
+int rvin_subdev_put(struct rvin_dev *vin);
+int rvin_subdev_set_input(struct rvin_dev *vin, struct rvin_input_item *item);
 
 int rvin_subdev_get_code(struct rvin_dev *vin, u32 *code);
 int rvin_subdev_get_mbus_cfg(struct rvin_dev *vin,

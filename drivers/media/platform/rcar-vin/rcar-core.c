@@ -29,6 +29,45 @@
  * Subdevice group helpers
  */
 
+static unsigned int rvin_pad_idx(struct v4l2_subdev *sd, int direction)
+{
+	unsigned int pad_idx;
+
+	for (pad_idx = 0; pad_idx < sd->entity.num_pads; pad_idx++)
+		if (sd->entity.pads[pad_idx].flags == direction)
+			return pad_idx;
+
+	return 0;
+}
+
+int rvin_subdev_get(struct rvin_dev *vin)
+{
+	strncpy(vin->inputs[0].name, "Digital", RVIN_INPUT_NAME_SIZE);
+	vin->inputs[0].sink_idx =
+		rvin_pad_idx(vin->digital.subdev, MEDIA_PAD_FL_SINK);
+	vin->inputs[0].source_idx =
+		rvin_pad_idx(vin->digital.subdev, MEDIA_PAD_FL_SOURCE);
+
+	vin->current_input = 0;
+
+	return 0;
+}
+
+int rvin_subdev_put(struct rvin_dev *vin)
+{
+	vin->current_input = 0;
+
+	return 0;
+}
+
+int rvin_subdev_set_input(struct rvin_dev *vin, struct rvin_input_item *item)
+{
+	if (vin->digital.subdev)
+		return 0;
+
+	return -EBUSY;
+}
+
 int rvin_subdev_get_code(struct rvin_dev *vin, u32 *code)
 {
 	*code = vin->digital.code;
@@ -149,7 +188,7 @@ static int rvin_digital_notify_complete(struct v4l2_async_notifier *notifier)
 		return ret;
 	}
 
-	return rvin_v4l2_probe(vin);
+	return 0;
 }
 
 static void rvin_digital_notify_unbind(struct v4l2_async_notifier *notifier,
@@ -160,7 +199,6 @@ static void rvin_digital_notify_unbind(struct v4l2_async_notifier *notifier,
 
 	if (vin->digital.subdev == subdev) {
 		vin_dbg(vin, "unbind digital subdev %s\n", subdev->name);
-		rvin_v4l2_remove(vin);
 		vin->digital.subdev = NULL;
 		return;
 	}
@@ -307,23 +345,11 @@ static const struct of_device_id rvin_of_id_table[] = {
 };
 MODULE_DEVICE_TABLE(of, rvin_of_id_table);
 
-static int rcar_vin_probe(struct platform_device *pdev)
+static int rvin_probe_channel(struct platform_device *pdev,
+			      struct rvin_dev *vin)
 {
-	const struct of_device_id *match;
-	struct rvin_dev *vin;
 	struct resource *mem;
 	int irq, ret;
-
-	vin = devm_kzalloc(&pdev->dev, sizeof(*vin), GFP_KERNEL);
-	if (!vin)
-		return -ENOMEM;
-
-	match = of_match_device(of_match_ptr(rvin_of_id_table), &pdev->dev);
-	if (!match)
-		return -ENODEV;
-
-	vin->dev = &pdev->dev;
-	vin->chip = (enum chip_id)match->data;
 
 	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (mem == NULL)
@@ -341,18 +367,54 @@ static int rcar_vin_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
+	return 0;
+}
+
+static int rcar_vin_probe(struct platform_device *pdev)
+{
+	const struct of_device_id *match;
+	struct rvin_dev *vin;
+	int ret;
+
+	vin = devm_kzalloc(&pdev->dev, sizeof(*vin), GFP_KERNEL);
+	if (!vin)
+		return -ENOMEM;
+
+	match = of_match_device(of_match_ptr(rvin_of_id_table), &pdev->dev);
+	if (!match)
+		return -ENODEV;
+
+	vin->dev = &pdev->dev;
+	vin->chip = (enum chip_id)match->data;
+
+	/* Initialize the top-level structure */
+	ret = v4l2_device_register(vin->dev, &vin->v4l2_dev);
+	if (ret)
+		return ret;
+
+	ret = rvin_probe_channel(pdev, vin);
+	if (ret)
+		goto err_register;
+
 	ret = rvin_digital_graph_init(vin);
 	if (ret < 0)
-		goto error;
+		goto err_dma;
+
+	ret = rvin_v4l2_probe(vin);
+	if (ret)
+		goto err_dma;
+
+	platform_set_drvdata(pdev, vin);
 
 	pm_suspend_ignore_children(&pdev->dev, true);
 	pm_runtime_enable(&pdev->dev);
 
-	platform_set_drvdata(pdev, vin);
-
 	return 0;
-error:
+
+err_dma:
 	rvin_dma_remove(vin);
+err_register:
+	v4l2_device_unregister(&vin->v4l2_dev);
 
 	return ret;
 }
@@ -363,9 +425,13 @@ static int rcar_vin_remove(struct platform_device *pdev)
 
 	pm_runtime_disable(&pdev->dev);
 
+	rvin_v4l2_remove(vin);
+
 	v4l2_async_notifier_unregister(&vin->notifier);
 
 	rvin_dma_remove(vin);
+
+	v4l2_device_unregister(&vin->v4l2_dev);
 
 	return 0;
 }
