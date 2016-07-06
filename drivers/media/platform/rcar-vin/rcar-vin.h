@@ -30,9 +30,9 @@
 #define HW_BUFFER_MASK 0x7f
 
 enum chip_id {
-	RCAR_GEN2,
 	RCAR_H1,
 	RCAR_M1,
+	RCAR_GEN2,
 };
 
 /**
@@ -90,7 +90,7 @@ struct rvin_graph_entity {
  * @src_pad_idx:	source pad index for media controller drivers
  * @ctrl_handler:	V4L2 control handler
  * @notifier:		V4L2 asynchronous subdevs notifier
- * @entity:		entity in the DT for subdevice
+ * @digital:		entity in the DT for local digital subdevice
  *
  * @lock:		protects @queue
  * @queue:		vb2 buffers queue
@@ -121,7 +121,7 @@ struct rvin_dev {
 	int src_pad_idx;
 	struct v4l2_ctrl_handler ctrl_handler;
 	struct v4l2_async_notifier notifier;
-	struct rvin_graph_entity entity;
+	struct rvin_graph_entity digital;
 
 	struct mutex lock;
 	struct vb2_queue queue;
@@ -141,7 +141,7 @@ struct rvin_dev {
 	struct v4l2_rect compose;
 };
 
-#define vin_to_source(vin)		vin->entity.subdev
+#define vin_to_source(vin)		vin->digital.subdev
 
 /* Debug */
 #define vin_dbg(d, fmt, arg...)		dev_dbg(d->dev, fmt, ##arg)
