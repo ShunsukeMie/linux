@@ -165,4 +165,19 @@ void rvin_scale_try(struct rvin_dev *vin, struct v4l2_pix_format *pix,
 		    u32 width, u32 height);
 void rvin_crop_scale_comp(struct rvin_dev *vin);
 
+/* Subdevice group helpers */
+#define rvin_subdev_call(v, o, f, args...)				\
+	(v->digital.subdev ?						\
+	 v4l2_subdev_call(v->digital.subdev, o, f, ##args) : -ENODEV)
+#define rvin_subdev_call_input(v, i, o, f, args...)			\
+	(v->digital.subdev ?						\
+	 v4l2_subdev_call(v->digital.subdev, o, f, ##args) : -ENODEV)
+
+int rvin_subdev_get_code(struct rvin_dev *vin, u32 *code);
+int rvin_subdev_get_mbus_cfg(struct rvin_dev *vin,
+			     struct v4l2_mbus_config *mbus_cfg);
+
+int rvin_subdev_ctrl_add_handler(struct rvin_dev *vin);
+struct v4l2_subdev_pad_config *rvin_subdev_alloc_pad_config(struct rvin_dev
+							    *vin);
 #endif

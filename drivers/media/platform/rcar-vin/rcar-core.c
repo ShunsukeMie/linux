@@ -26,6 +26,43 @@
 #include "rcar-vin.h"
 
 /* -----------------------------------------------------------------------------
+ * Subdevice group helpers
+ */
+
+int rvin_subdev_get_code(struct rvin_dev *vin, u32 *code)
+{
+	*code = vin->digital.code;
+	return 0;
+}
+
+int rvin_subdev_get_mbus_cfg(struct rvin_dev *vin,
+			     struct v4l2_mbus_config *mbus_cfg)
+{
+	*mbus_cfg = vin->digital.mbus_cfg;
+	return 0;
+}
+
+struct v4l2_subdev_pad_config*
+rvin_subdev_alloc_pad_config(struct rvin_dev *vin)
+{
+	return v4l2_subdev_alloc_pad_config(vin->digital.subdev);
+}
+
+int rvin_subdev_ctrl_add_handler(struct rvin_dev *vin)
+{
+	int ret;
+
+	v4l2_ctrl_handler_free(&vin->ctrl_handler);
+
+	ret = v4l2_ctrl_handler_init(&vin->ctrl_handler, 16);
+	if (ret < 0)
+		return ret;
+
+	return v4l2_ctrl_add_handler(&vin->ctrl_handler,
+				     vin->digital.subdev->ctrl_handler, NULL);
+}
+
+/* -----------------------------------------------------------------------------
  * Async notifier
  */
 
