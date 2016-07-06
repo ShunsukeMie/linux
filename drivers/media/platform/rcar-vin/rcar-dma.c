@@ -1130,19 +1130,12 @@ static struct vb2_ops rvin_qops = {
 void rvin_dma_remove(struct rvin_dev *vin)
 {
 	mutex_destroy(&vin->lock);
-
-	v4l2_device_unregister(&vin->v4l2_dev);
 }
 
 int rvin_dma_probe(struct rvin_dev *vin, int irq)
 {
 	struct vb2_queue *q = &vin->queue;
 	int i, ret;
-
-	/* Initialize the top-level structure */
-	ret = v4l2_device_register(vin->dev, &vin->v4l2_dev);
-	if (ret)
-		return ret;
 
 	mutex_init(&vin->lock);
 	INIT_LIST_HEAD(&vin->buf_list);
