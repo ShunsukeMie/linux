@@ -37,6 +37,7 @@ static int rvin_mbus_supported(struct rvin_dev *vin)
 	struct v4l2_subdev_mbus_code_enum code = {
 		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
 	};
+	bool found;
 
 	sd = vin_to_source(vin);
 
@@ -45,8 +46,8 @@ static int rvin_mbus_supported(struct rvin_dev *vin)
 		code.index++;
 		switch (code.code) {
 		case MEDIA_BUS_FMT_YUYV8_1X16:
-		case MEDIA_BUS_FMT_YUYV8_2X8:
-		case MEDIA_BUS_FMT_YUYV10_2X10:
+		case MEDIA_BUS_FMT_UYVY8_2X8:
+		case MEDIA_BUS_FMT_UYVY10_2X10:
 		case MEDIA_BUS_FMT_RGB888_1X24:
 			vin->source.code = code.code;
 			vin_dbg(vin, "Found supported media bus format: %d\n",
@@ -54,6 +55,40 @@ static int rvin_mbus_supported(struct rvin_dev *vin)
 			return true;
 		default:
 			break;
+		}
+	}
+
+	/*
+	 * Older versions where looking for the wrong media bus format.
+	 * It where looking for a YUVY format but then treated it as a
+	 * UYVY format. This was not noticed since atlest one subdevice
+	 * used for testing (adv7180) reported a YUVY media bus format
+	 * but provided UYVY data. There might be other unknown subdevices
+	 * which also do this, to not break compatibility try to use them
+	 * in legacy mode.
+	 */
+	found = false;
+	code.index = 0;
+	while (!v4l2_subdev_call(sd, pad, enum_mbus_code, NULL, &code)) {
+		code.index++;
+		switch (code.code) {
+		case MEDIA_BUS_FMT_YUYV8_2X8:
+			vin->source.code = MEDIA_BUS_FMT_UYVY8_2X8;
+			found = true;
+			break;
+		case MEDIA_BUS_FMT_YUYV10_2X10:
+			vin->source.code = MEDIA_BUS_FMT_UYVY10_2X10;
+			found = true;
+			break;
+		default:
+			break;
+		}
+
+		if (found) {
+			vin_err(vin,
+				"media bus %d not supported, trying legacy mode %d\n",
+				code.code, vin->source.code);
+			return true;
 		}
 	}
 
