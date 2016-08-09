@@ -49,6 +49,7 @@
 #include <linux/uaccess.h>	/* For copy_to_user/put_user/... */
 
 #include "watchdog_core.h"
+#include "watchdog_pretimeout.h"
 
 /*
  * struct watchdog_core_data - watchdog core internal data
@@ -62,6 +63,7 @@ struct watchdog_core_data {
 	struct kref kref;
 	struct cdev cdev;
 	struct watchdog_device *wdd;
+	struct device *dev;
 	struct mutex lock;
 	unsigned long last_keepalive;
 	unsigned long last_hw_keepalive;
@@ -70,6 +72,7 @@ struct watchdog_core_data {
 #define _WDOG_DEV_OPEN		0	/* Opened ? */
 #define _WDOG_ALLOW_RELEASE	1	/* Did we receive the magic char ? */
 #define _WDOG_KEEPALIVE		2	/* Did we receive a keepalive ? */
+	struct work_struct uevent_work;
 };
 
 /* the dev_t structure to store the dynamically allocated watchdog devices */
@@ -335,12 +338,41 @@ static int watchdog_set_timeout(struct watchdog_device *wdd,
 	if (watchdog_timeout_invalid(wdd, timeout))
 		return -EINVAL;
 
-	if (wdd->ops->set_timeout)
+	if (wdd->ops->set_timeout) {
 		err = wdd->ops->set_timeout(wdd, timeout);
-	else
+	} else {
 		wdd->timeout = timeout;
+		/* Disable pretimeout if it doesn't fit the new timeout */
+		if (wdd->pretimeout > wdd->timeout)
+			wdd->pretimeout = 0;
+	}
 
 	watchdog_update_worker(wdd);
+
+	return err;
+}
+
+/*
+ *	watchdog_set_pretimeout: set the watchdog timer pretimeout
+ *	@wdd: the watchdog device to set the timeout for
+ *	@timeout: pretimeout to set in seconds
+ */
+
+static int watchdog_set_pretimeout(struct watchdog_device *wdd,
+				   unsigned int timeout)
+{
+	int err = 0;
+
+	if (!(wdd->info->options & WDIOF_PRETIMEOUT))
+		return -EOPNOTSUPP;
+
+	if (watchdog_pretimeout_invalid(wdd, timeout))
+		return -EINVAL;
+
+	if (wdd->ops->set_pretimeout)
+		err = wdd->ops->set_pretimeout(wdd, timeout);
+	else
+		wdd->pretimeout = timeout;
 
 	return err;
 }
@@ -429,6 +461,15 @@ static ssize_t timeout_show(struct device *dev, struct device_attribute *attr,
 }
 static DEVICE_ATTR_RO(timeout);
 
+static ssize_t pretimeout_show(struct device *dev, struct device_attribute *attr,
+				char *buf)
+{
+	struct watchdog_device *wdd = dev_get_drvdata(dev);
+
+	return sprintf(buf, "%u\n", wdd->pretimeout);
+}
+static DEVICE_ATTR_RO(pretimeout);
+
 static ssize_t identity_show(struct device *dev, struct device_attribute *attr,
 				char *buf)
 {
@@ -466,6 +507,7 @@ static struct attribute *wdt_attrs[] = {
 	&dev_attr_state.attr,
 	&dev_attr_identity.attr,
 	&dev_attr_timeout.attr,
+	&dev_attr_pretimeout.attr,
 	&dev_attr_timeleft.attr,
 	&dev_attr_bootstatus.attr,
 	&dev_attr_status.attr,
@@ -646,6 +688,16 @@ static long watchdog_ioctl(struct file *file, unsigned int cmd,
 			break;
 		err = put_user(val, p);
 		break;
+	case WDIOC_SETPRETIMEOUT:
+		if (get_user(val, p)) {
+			err = -EFAULT;
+			break;
+		}
+		err = watchdog_set_pretimeout(wdd, val);
+		break;
+	case WDIOC_GETPRETIMEOUT:
+		err = put_user(wdd->pretimeout, p);
+		break;
 	default:
 		err = -ENOTTY;
 		break;
@@ -796,6 +848,21 @@ static struct miscdevice watchdog_miscdev = {
 	.fops		= &watchdog_fops,
 };
 
+void watchdog_dev_uevent(struct watchdog_device *wdd)
+{
+	queue_work(watchdog_wq, &wdd->wd_data->uevent_work);
+}
+
+static void watchdog_dev_uevent_work(struct work_struct *work)
+{
+	struct watchdog_core_data *wd_data = container_of(work, struct watchdog_core_data,
+							  uevent_work);
+
+	mutex_lock(&wd_data->lock);
+	kobject_uevent(&wd_data->dev->kobj, KOBJ_CHANGE);
+	mutex_unlock(&wd_data->lock);
+}
+
 /*
  *	watchdog_cdev_register: register watchdog character device
  *	@wdd: watchdog device
@@ -824,6 +891,7 @@ static int watchdog_cdev_register(struct watchdog_device *wdd, dev_t devno)
 		return -ENODEV;
 
 	INIT_DELAYED_WORK(&wd_data->work, watchdog_ping_work);
+	INIT_WORK(&wd_data->uevent_work, watchdog_dev_uevent_work);
 
 	if (wdd->id == 0) {
 		old_wd_data = wd_data;
@@ -937,6 +1005,14 @@ int watchdog_dev_register(struct watchdog_device *wdd)
 		return PTR_ERR(dev);
 	}
 
+	ret = watchdog_register_pretimeout(wdd, dev);
+	if (ret) {
+		device_destroy(&watchdog_class, devno);
+		watchdog_cdev_unregister(wdd);
+	}
+
+	wdd->wd_data->dev = dev;
+
 	return ret;
 }
 
@@ -950,6 +1026,7 @@ int watchdog_dev_register(struct watchdog_device *wdd)
 
 void watchdog_dev_unregister(struct watchdog_device *wdd)
 {
+	watchdog_unregister_pretimeout(wdd);
 	device_destroy(&watchdog_class, wdd->wd_data->cdev.dev);
 	watchdog_cdev_unregister(wdd);
 }
