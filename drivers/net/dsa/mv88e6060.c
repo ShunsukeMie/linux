@@ -69,6 +69,11 @@ static const char *mv88e6060_get_name(struct mii_bus *bus, int sw_addr)
 	return NULL;
 }
 
+static enum dsa_tag_protocol mv88e6060_get_tag_protocol(struct dsa_switch *ds)
+{
+	return DSA_TAG_PROTO_TRAILER;
+}
+
 static const char *mv88e6060_drv_probe(struct device *dsa_dev,
 				       struct device *host_dev, int sw_addr,
 				       void **_priv)
@@ -247,8 +252,8 @@ mv88e6060_phy_write(struct dsa_switch *ds, int port, int regnum, u16 val)
 	return reg_write(ds, addr, regnum, val);
 }
 
-static struct dsa_switch_driver mv88e6060_switch_driver = {
-	.tag_protocol	= DSA_TAG_PROTO_TRAILER,
+static struct dsa_switch_ops mv88e6060_switch_ops = {
+	.get_tag_protocol = mv88e6060_get_tag_protocol,
 	.probe		= mv88e6060_drv_probe,
 	.setup		= mv88e6060_setup,
 	.set_addr	= mv88e6060_set_addr,
@@ -258,14 +263,14 @@ static struct dsa_switch_driver mv88e6060_switch_driver = {
 
 static int __init mv88e6060_init(void)
 {
-	register_switch_driver(&mv88e6060_switch_driver);
+	register_switch_driver(&mv88e6060_switch_ops);
 	return 0;
 }
 module_init(mv88e6060_init);
 
 static void __exit mv88e6060_cleanup(void)
 {
-	unregister_switch_driver(&mv88e6060_switch_driver);
+	unregister_switch_driver(&mv88e6060_switch_ops);
 }
 module_exit(mv88e6060_cleanup);
 

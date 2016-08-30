@@ -26,7 +26,7 @@
 #include "qed_hsi.h"
 
 extern const struct qed_common_ops qed_common_ops_pass;
-#define DRV_MODULE_VERSION "8.7.1.20"
+#define DRV_MODULE_VERSION "8.10.9.20"
 
 #define MAX_HWFNS_PER_DEVICE    (4)
 #define NAME_SIZE 16
@@ -42,6 +42,8 @@ enum qed_coalescing_mode {
 
 struct qed_eth_cb_ops;
 struct qed_dev_info;
+union qed_mcp_protocol_stats;
+enum qed_mcp_protocol_type;
 
 /* helpers */
 static inline u32 qed_db_addr(u32 cid, u32 DEMS)
@@ -561,9 +563,18 @@ struct qed_dev {
 static inline u8 qed_concrete_to_sw_fid(struct qed_dev *cdev,
 					u32 concrete_fid)
 {
+	u8 vfid = GET_FIELD(concrete_fid, PXP_CONCRETE_FID_VFID);
 	u8 pfid = GET_FIELD(concrete_fid, PXP_CONCRETE_FID_PFID);
+	u8 vf_valid = GET_FIELD(concrete_fid,
+				PXP_CONCRETE_FID_VFVALID);
+	u8 sw_fid;
 
-	return pfid;
+	if (vf_valid)
+		sw_fid = vfid + MAX_NUM_PFS;
+	else
+		sw_fid = pfid;
+
+	return sw_fid;
 }
 
 #define PURE_LB_TC 8
@@ -597,7 +608,9 @@ void qed_link_update(struct qed_hwfn *hwfn);
 u32 qed_unzip_data(struct qed_hwfn *p_hwfn,
 		   u32 input_len, u8 *input_buf,
 		   u32 max_size, u8 *unzip_buf);
-
+void qed_get_protocol_stats(struct qed_dev *cdev,
+			    enum qed_mcp_protocol_type type,
+			    union qed_mcp_protocol_stats *stats);
 int qed_slowpath_irq_req(struct qed_hwfn *hwfn);
 
 #endif /* _QED_H */
