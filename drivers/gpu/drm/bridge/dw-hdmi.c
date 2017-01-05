@@ -1028,6 +1028,10 @@ static int hdmi_phy_configure(struct dw_hdmi *hdmi)
 
 	dw_hdmi_phy_power_off(hdmi);
 
+	/* Leave low power consumption mode by asserting SVSRET. */
+	if (hdmi->phy->has_svsret)
+		dw_hdmi_phy_enable_svsret(hdmi, 1);
+
 	/* PHY reset. The reset signal is active high on Gen2 PHYs. */
 	hdmi_writeb(hdmi, HDMI_MC_PHYRSTZ_PHYRSTZ, HDMI_MC_PHYRSTZ);
 	hdmi_writeb(hdmi, 0, HDMI_MC_PHYRSTZ);
@@ -1052,11 +1056,7 @@ static int hdmi_phy_configure(struct dw_hdmi *hdmi)
 
 	dw_hdmi_phy_power_on(hdmi);
 
-	/* The DWC MHL and HDMI 2.0 PHYs need the SVSRET signal to be set. */
-	if (hdmi->phy->has_svsret)
-		dw_hdmi_phy_enable_svsret(hdmi, 1);
-
-	/*Wait for PHY PLL lock */
+	/* Wait for PHY PLL lock */
 	msec = 5;
 	do {
 		val = hdmi_readb(hdmi, HDMI_PHY_STAT0) & HDMI_PHY_TX_PHY_LOCK;
