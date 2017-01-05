@@ -1000,21 +1000,24 @@ static int hdmi_phy_configure_dwc_hdmi_3d_tx(struct dw_hdmi *hdmi,
 	    phy_config->mpixelclock == ~0UL)
 		return -EINVAL;
 
-	dw_hdmi_phy_i2c_write(hdmi, mpll_config->res[0].cpce, 0x06);
-	dw_hdmi_phy_i2c_write(hdmi, mpll_config->res[0].gmp, 0x15);
+	dw_hdmi_phy_i2c_write(hdmi, mpll_config->res[0].cpce,
+			      HDMI_3D_TX_PHY_CPCE_CTRL);
+	dw_hdmi_phy_i2c_write(hdmi, mpll_config->res[0].gmp,
+			      HDMI_3D_TX_PHY_MSM_CTRL);
+	dw_hdmi_phy_i2c_write(hdmi, curr_ctrl->curr[0],
+			      HDMI_3D_TX_PHY_CURRCTRL);
 
-	/* CURRCTRL */
-	dw_hdmi_phy_i2c_write(hdmi, curr_ctrl->curr[0], 0x10);
+	dw_hdmi_phy_i2c_write(hdmi, 0x0000, HDMI_3D_TX_PHY_PLLPHBYCTRL);
+	dw_hdmi_phy_i2c_write(hdmi, 0x0006, HDMI_3D_TX_PHY_MSM_CTRL);
 
-	dw_hdmi_phy_i2c_write(hdmi, 0x0000, 0x13); /* PLLPHBYCTRL */
-	dw_hdmi_phy_i2c_write(hdmi, 0x0006, 0x17);
+	dw_hdmi_phy_i2c_write(hdmi, phy_config->term, HDMI_3D_TX_PHY_TXTERM);
+	dw_hdmi_phy_i2c_write(hdmi, phy_config->sym_ctr,
+			      HDMI_3D_TX_PHY_CKSYMTXCTRL);
+	dw_hdmi_phy_i2c_write(hdmi, phy_config->vlev_ctr,
+			      HDMI_3D_TX_PHY_VLEVCTRL);
 
-	dw_hdmi_phy_i2c_write(hdmi, phy_config->term, 0x19); /* TXTERM */
-	dw_hdmi_phy_i2c_write(hdmi, phy_config->sym_ctr, 0x09); /* CKSYMTXCTRL */
-	dw_hdmi_phy_i2c_write(hdmi, phy_config->vlev_ctr, 0x0E); /* VLEVCTRL */
-
-	/* REMOVE CLK TERM */
-	dw_hdmi_phy_i2c_write(hdmi, 0x8000, 0x05); /* CKCALCTRL */
+	/* Override and disable clock termination. */
+	dw_hdmi_phy_i2c_write(hdmi, 0x8000, HDMI_3D_TX_PHY_CKCALCTRL);
 
 	return 0;
 }
