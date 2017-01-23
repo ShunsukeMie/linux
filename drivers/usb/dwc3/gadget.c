@@ -1963,14 +1963,49 @@ static int dwc3_gadget_init_hw_endpoints(struct dwc3 *dwc,
 
 		if (epnum == 0 || epnum == 1) {
 			usb_ep_set_maxpacket_limit(&dep->endpoint, 512);
+			dep->endpoint.caps.type_control = true;
 			dep->endpoint.maxburst = 1;
 			dep->endpoint.ops = &dwc3_gadget_ep0_ops;
 			if (!epnum)
 				dwc->gadget.ep0 = &dep->endpoint;
+		} else if (direction) {
+			int mdwidth;
+			int size;
+			int num;
+
+			mdwidth = DWC3_MDWIDTH(dwc->hwparams.hwparams0);
+			/* MDWIDTH is represented in bits, we need it in bytes */
+			mdwidth /= 8;
+
+			size = dwc3_readl(dwc->regs, DWC3_GTXFIFOSIZ(i));
+			size = DWC3_GTXFIFOSIZ_TXFDEF(size);
+
+			/* FIFO Depth is in MDWDITH bytes. Multiply */
+			size *= mdwidth;
+
+			/* Every packet has MDWIDTH bytes of overhead */
+			size -= mdwidth;
+			num = size / 1024;
+			if (num == 0)
+				num = 1;
+
+			size -= mdwidth * num;
+			size /= num;
+
+			usb_ep_set_maxpacket_limit(&dep->endpoint, size);
+
+			dep->endpoint.caps.type_iso = true;
+			dep->endpoint.caps.type_int = true;
+
+			if (size == 1024)
+				dep->endpoint.caps.type_bulk = true;
 		} else {
 			int		ret;
 
 			usb_ep_set_maxpacket_limit(&dep->endpoint, 1024);
+			dep->endpoint.caps.type_iso = true;
+			dep->endpoint.caps.type_bulk = true;
+			dep->endpoint.caps.type_int = true;
 			dep->endpoint.max_streams = 15;
 			dep->endpoint.ops = &dwc3_gadget_ep_ops;
 			list_add_tail(&dep->endpoint.ep_list,
@@ -1979,14 +2014,6 @@ static int dwc3_gadget_init_hw_endpoints(struct dwc3 *dwc,
 			ret = dwc3_alloc_trb_pool(dep);
 			if (ret)
 				return ret;
-		}
-
-		if (epnum == 0 || epnum == 1) {
-			dep->endpoint.caps.type_control = true;
-		} else {
-			dep->endpoint.caps.type_iso = true;
-			dep->endpoint.caps.type_bulk = true;
-			dep->endpoint.caps.type_int = true;
 		}
 
 		dep->endpoint.caps.dir_in = !!direction;
