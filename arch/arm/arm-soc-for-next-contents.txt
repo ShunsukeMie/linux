@@ -245,6 +245,12 @@ arm/late
 		ARM: dts: mmp2: specify reg-shift for the UARTs
 		ARM: dts: mmp2: rename the USB PHY node
 		ARM: dts: mmp2: add OLPC XO 1.75 machine
+	samsung/soc-2
+		git://git.kernel.org/pub/scm/linux/kernel/git/krzk/linux tags/samsung-soc-5.4-3
+		contains samsung/soc
+	patch
+		ARM: dts: aspeed: Add AST2600 and EVB
+		ARM: dts: aspeed: Add AST2600 pinmux nodes
 
 arm/fixes
 	<no branch> (45f5d5a9e34d3fe4140a9a3b5f7ebe86c252440a)
