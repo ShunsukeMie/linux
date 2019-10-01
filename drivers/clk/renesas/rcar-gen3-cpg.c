@@ -122,10 +122,10 @@ static long cpg_z_clk_round_rate(struct clk_hw *hw, unsigned long rate,
 	unsigned int mult;
 
 	prate = *parent_rate / zclk->fixed_div;
-	mult = div_u64(rate * 32ULL, prate);
+	mult = div64_ul(rate * 32ULL, prate);
 	mult = clamp(mult, 1U, 32U);
 
-	return (u64)prate * mult / 32;
+	return div_u64((u64)prate * mult, 32);
 }
 
 static int cpg_z_clk_set_rate(struct clk_hw *hw, unsigned long rate,
@@ -309,44 +309,39 @@ static unsigned long cpg_sd_clock_recalc_rate(struct clk_hw *hw,
 				 clock->div_table[clock->cur_div_idx].div);
 }
 
-static unsigned int cpg_sd_clock_calc_div(struct sd_clock *clock,
-					  unsigned long rate,
-					  unsigned long parent_rate)
+static long cpg_sd_clock_round_rate(struct clk_hw *hw, unsigned long rate,
+				      unsigned long *parent_rate)
 {
-	unsigned long calc_rate, diff, diff_min = ULONG_MAX;
-	unsigned int i, best_div = 0;
+	unsigned long best_rate = ULONG_MAX, diff_min = ULONG_MAX;
+	struct sd_clock *clock = to_sd_clock(hw);
+	unsigned long calc_rate, diff;
+	unsigned int i;
 
 	for (i = 0; i < clock->div_num; i++) {
-		calc_rate = DIV_ROUND_CLOSEST(parent_rate,
+		calc_rate = DIV_ROUND_CLOSEST(*parent_rate,
 					      clock->div_table[i].div);
 		diff = calc_rate > rate ? calc_rate - rate : rate - calc_rate;
 		if (diff < diff_min) {
-			best_div = clock->div_table[i].div;
+			best_rate = calc_rate;
 			diff_min = diff;
 		}
 	}
 
-	return best_div;
-}
+	if (best_rate > LONG_MAX)
+		return -EINVAL;
 
-static long cpg_sd_clock_round_rate(struct clk_hw *hw, unsigned long rate,
-				      unsigned long *parent_rate)
-{
-	struct sd_clock *clock = to_sd_clock(hw);
-	unsigned int div = cpg_sd_clock_calc_div(clock, rate, *parent_rate);
-
-	return DIV_ROUND_CLOSEST(*parent_rate, div);
+	return best_rate;
 }
 
 static int cpg_sd_clock_set_rate(struct clk_hw *hw, unsigned long rate,
-				   unsigned long parent_rate)
+				 unsigned long parent_rate)
 {
 	struct sd_clock *clock = to_sd_clock(hw);
-	unsigned int div = cpg_sd_clock_calc_div(clock, rate, parent_rate);
 	unsigned int i;
 
 	for (i = 0; i < clock->div_num; i++)
-		if (div == clock->div_table[i].div)
+		if (rate == DIV_ROUND_CLOSEST(parent_rate,
+					      clock->div_table[i].div))
 			break;
 
 	if (i >= clock->div_num)
