@@ -33,6 +33,7 @@ Documentation/dev-tools/testing-overview.rst
    kselftest
    kunit/index
    ktap
+   gpio-sloppy-logic-analyzer
 
 
 .. only::  subproject and html
