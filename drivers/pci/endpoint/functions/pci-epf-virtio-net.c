@@ -52,7 +52,10 @@ static int epf_virtnet_setup_bar(struct pci_epf *epf)
 		cfg_bar_size = epc_features->bar_fixed_size[cfg_bar];
 	}
 
-	cfg_base = pci_epf_alloc_space(epf, cfg_bar_size, cfg_bar, epc_features->align, PRIMARY_INTERFACE);
+	virt_cfg_bar->flags |= PCI_BASE_ADDRESS_MEM_TYPE_64;
+
+	cfg_base = pci_epf_alloc_space(epf, cfg_bar_size, cfg_bar,
+				       epc_features->align, PRIMARY_INTERFACE);
 	if (!cfg_base) {
 		pr_err("Failed to allocate PCI BAR memory\n");
 		return -ENOMEM;
@@ -85,37 +88,6 @@ static int epf_virtnet_load_epc_features(struct pci_epf *epf)
 	return 0;
 }
 
-static int epf_virtnet_setup_interrupt(struct pci_epf *epf)
-{
-	int ret;
-// 	const enum pci_barno cfg_bar = BAR_0;
-	struct epf_virtnet *epf_virtnet = epf_get_drvdata(epf);
-	const struct pci_epc_features *epc_features = epf_virtnet->epc_features;
-	struct pci_epc *epc = epf->epc;
-
-	if (epc_features->msi_capable) {
-		ret = pci_epc_set_msi(epc, epf->func_no, epf->vfunc_no, 1);
-		if (ret) {
-			pr_err("MSI configuration failed\n");
-			return ret;
-		}
-	}
-
-// TODO msix support.
-// 	if (epc_features->msix_capable) {
-// 		ret = pci_epc_set_msix(epc, epf->func_no, epf->vfunc_no,
-// 				       epf->msix_interrupts,
-// 				       cfg_bar,
-// 				       epf_test->msix_table_offset);
-// 		if (ret) {
-// 			pr_err("MSI-X configuration failed\n");
-// 			return ret;
-// 		}
-// 	}
-
-	return 0;
-}
-
 #define EPF_VIRTNET_Q_SIZE 32
 
 static void epf_virtnet_init_config(struct pci_epf *epf)
@@ -126,7 +98,8 @@ static void epf_virtnet_init_config(struct pci_epf *epf)
 
 	//TODO consider the device feature
 	//TODO care about endianness (must be guest(root complex) endianness)
-	common_cfg->dev_feat = BIT(VIRTIO_NET_F_MAC) | BIT(VIRTIO_NET_F_GUEST_CSUM);
+	common_cfg->dev_feat =
+		BIT(VIRTIO_NET_F_MAC) | BIT(VIRTIO_NET_F_GUEST_CSUM);
 	common_cfg->q_select = 0;
 	common_cfg->q_size = EPF_VIRTNET_Q_SIZE;
 	common_cfg->q_notify = 2;
@@ -134,7 +107,7 @@ static void epf_virtnet_init_config(struct pci_epf *epf)
 
 	net_cfg->max_virtqueue_pairs = 1;
 	// TODO fix tempolary mac address
-	u8 mac[ETH_ALEN] = {0, 0, 0, 0, 0, 0};
+	u8 mac[ETH_ALEN] = { 0, 0, 0, 0, 0, 0 };
 	memcpy(net_cfg->mac, mac, ETH_ALEN);
 }
 
@@ -149,7 +122,8 @@ static int epf_virtnet_bind(struct pci_epf *epf)
 		return ret;
 	}
 
-	ret = pci_epc_write_header(epc, epf->func_no, epf->vfunc_no, epf->header);
+	ret = pci_epc_write_header(epc, epf->func_no, epf->vfunc_no,
+				   epf->header);
 	if (ret) {
 		pr_err("Configuration header write failed\n");
 		return ret;
@@ -158,12 +132,6 @@ static int epf_virtnet_bind(struct pci_epf *epf)
 	ret = epf_virtnet_setup_bar(epf);
 	if (ret) {
 		pr_err("PCI bar set failed\n");
-		return ret;
-	}
-
-	ret = epf_virtnet_setup_interrupt(epf);
-	if (ret) {
-		pr_err("Interrupt setup failed\n");
 		return ret;
 	}
 
@@ -185,6 +153,7 @@ static struct pci_epf_header epf_virtnet_header = {
 	.vendorid = PCI_VENDOR_ID_REDHAT_QUMRANET,
 	.deviceid = VIRTIO_TRANS_ID_NET,
 	.subsys_id = VIRTIO_ID_NET,
+	.subsys_vendor_id = PCI_VENDOR_ID_REDHAT_QUMRANET,
 	.revid = 0,
  	.baseclass_code = PCI_BASE_CLASS_NETWORK, //TODO consider
 // 	.subclass_code = , //TODO add subclasse? like 00 ethernet
