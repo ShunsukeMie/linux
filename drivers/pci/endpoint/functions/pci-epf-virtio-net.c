@@ -7,23 +7,167 @@
 #include <linux/pci-epf.h>
 #include <linux/pci-epc.h>
 #include <linux/virtio_ids.h>
+#include <linux/virtio_net.h>
+
+//TODO care for native endianess
+struct virtio_common_config {
+	uint32_t dev_feat;
+	uint32_t drv_feat;
+	uint32_t q_addr;
+	uint16_t q_size;
+	uint16_t q_select;
+	uint16_t q_notify;
+	uint8_t dev_status;
+	uint8_t isr_status;
+} __packed;
 
 struct epf_virtnet {
 	struct pci_epf *epf;
+	struct {
+		struct virtio_common_config common_cfg;
+		struct virtio_net_config net_cfg;
+	} __packed *pci_config;
+	const struct pci_epc_features *epc_features;
 };
+
+static int epf_virtnet_setup_bar(struct pci_epf *epf)
+{
+	struct pci_epc *epc = epf->epc;
+	const enum pci_barno cfg_bar = BAR_0;
+	struct pci_epf_bar *virt_cfg_bar = &epf->bar[cfg_bar];
+	struct epf_virtnet *vnet = epf_get_drvdata(epf);
+	size_t cfg_bar_size = sizeof(struct virtio_common_config) +
+			      sizeof(struct virtio_net_config);
+	const struct pci_epc_features *epc_features = vnet->epc_features;
+	void *cfg_base;
+	int ret;
+
+	if (!!(epc_features->reserved_bar & (1 << cfg_bar)))
+		return -EOPNOTSUPP;
+
+	if (epc_features->bar_fixed_size[cfg_bar]) {
+		if (cfg_bar_size > epc_features->bar_fixed_size[cfg_bar])
+			return -ENOMEM;
+
+		cfg_bar_size = epc_features->bar_fixed_size[cfg_bar];
+	}
+
+	cfg_base = pci_epf_alloc_space(epf, cfg_bar_size, cfg_bar, epc_features->align, PRIMARY_INTERFACE);
+	if (!cfg_base) {
+		pr_err("Failed to allocate PCI BAR memory\n");
+		return -ENOMEM;
+	}
+	vnet->pci_config = cfg_base;
+
+	ret = pci_epc_set_bar(epc, epf->func_no, epf->vfunc_no, virt_cfg_bar);
+	if (ret) {
+		pr_err("Failed to set PCI BAR\n");
+		return ret;
+	}
+
+	return 0;
+}
+
+static int epf_virtnet_load_epc_features(struct pci_epf *epf)
+{
+	const struct pci_epc_features *epc_features;
+	struct epf_virtnet *epf_virtnet = epf_get_drvdata(epf);
+	struct pci_epc *epc = epf->epc;
+
+	epc_features = pci_epc_get_features(epc, epf->func_no, epf->vfunc_no);
+	if (!epc_features) {
+		pr_err("epc_features not implemented\n");
+		return -EOPNOTSUPP;
+	}
+
+	epf_virtnet->epc_features = epc_features;
+
+	return 0;
+}
+
+static int epf_virtnet_setup_interrupt(struct pci_epf *epf)
+{
+	int ret;
+// 	const enum pci_barno cfg_bar = BAR_0;
+	struct epf_virtnet *epf_virtnet = epf_get_drvdata(epf);
+	const struct pci_epc_features *epc_features = epf_virtnet->epc_features;
+	struct pci_epc *epc = epf->epc;
+
+	if (epc_features->msi_capable) {
+		ret = pci_epc_set_msi(epc, epf->func_no, epf->vfunc_no, 1);
+		if (ret) {
+			pr_err("MSI configuration failed\n");
+			return ret;
+		}
+	}
+
+// TODO msix support.
+// 	if (epc_features->msix_capable) {
+// 		ret = pci_epc_set_msix(epc, epf->func_no, epf->vfunc_no,
+// 				       epf->msix_interrupts,
+// 				       cfg_bar,
+// 				       epf_test->msix_table_offset);
+// 		if (ret) {
+// 			pr_err("MSI-X configuration failed\n");
+// 			return ret;
+// 		}
+// 	}
+
+	return 0;
+}
+
+#define EPF_VIRTNET_Q_SIZE 32
+
+static void epf_virtnet_init_config(struct pci_epf *epf)
+{
+	struct epf_virtnet *vnet = epf_get_drvdata(epf);
+	struct virtio_common_config *common_cfg = &vnet->pci_config->common_cfg;
+	struct virtio_net_config *net_cfg = &vnet->pci_config->net_cfg;
+
+	//TODO consider the device feature
+	//TODO care about endianness (must be guest(root complex) endianness)
+	common_cfg->dev_feat = BIT(VIRTIO_NET_F_MAC) | BIT(VIRTIO_NET_F_GUEST_CSUM);
+	common_cfg->q_select = 0;
+	common_cfg->q_size = EPF_VIRTNET_Q_SIZE;
+	common_cfg->q_notify = 2;
+	common_cfg->isr_status = 1;
+
+	net_cfg->max_virtqueue_pairs = 1;
+	// TODO fix tempolary mac address
+	u8 mac[ETH_ALEN] = {0, 0, 0, 0, 0, 0};
+	memcpy(net_cfg->mac, mac, ETH_ALEN);
+}
 
 static int epf_virtnet_bind(struct pci_epf *epf)
 {
 	int ret;
-	const struct pci_epc_features *epc_features;
-	enum pci_barno bar;
 	struct pci_epc *epc = epf->epc;
+
+	ret = epf_virtnet_load_epc_features(epf);
+	if (ret) {
+		pr_err("Load epc feature failed\n");
+		return ret;
+	}
 
 	ret = pci_epc_write_header(epc, epf->func_no, epf->vfunc_no, epf->header);
 	if (ret) {
 		pr_err("Configuration header write failed\n");
 		return ret;
 	}
+
+	ret = epf_virtnet_setup_bar(epf);
+	if (ret) {
+		pr_err("PCI bar set failed\n");
+		return ret;
+	}
+
+	ret = epf_virtnet_setup_interrupt(epf);
+	if (ret) {
+		pr_err("Interrupt setup failed\n");
+		return ret;
+	}
+
+	epf_virtnet_init_config(epf);
 
 	return 0;
 }
