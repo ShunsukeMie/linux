@@ -54,7 +54,8 @@ static int epf_virtnet_setup_bar(struct pci_epf *epf)
 
 	virt_cfg_bar->flags |= PCI_BASE_ADDRESS_MEM_TYPE_64;
 
-	cfg_base = pci_epf_alloc_space(epf, cfg_bar_size, cfg_bar, epc_features->align, PRIMARY_INTERFACE);
+	cfg_base = pci_epf_alloc_space(epf, cfg_bar_size, cfg_bar,
+				       epc_features->align, PRIMARY_INTERFACE);
 	if (!cfg_base) {
 		pr_err("Failed to allocate PCI BAR memory\n");
 		return -ENOMEM;
@@ -97,7 +98,8 @@ static void epf_virtnet_init_config(struct pci_epf *epf)
 
 	//TODO consider the device feature
 	//TODO care about endianness (must be guest(root complex) endianness)
-	common_cfg->dev_feat = BIT(VIRTIO_NET_F_MAC) | BIT(VIRTIO_NET_F_GUEST_CSUM);
+	common_cfg->dev_feat =
+		BIT(VIRTIO_NET_F_MAC) | BIT(VIRTIO_NET_F_GUEST_CSUM);
 	common_cfg->q_select = 0;
 	common_cfg->q_size = EPF_VIRTNET_Q_SIZE;
 	common_cfg->q_notify = 2;
@@ -105,7 +107,7 @@ static void epf_virtnet_init_config(struct pci_epf *epf)
 
 	net_cfg->max_virtqueue_pairs = 1;
 	// TODO fix tempolary mac address
-	u8 mac[ETH_ALEN] = {0, 0, 0, 0, 0, 0};
+	u8 mac[ETH_ALEN] = { 0, 0, 0, 0, 0, 0 };
 	memcpy(net_cfg->mac, mac, ETH_ALEN);
 }
 
@@ -120,7 +122,8 @@ static int epf_virtnet_bind(struct pci_epf *epf)
 		return ret;
 	}
 
-	ret = pci_epc_write_header(epc, epf->func_no, epf->vfunc_no, epf->header);
+	ret = pci_epc_write_header(epc, epf->func_no, epf->vfunc_no,
+				   epf->header);
 	if (ret) {
 		pr_err("Configuration header write failed\n");
 		return ret;
