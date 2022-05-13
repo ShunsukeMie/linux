@@ -87,37 +87,6 @@ static int epf_virtnet_load_epc_features(struct pci_epf *epf)
 	return 0;
 }
 
-static int epf_virtnet_setup_interrupt(struct pci_epf *epf)
-{
-	int ret;
-// 	const enum pci_barno cfg_bar = BAR_0;
-	struct epf_virtnet *epf_virtnet = epf_get_drvdata(epf);
-	const struct pci_epc_features *epc_features = epf_virtnet->epc_features;
-	struct pci_epc *epc = epf->epc;
-
-	if (epc_features->msi_capable) {
-		ret = pci_epc_set_msi(epc, epf->func_no, epf->vfunc_no, 1);
-		if (ret) {
-			pr_err("MSI configuration failed\n");
-			return ret;
-		}
-	}
-
-// TODO msix support.
-// 	if (epc_features->msix_capable) {
-// 		ret = pci_epc_set_msix(epc, epf->func_no, epf->vfunc_no,
-// 				       epf->msix_interrupts,
-// 				       cfg_bar,
-// 				       epf_test->msix_table_offset);
-// 		if (ret) {
-// 			pr_err("MSI-X configuration failed\n");
-// 			return ret;
-// 		}
-// 	}
-
-	return 0;
-}
-
 #define EPF_VIRTNET_Q_SIZE 32
 
 static void epf_virtnet_init_config(struct pci_epf *epf)
@@ -160,12 +129,6 @@ static int epf_virtnet_bind(struct pci_epf *epf)
 	ret = epf_virtnet_setup_bar(epf);
 	if (ret) {
 		pr_err("PCI bar set failed\n");
-		return ret;
-	}
-
-	ret = epf_virtnet_setup_interrupt(epf);
-	if (ret) {
-		pr_err("Interrupt setup failed\n");
 		return ret;
 	}
 
