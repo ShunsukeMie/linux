@@ -187,6 +187,7 @@ static struct pci_epf_header epf_virtnet_header = {
 	.vendorid = PCI_VENDOR_ID_REDHAT_QUMRANET,
 	.deviceid = VIRTIO_TRANS_ID_NET,
 	.subsys_id = VIRTIO_ID_NET,
+	.subsys_vendor_id = PCI_VENDOR_ID_REDHAT_QUMRANET,
 	.revid = 0,
  	.baseclass_code = PCI_BASE_CLASS_NETWORK, //TODO consider
 // 	.subclass_code = , //TODO add subclasse? like 00 ethernet
