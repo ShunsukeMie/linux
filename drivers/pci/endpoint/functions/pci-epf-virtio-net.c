@@ -28,6 +28,8 @@ struct epf_virtnet {
 		struct virtio_net_config net_cfg;
 	} __packed *pci_config;
 	const struct pci_epc_features *epc_features;
+	struct task_struct *monitor_config_task;
+	uint32_t *q_pfns;
 };
 
 static int epf_virtnet_setup_bar(struct pci_epf *epf)
@@ -90,6 +92,17 @@ static int epf_virtnet_load_epc_features(struct pci_epf *epf)
 
 #define EPF_VIRTNET_Q_SIZE 32
 
+static u16 epf_virtnet_get_q_select_default(struct epf_virtnet *vnet)
+{
+	struct virtio_net_config *net_cfg = &vnet->pci_config->net_cfg;
+
+	/*
+	 * Initialy indicates out of ranged index to detect changing from host.
+	 * See the `epf_virtnet_config_monitor()` to get details.
+	 */
+	return net_cfg->max_virtqueue_pairs * 2;
+}
+
 static void epf_virtnet_init_config(struct pci_epf *epf)
 {
 	struct epf_virtnet *vnet = epf_get_drvdata(epf);
@@ -100,15 +113,65 @@ static void epf_virtnet_init_config(struct pci_epf *epf)
 	//TODO care about endianness (must be guest(root complex) endianness)
 	common_cfg->dev_feat =
 		BIT(VIRTIO_NET_F_MAC) | BIT(VIRTIO_NET_F_GUEST_CSUM);
-	common_cfg->q_select = 0;
+	common_cfg->q_addr = 0;
 	common_cfg->q_size = EPF_VIRTNET_Q_SIZE;
 	common_cfg->q_notify = 2;
 	common_cfg->isr_status = 1;
 
 	net_cfg->max_virtqueue_pairs = 1;
+
+	common_cfg->q_select = epf_virtnet_get_q_select_default(vnet);
+
 	// TODO generate random macaddres and use it
 	u8 mac[ETH_ALEN] = { 0, 0, 0, 0, 0, 0 };
 	memcpy(net_cfg->mac, mac, ETH_ALEN);
+}
+
+static int epf_virtnet_config_monitor(void *data)
+{
+	struct epf_virtnet *vnet = data;
+	struct virtio_common_config *common_cfg = &vnet->pci_config->common_cfg;
+	const u16 q_select_default = epf_virtnet_get_q_select_default(vnet);
+	register u32 sel, pfn;
+
+	vnet->q_pfns =
+		kcalloc(q_select_default, sizeof vnet->q_pfns[0], GFP_KERNEL);
+
+	for (int i = 0; i < q_select_default; i++) {
+		while ((sel = READ_ONCE(common_cfg->q_select)) ==
+		       q_select_default)
+			;
+		WRITE_ONCE(common_cfg->q_select, q_select_default);
+		while ((pfn = READ_ONCE(common_cfg->q_addr)) == 0)
+			;
+		WRITE_ONCE(common_cfg->q_addr, 0);
+
+		//TODO check code to prevent out of range accessing
+		vnet->q_pfns[sel] = pfn;
+	}
+
+	sched_set_normal(vnet->monitor_config_task, 19);
+
+	//TODO launch tx/rx threads
+
+	return 0;
+}
+
+static int epf_virtnet_spawn_config_monitor(struct pci_epf *epf)
+{
+	struct epf_virtnet *vnet = epf_get_drvdata(epf);
+
+	vnet->monitor_config_task = kthread_create(epf_virtnet_config_monitor,
+						   vnet, "config monitor");
+	if (IS_ERR(vnet->monitor_config_task)) {
+		pr_err("Run pci configuration monitor failed\n");
+		return PTR_ERR(vnet->monitor_config_task);
+	}
+
+	sched_set_fifo(vnet->monitor_config_task);
+	wake_up_process(vnet->monitor_config_task);
+
+	return 0;
 }
 
 static int epf_virtnet_bind(struct pci_epf *epf)
@@ -136,6 +199,12 @@ static int epf_virtnet_bind(struct pci_epf *epf)
 	}
 
 	epf_virtnet_init_config(epf);
+
+	ret = epf_virtnet_spawn_config_monitor(epf);
+	if (ret) {
+		pr_err("PCI config monitor task run failed\n");
+		return ret;
+	}
 
 	return 0;
 }
