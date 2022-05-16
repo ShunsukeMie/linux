@@ -8,6 +8,9 @@
 #include <linux/pci-epc.h>
 #include <linux/virtio_ids.h>
 #include <linux/virtio_net.h>
+#include <linux/virtio_pci.h>
+#include <linux/virtio_ring.h>
+#include <linux/etherdevice.h>
 
 //TODO care for native endianess
 struct virtio_common_config {
@@ -28,6 +31,13 @@ struct epf_virtnet {
 		struct virtio_net_config net_cfg;
 	} __packed *pci_config;
 	const struct pci_epc_features *epc_features;
+	struct task_struct *monitor_config_task;
+	struct workqueue_struct *host_tx_wq;
+	struct delayed_work host_tx_handler;
+	struct {
+		u32 pfn;
+		void __iomem *addr;
+	} *vqs;
 };
 
 static int epf_virtnet_setup_bar(struct pci_epf *epf)
@@ -88,7 +98,19 @@ static int epf_virtnet_load_epc_features(struct pci_epf *epf)
 	return 0;
 }
 
-#define EPF_VIRTNET_Q_SIZE 32
+#define EPF_VIRTNET_Q_SIZE 256
+#define EPF_VIRTNET_Q_MASK 0xff
+
+static u16 epf_virtnet_get_default_q_sel(struct epf_virtnet *vnet)
+{
+	struct virtio_net_config *net_cfg = &vnet->pci_config->net_cfg;
+
+	/*
+	 * Initialy indicates out of ranged index to detect changing from host.
+	 * See the `epf_virtnet_config_monitor()` to get details.
+	 */
+	return net_cfg->max_virtqueue_pairs * 2;
+}
 
 static void epf_virtnet_init_config(struct pci_epf *epf)
 {
@@ -98,17 +120,180 @@ static void epf_virtnet_init_config(struct pci_epf *epf)
 
 	//TODO consider the device feature
 	//TODO care about endianness (must be guest(root complex) endianness)
-	common_cfg->dev_feat =
-		BIT(VIRTIO_NET_F_MAC) | BIT(VIRTIO_NET_F_GUEST_CSUM);
-	common_cfg->q_select = 0;
+	common_cfg->dev_feat = BIT(VIRTIO_NET_F_MAC) |
+			       BIT(VIRTIO_NET_F_GUEST_CSUM) |
+			       BIT(VIRTIO_NET_F_STATUS);
+	common_cfg->q_addr = 0;
 	common_cfg->q_size = EPF_VIRTNET_Q_SIZE;
 	common_cfg->q_notify = 2;
 	common_cfg->isr_status = 1;
 
 	net_cfg->max_virtqueue_pairs = 1;
-	// TODO generate random macaddres and use it
-	u8 mac[ETH_ALEN] = { 0, 0, 0, 0, 0, 0 };
-	memcpy(net_cfg->mac, mac, ETH_ALEN);
+	net_cfg->status = VIRTIO_NET_S_LINK_UP;
+
+	common_cfg->q_select = epf_virtnet_get_default_q_sel(vnet);
+
+	eth_random_addr(net_cfg->mac);
+}
+
+static void __iomem *epf_virtnet_map_host_vq(struct epf_virtnet *vnet, u32 pfn)
+{
+	void __iomem *ioaddr;
+	phys_addr_t vq_addr;
+	phys_addr_t phys_addr;
+	int ret;
+	size_t vq_size;
+	struct pci_epf *epf = vnet->epf;
+	struct pci_epc *epc = epf->epc;
+
+	vq_addr = (phys_addr_t)pfn << VIRTIO_PCI_QUEUE_ADDR_SHIFT;
+	vq_size = vring_size(EPF_VIRTNET_Q_SIZE, VIRTIO_PCI_VRING_ALIGN);
+
+	ioaddr = pci_epc_mem_alloc_addr(epc, &phys_addr, vq_size);
+	if (!ioaddr) {
+		pr_err("Failed to allocate epc memory area\n");
+		return NULL;
+	}
+
+	ret = pci_epc_map_addr(epc, epf->func_no, epf->vfunc_no, phys_addr,
+			       vq_addr, vq_size);
+	if (ret) {
+		pr_err("failed to map virtqueue address\n");
+		goto err_alloc;
+	}
+
+	return ioaddr;
+
+err_alloc:
+	pci_epc_mem_free_addr(epc, phys_addr, ioaddr, vq_size);
+
+	return NULL;
+}
+
+static void epf_virtnet_host_tx_handler(struct work_struct *work)
+{
+	struct epf_virtnet *vnet =
+		container_of(work, struct epf_virtnet, host_tx_handler.work);
+	struct pci_epf *epf = vnet->epf;
+	struct pci_epc *epc = epf->epc;
+	struct vring vring;
+	u16 used_idx, pre_used_idx, desc_idx;
+	struct vring_desc __iomem *desc;
+	u64 addr;
+	u32 len;
+
+	vring_init(&vring, EPF_VIRTNET_Q_SIZE, vnet->vqs[1].addr,
+		   VIRTIO_PCI_VRING_ALIGN);
+
+	pre_used_idx = used_idx = ioread16(&vring.used->idx);
+
+	while (used_idx != ioread16(&vring.avail->idx)) {
+		desc_idx = vring.avail->ring[used_idx];
+		desc = &vring.desc[desc_idx];
+
+		addr = ioread64(&desc->addr);
+		len = ioread32(&desc->len);
+
+		// TODO transfer
+		// - by dma
+		// - by cpu
+
+		iowrite16(desc_idx, &vring.used->ring[used_idx].id);
+		iowrite32(len, &vring.used->ring[used_idx].len);
+
+		used_idx = (used_idx + 1) & EPF_VIRTNET_Q_MASK;
+	}
+
+	if (pre_used_idx != used_idx) {
+		iowrite16(used_idx, &vring.used->idx);
+		smp_mb();
+
+		if (!ioread16(&vring.avail->flags) & VRING_AVAIL_F_NO_INTERRUPT) {
+			pr_info("%s:%d (used %d: avail %d) irq\n", __func__, __LINE__, used_idx, ioread16(&vring.avail->idx));
+			pci_epc_raise_irq(epc, epf->func_no, epf->vfunc_no, PCI_EPC_IRQ_LEGACY, 0);
+		}
+		else {
+			pr_info("%s:%d (used %d: avail %d) noirq\n", __func__, __LINE__, used_idx, ioread16(&vring.avail->idx));
+		}
+	}
+
+	queue_delayed_work(vnet->host_tx_wq, &vnet->host_tx_handler,
+			   msecs_to_jiffies(1));
+}
+
+static int epf_virtnet_config_monitor(void *data)
+{
+	struct epf_virtnet *vnet = data;
+	struct virtio_common_config *common_cfg = &vnet->pci_config->common_cfg;
+	const u16 q_select_default = epf_virtnet_get_default_q_sel(vnet);
+	register u32 sel, pfn;
+
+	vnet->vqs = kcalloc(2, sizeof vnet->vqs[0], GFP_KERNEL);
+
+	//TODO
+	for (int i = 0; i < q_select_default; i++) {
+		while ((sel = READ_ONCE(common_cfg->q_select)) ==
+		       q_select_default)
+			;
+		while ((pfn = READ_ONCE(common_cfg->q_addr)) == 0)
+			;
+
+		/* reset to default to detect changes */
+		WRITE_ONCE(common_cfg->q_addr, 0);
+		WRITE_ONCE(common_cfg->q_select, q_select_default);
+
+		pr_info("%s:%d sel %d pfn 0x%x\n", __func__, __LINE__, sel, pfn);
+
+		//TODO check the selector to prevent out of range accessing
+		vnet->vqs[sel].pfn = pfn;
+	}
+
+	sched_set_normal(vnet->monitor_config_task, 19);
+
+	/*
+	 * setup virtqueues
+	 */
+	vnet->vqs[0].addr = epf_virtnet_map_host_vq(vnet, vnet->vqs[0].pfn);
+	if (!vnet->vqs[0].addr) {
+		pr_err("failed to map host virtqueue\n");
+		return -ENOMEM;
+	}
+
+	vnet->vqs[1].addr = epf_virtnet_map_host_vq(vnet, vnet->vqs[1].pfn);
+	if (!vnet->vqs[1].addr) {
+		pr_err("failed to map host virtqueue\n");
+		return -ENOMEM;
+	}
+
+	// TODO more investigate a last argument.
+	vnet->host_tx_wq = alloc_workqueue("epf_vnet_host_tx",
+					   WQ_MEM_RECLAIM | WQ_HIGHPRI, 0);
+	if (!vnet->host_tx_wq) {
+		pr_err("Failed to allocate a workqueue for host tx virtqueue");
+		return -ENOMEM;
+	}
+
+	INIT_DELAYED_WORK(&vnet->host_tx_handler, epf_virtnet_host_tx_handler);
+	queue_work(vnet->host_tx_wq, &vnet->host_tx_handler.work);
+
+	return 0;
+}
+
+static int epf_virtnet_spawn_config_monitor(struct pci_epf *epf)
+{
+	struct epf_virtnet *vnet = epf_get_drvdata(epf);
+
+	vnet->monitor_config_task = kthread_create(epf_virtnet_config_monitor,
+						   vnet, "config monitor");
+	if (IS_ERR(vnet->monitor_config_task)) {
+		pr_err("Run pci configuration monitor failed\n");
+		return PTR_ERR(vnet->monitor_config_task);
+	}
+
+	sched_set_fifo(vnet->monitor_config_task);
+	wake_up_process(vnet->monitor_config_task);
+
+	return 0;
 }
 
 static int epf_virtnet_bind(struct pci_epf *epf)
@@ -137,6 +322,12 @@ static int epf_virtnet_bind(struct pci_epf *epf)
 
 	epf_virtnet_init_config(epf);
 
+	ret = epf_virtnet_spawn_config_monitor(epf);
+	if (ret) {
+		pr_err("PCI config monitor task run failed\n");
+		return ret;
+	}
+
 	return 0;
 }
 
@@ -152,8 +343,8 @@ static struct pci_epf_ops epf_virtnet_ops = {
 static struct pci_epf_header epf_virtnet_header = {
 	.vendorid = PCI_VENDOR_ID_REDHAT_QUMRANET,
 	.deviceid = VIRTIO_TRANS_ID_NET,
-	.subsys_id = VIRTIO_ID_NET,
 	.subsys_vendor_id = PCI_VENDOR_ID_REDHAT_QUMRANET,
+	.subsys_id = VIRTIO_ID_NET,
 	.revid = 0,
  	.baseclass_code = PCI_BASE_CLASS_NETWORK, //TODO consider
 // 	.subclass_code = , //TODO add subclasse? like 00 ethernet
