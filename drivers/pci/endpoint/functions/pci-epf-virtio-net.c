@@ -106,7 +106,7 @@ static void epf_virtnet_init_config(struct pci_epf *epf)
 	common_cfg->isr_status = 1;
 
 	net_cfg->max_virtqueue_pairs = 1;
-	// TODO fix tempolary mac address
+	// TODO generate random macaddres and use it
 	u8 mac[ETH_ALEN] = { 0, 0, 0, 0, 0, 0 };
 	memcpy(net_cfg->mac, mac, ETH_ALEN);
 }
