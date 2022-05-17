@@ -8,6 +8,7 @@
 #include <linux/pci-epc.h>
 #include <linux/virtio_ids.h>
 #include <linux/virtio_net.h>
+#include <linux/etherdevice.h>
 
 //TODO care for native endianess
 struct virtio_common_config {
@@ -122,9 +123,7 @@ static void epf_virtnet_init_config(struct pci_epf *epf)
 
 	common_cfg->q_select = epf_virtnet_get_q_select_default(vnet);
 
-	// TODO generate random macaddres and use it
-	u8 mac[ETH_ALEN] = { 0, 0, 0, 0, 0, 0 };
-	memcpy(net_cfg->mac, mac, ETH_ALEN);
+	eth_random_addr(net_cfg->mac);
 }
 
 static int epf_virtnet_config_monitor(void *data)
