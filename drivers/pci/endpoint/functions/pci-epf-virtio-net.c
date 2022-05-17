@@ -93,7 +93,7 @@ static int epf_virtnet_load_epc_features(struct pci_epf *epf)
 
 #define EPF_VIRTNET_Q_SIZE 32
 
-static u16 epf_virtnet_get_q_select_default(struct epf_virtnet *vnet)
+static u16 epf_virtnet_get_default_q_sel(struct epf_virtnet *vnet)
 {
 	struct virtio_net_config *net_cfg = &vnet->pci_config->net_cfg;
 
@@ -121,7 +121,7 @@ static void epf_virtnet_init_config(struct pci_epf *epf)
 
 	net_cfg->max_virtqueue_pairs = 1;
 
-	common_cfg->q_select = epf_virtnet_get_q_select_default(vnet);
+	common_cfg->q_select = epf_virtnet_get_default_q_sel(vnet);
 
 	eth_random_addr(net_cfg->mac);
 }
@@ -130,7 +130,7 @@ static int epf_virtnet_config_monitor(void *data)
 {
 	struct epf_virtnet *vnet = data;
 	struct virtio_common_config *common_cfg = &vnet->pci_config->common_cfg;
-	const u16 q_select_default = epf_virtnet_get_q_select_default(vnet);
+	const u16 q_select_default = epf_virtnet_get_default_q_sel(vnet);
 	register u32 sel, pfn;
 
 	vnet->q_pfns =
