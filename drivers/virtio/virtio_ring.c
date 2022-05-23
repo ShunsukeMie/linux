@@ -245,6 +245,7 @@ static inline bool virtqueue_use_indirect(struct vring_virtqueue *vq,
 
 static bool vring_use_dma_api(struct virtio_device *vdev)
 {
+	return true;
 	if (!virtio_has_dma_quirk(vdev))
 		return true;
 
