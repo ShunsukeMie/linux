@@ -130,6 +130,7 @@ static void epf_virtnet_init_config(struct pci_epf *epf)
 
 	net_cfg->max_virtqueue_pairs = 1;
 	net_cfg->status = VIRTIO_NET_S_LINK_UP;
+	net_cfg->mtu = 1500;
 
 	common_cfg->q_select = epf_virtnet_get_default_q_sel(vnet);
 
