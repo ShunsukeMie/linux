@@ -98,8 +98,8 @@ static int epf_virtnet_load_epc_features(struct pci_epf *epf)
 	return 0;
 }
 
-#define EPF_VIRTNET_Q_SIZE 256
-#define EPF_VIRTNET_Q_MASK 0xff
+#define EPF_VIRTNET_Q_SIZE 0x100
+#define EPF_VIRTNET_Q_MASK 0x0ff
 
 static u16 epf_virtnet_get_default_q_sel(struct epf_virtnet *vnet)
 {
@@ -130,6 +130,7 @@ static void epf_virtnet_init_config(struct pci_epf *epf)
 
 	net_cfg->max_virtqueue_pairs = 1;
 	net_cfg->status = VIRTIO_NET_S_LINK_UP;
+	net_cfg->mtu = 1500;
 
 	common_cfg->q_select = epf_virtnet_get_default_q_sel(vnet);
 
@@ -178,43 +179,36 @@ static void epf_virtnet_host_tx_handler(struct work_struct *work)
 	struct pci_epc *epc = epf->epc;
 	struct vring vring;
 	u16 used_idx, pre_used_idx, desc_idx;
-	struct vring_desc __iomem *desc;
-	u64 addr;
-	u32 len;
+	u16 mod_u_idx;
+	u32 total_len;
 
 	vring_init(&vring, EPF_VIRTNET_Q_SIZE, vnet->vqs[1].addr,
 		   VIRTIO_PCI_VRING_ALIGN);
 
 	pre_used_idx = used_idx = ioread16(&vring.used->idx);
 
-	while (used_idx != ioread16(&vring.avail->idx)) {
-		desc_idx = vring.avail->ring[used_idx];
-		desc = &vring.desc[desc_idx];
+	while (used_idx != (ioread16(&vring.avail->idx))) {
+		mod_u_idx = used_idx & EPF_VIRTNET_Q_MASK;
+		desc_idx = ioread16(&vring.avail->ring[mod_u_idx]);
 
-		addr = ioread64(&desc->addr);
-		len = ioread32(&desc->len);
 
 		// TODO transfer
 		// - by dma
 		// - by cpu
 
-		iowrite16(desc_idx, &vring.used->ring[used_idx].id);
-		iowrite32(len, &vring.used->ring[used_idx].len);
+		iowrite16(desc_idx, &vring.used->ring[mod_u_idx].id);
+		iowrite32(total_len, &vring.used->ring[mod_u_idx].len);
 
-		used_idx = (used_idx + 1) & EPF_VIRTNET_Q_MASK;
+		used_idx++;
 	}
 
 	if (pre_used_idx != used_idx) {
 		iowrite16(used_idx, &vring.used->idx);
 		smp_mb();
 
-		if (!ioread16(&vring.avail->flags) & VRING_AVAIL_F_NO_INTERRUPT) {
-			pr_info("%s:%d (used %d: avail %d) irq\n", __func__, __LINE__, used_idx, ioread16(&vring.avail->idx));
+		if (!ioread16(&vring.avail->flags) & VRING_AVAIL_F_NO_INTERRUPT)
 			pci_epc_raise_irq(epc, epf->func_no, epf->vfunc_no, PCI_EPC_IRQ_LEGACY, 0);
-		}
-		else {
-			pr_info("%s:%d (used %d: avail %d) noirq\n", __func__, __LINE__, used_idx, ioread16(&vring.avail->idx));
-		}
+
 	}
 
 	queue_delayed_work(vnet->host_tx_wq, &vnet->host_tx_handler,
@@ -241,8 +235,6 @@ static int epf_virtnet_config_monitor(void *data)
 		/* reset to default to detect changes */
 		WRITE_ONCE(common_cfg->q_addr, 0);
 		WRITE_ONCE(common_cfg->q_select, q_select_default);
-
-		pr_info("%s:%d sel %d pfn 0x%x\n", __func__, __LINE__, sel, pfn);
 
 		//TODO check the selector to prevent out of range accessing
 		vnet->vqs[sel].pfn = pfn;
