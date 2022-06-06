@@ -209,13 +209,9 @@ static void epf_virtnet_host_tx_handler(struct work_struct *work)
 		iowrite16(used_idx, &vring.used->idx);
 		smp_mb();
 
-		if (!ioread16(&vring.avail->flags) & VRING_AVAIL_F_NO_INTERRUPT) {
-			pr_info("%s:%d (used %d: avail %d) irq\n", __func__, __LINE__, used_idx, ioread16(&vring.avail->idx));
+		if (!ioread16(&vring.avail->flags) & VRING_AVAIL_F_NO_INTERRUPT)
 			pci_epc_raise_irq(epc, epf->func_no, epf->vfunc_no, PCI_EPC_IRQ_LEGACY, 0);
-		}
-		else {
-			pr_info("%s:%d (used %d: avail %d) noirq\n", __func__, __LINE__, used_idx, ioread16(&vring.avail->idx));
-		}
+
 	}
 
 	queue_delayed_work(vnet->host_tx_wq, &vnet->host_tx_handler,
@@ -242,8 +238,6 @@ static int epf_virtnet_config_monitor(void *data)
 		/* reset to default to detect changes */
 		WRITE_ONCE(common_cfg->q_addr, 0);
 		WRITE_ONCE(common_cfg->q_select, q_select_default);
-
-		pr_info("%s:%d sel %d pfn 0x%x\n", __func__, __LINE__, sel, pfn);
 
 		//TODO check the selector to prevent out of range accessing
 		vnet->vqs[sel].pfn = pfn;
