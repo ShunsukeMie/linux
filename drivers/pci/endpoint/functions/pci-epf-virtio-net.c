@@ -98,8 +98,8 @@ static int epf_virtnet_load_epc_features(struct pci_epf *epf)
 	return 0;
 }
 
-#define EPF_VIRTNET_Q_SIZE 256
-#define EPF_VIRTNET_Q_MASK 0xff
+#define EPF_VIRTNET_Q_SIZE 0x100
+#define EPF_VIRTNET_Q_MASK 0x0ff
 
 static u16 epf_virtnet_get_default_q_sel(struct epf_virtnet *vnet)
 {
