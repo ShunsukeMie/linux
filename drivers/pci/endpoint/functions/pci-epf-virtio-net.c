@@ -189,7 +189,7 @@ static void epf_virtnet_host_tx_handler(struct work_struct *work)
 	pre_used_idx = used_idx = ioread16(&vring.used->idx);
 
 	while (used_idx != ioread16(&vring.avail->idx)) {
-		desc_idx = vring.avail->ring[used_idx];
+		desc_idx = ioread16(&vring.avail->ring[used_idx]);
 		desc = &vring.desc[desc_idx];
 
 		addr = ioread64(&desc->addr);
