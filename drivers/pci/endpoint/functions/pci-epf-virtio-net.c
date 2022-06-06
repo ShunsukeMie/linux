@@ -39,6 +39,7 @@ struct epf_virtnet {
 		void __iomem *addr;
 		struct vring vring;
 	} *vqs;
+	u16 rx_last_a_idx;
 };
 
 static int epf_virtnet_setup_bar(struct pci_epf *epf)
@@ -172,6 +173,196 @@ err_alloc:
 	return NULL;
 }
 
+static int memcpy_from_pci(struct epf_virtnet *vnet, void *dest, u64 pci_addr,
+			   size_t len)
+{
+	void __iomem *addr;
+	phys_addr_t phys;
+	int ret;
+	struct pci_epf *epf = vnet->epf;
+	struct pci_epc *epc = epf->epc;
+
+	addr = pci_epc_mem_alloc_addr(epc, &phys, len);
+	if (!addr) {
+		pr_err("failed to allocate epc mem %s:%d\n", __func__,
+		       __LINE__);
+		return -ENOMEM;
+	}
+
+	ret = pci_epc_map_addr(epc, epf->func_no, epf->vfunc_no, phys, pci_addr,
+			       len);
+	if (ret) {
+		pr_err("failed to map addr\n");
+		return ret;
+	}
+
+	memcpy_fromio(dest, addr, len);
+
+	pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no, phys);
+	pci_epc_mem_free_addr(epc, phys, addr, len);
+
+	return 0;
+}
+
+static int memcpy_to_pci(struct epf_virtnet *vnet, u64 pci_addr, void *src,
+			 size_t len)
+{
+	void __iomem *addr;
+	phys_addr_t phys;
+	int ret;
+	struct pci_epf *epf = vnet->epf;
+	struct pci_epc *epc = epf->epc;
+
+	addr = pci_epc_mem_alloc_addr(epc, &phys, len);
+	if (!addr) {
+		pr_info("failed to allocate epc mem %s:%d\n", __func__,
+			__LINE__);
+		return -ENOMEM;
+	}
+
+	ret = pci_epc_map_addr(epc, epf->func_no, epf->vfunc_no, phys, pci_addr,
+			       len);
+	if (ret) {
+		pr_info("failed to map addr\n");
+		return ret;
+	}
+
+	memcpy_toio(addr, src, len);
+
+	pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no, phys);
+	pci_epc_mem_free_addr(epc, phys, addr, len);
+
+	return 0;
+}
+
+/*
+ * receive packet from root complex
+ *
+ * Returns an allocated memory from heap.
+ */
+static void *_tmp_recv_packet(struct epf_virtnet *vnet, struct vring *tx_vr,
+			      u16 tx_u_idx, u32 *buf_len)
+{
+	struct vring_desc *tx_desc;
+	u16 tx_next_d_idx;
+	int ret;
+	void *buf = NULL;
+
+	tx_next_d_idx = ioread16(&tx_vr->avail->ring[tx_u_idx]);
+
+	*buf_len = 0;
+
+	while (true) {
+		u64 tx_base;
+		u32 tx_len;
+		u16 tx_flags;
+		size_t offset;
+		void *cur;
+
+		tx_desc = &tx_vr->desc[tx_next_d_idx];
+
+		tx_base = ioread64(&tx_desc->addr);
+		tx_len = ioread32(&tx_desc->len);
+		tx_flags = ioread16(&tx_desc->flags);
+		tx_next_d_idx = ioread16(&tx_desc->next);
+
+		offset = *buf_len;
+		*buf_len += tx_len;
+
+		buf = krealloc(buf, *buf_len, GFP_KERNEL);
+		if (!buf) {
+			pr_err("Failed to alocate memory\n");
+			goto err;
+		}
+
+		cur = buf + offset;
+
+		ret = memcpy_from_pci(vnet, cur, tx_base, tx_len);
+		if (ret) {
+			pr_err("Failed to load data from pci address space\n");
+			goto err;
+		}
+
+		if (!(tx_flags & VRING_DESC_F_NEXT)) {
+			break;
+		}
+	}
+
+	return buf;
+
+err:
+	kfree(buf);
+	return NULL;
+}
+
+/*
+ * send packet for root complex
+ */
+static int _tmp_send_packet(struct epf_virtnet *vnet, void *buf, size_t len)
+{
+	int ret;
+	u16 rx_u_idx, rx_a_idx, rx_d_idx;
+	u16 mod_u_idx, mod_last_a_idx;
+	struct vring *vring;
+	struct vring_desc *rx_desc;
+
+	vring = &vnet->vqs[0].vring;
+
+	rx_u_idx = ioread16(&vring->used->idx);
+	rx_a_idx = ioread16(&vring->avail->idx);
+	mod_u_idx = rx_u_idx & EPF_VIRTNET_Q_MASK;
+	mod_last_a_idx = vnet->rx_last_a_idx & EPF_VIRTNET_Q_MASK;
+
+	if (vnet->rx_last_a_idx == rx_a_idx) {
+		pr_err("virtqueue is full\n");
+		return -EAGAIN;
+	}
+
+	rx_d_idx = ioread16(&vring->avail->ring[mod_last_a_idx]);
+	rx_desc = &vring->desc[rx_d_idx];
+	ret = memcpy_to_pci(vnet, ioread64(&rx_desc->addr), buf, len);
+	if (ret) {
+		pr_err("Failed to store data to pci address space");
+		return ret;
+	}
+
+	iowrite32(len, &rx_desc->len);
+	iowrite16(ioread16(&rx_desc->flags) & ~0x1, &rx_desc->flags);
+
+	iowrite32(len, &vring->used->ring[mod_u_idx].len);
+	iowrite32(rx_d_idx, &vring->used->ring[mod_u_idx].id);
+
+	vnet->rx_last_a_idx++;
+
+	rx_u_idx++;
+	iowrite16(rx_u_idx, &vring->used->idx);
+
+	return 0;
+}
+
+static int _tmp_send_back(struct epf_virtnet *vnet, struct vring *tx_vr,
+			  u16 tx_u_idx, u32 *total_len)
+{
+	void *buf;
+	int ret;
+
+	buf = _tmp_recv_packet(vnet, tx_vr, tx_u_idx, total_len);
+	if (!buf) {
+		pr_err("failed to receive packet from virtqueue\n");
+		return -1;
+	}
+
+	// Update ARP sender ip
+	// size of virtio-net header and offset of arp sender ip.
+	((u8 *)buf)[0x0a + 0x1f]++;
+
+	ret = _tmp_send_packet(vnet, buf, *total_len);
+
+	kfree(buf);
+
+	return ret;
+}
+
 static void epf_virtnet_host_tx_handler(struct work_struct *work)
 {
 	struct epf_virtnet *vnet =
@@ -194,10 +385,8 @@ cont:
 		mod_u_idx = used_idx & EPF_VIRTNET_Q_MASK;
 		desc_idx = ioread16(&vring->avail->ring[mod_u_idx]);
 
-
-		// TODO transfer
-		// - by dma
-		// - by cpu
+		if (_tmp_send_back(vnet, vring, mod_u_idx, &total_len))
+			pr_err("failed at _tmp_send_back\n");
 
 		iowrite16(desc_idx, &vring->used->ring[mod_u_idx].id);
 		iowrite32(total_len, &vring->used->ring[mod_u_idx].len);
