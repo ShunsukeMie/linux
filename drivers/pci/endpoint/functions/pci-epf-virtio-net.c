@@ -11,6 +11,8 @@
 #include <linux/virtio_pci.h>
 #include <linux/virtio_ring.h>
 #include <linux/etherdevice.h>
+#include <linux/dmaengine.h>
+#include <linux/vringh.h>
 
 //TODO care for native endianess
 struct virtio_common_config {
@@ -32,13 +34,14 @@ struct epf_virtnet {
 	} __packed *pci_config;
 	const struct pci_epc_features *epc_features;
 	struct task_struct *monitor_config_task;
-	struct workqueue_struct *host_tx_wq;
+	struct workqueue_struct *host_tx_wq, *irq_wq;
 	struct delayed_work host_tx_handler;
-	struct {
-		u32 pfn;
-		void __iomem *addr;
-		struct vring vring;
-	} *vqs;
+	struct work_struct raise_irq_work;
+	u16 rx_last_a_idx;
+
+	struct dma_chan *tx_dma_chan, *rx_dma_chan;
+	struct vringh rx_vrh, tx_vrh;
+	struct vringh_kiov txiov, rxiov;
 };
 
 static int epf_virtnet_setup_bar(struct pci_epf *epf)
@@ -123,7 +126,11 @@ static void epf_virtnet_init_config(struct pci_epf *epf)
 	//TODO care about endianness (must be guest(root complex) endianness)
 	common_cfg->dev_feat = BIT(VIRTIO_NET_F_MAC) |
 			       BIT(VIRTIO_NET_F_GUEST_CSUM) |
-			       BIT(VIRTIO_NET_F_STATUS);
+			       BIT(VIRTIO_NET_F_STATUS) |
+				   BIT(VIRTIO_NET_F_GUEST_TSO4) |
+				   BIT(VIRTIO_NET_F_GUEST_TSO6) |
+				   BIT(VIRTIO_NET_F_GUEST_ECN) |
+				   BIT(VIRTIO_NET_F_GUEST_UFO);
 	common_cfg->q_addr = 0;
 	common_cfg->q_size = EPF_VIRTNET_Q_SIZE;
 	common_cfg->q_notify = 2;
@@ -131,7 +138,7 @@ static void epf_virtnet_init_config(struct pci_epf *epf)
 
 	net_cfg->max_virtqueue_pairs = 1;
 	net_cfg->status = VIRTIO_NET_S_LINK_UP;
-	net_cfg->mtu = 1500;
+	net_cfg->mtu = PAGE_SIZE * 2;
 
 	common_cfg->q_select = epf_virtnet_get_default_q_sel(vnet);
 
@@ -172,55 +179,190 @@ err_alloc:
 	return NULL;
 }
 
+static int epf_virtnet_dma_single(struct epf_virtnet *vnet, phys_addr_t pci,
+				  dma_addr_t dma, size_t len,
+				  void (*callback)(void *), void *param,
+				  enum dma_transfer_direction dir)
+{
+	struct dma_async_tx_descriptor *desc;
+	int err;
+	struct dma_chan *chan = DMA_MEM_TO_DEV == dir ? vnet->tx_dma_chan : vnet->rx_dma_chan;
+	struct dma_slave_config sconf = {};
+	dma_cookie_t cookie;
+	unsigned long flags = DMA_PREP_FENCE;
+
+	if (DMA_MEM_TO_DEV == dir) {
+		sconf.dst_addr = pci;
+	} else {
+		sconf.src_addr = pci;
+	}
+
+	err = dmaengine_slave_config(chan, &sconf);
+	if (err)
+		return err;
+
+	if (callback)
+		flags |= DMA_PREP_INTERRUPT;
+
+	desc = dmaengine_prep_slave_single(chan, dma, len, dir, flags);
+	if (!desc)
+		return EIO;
+
+	desc->callback = callback;
+	desc->callback_param = param;
+
+	cookie = dmaengine_submit(desc);
+
+	err = dma_submit_error(cookie);
+	if (err)
+		return err;
+
+	dma_async_issue_pending(chan);
+
+	return 0;
+}
+
+struct rx_cb_param {
+	struct epf_virtnet *vnet;
+	void *buf;
+	dma_addr_t dma;
+	size_t len;
+	u16 head;
+};
+
+struct tx_cb_param {
+	struct epf_virtnet *vnet;
+	dma_addr_t dma;
+	size_t len;
+	void *buf;
+	u16 head;
+};
+
+void epf_virtnet_tx_cb(void *p) {
+	struct tx_cb_param *param = (struct tx_cb_param *)p;
+	struct epf_virtnet *vnet = param->vnet;
+	struct device *dma_dev = vnet->epf->epc->dev.parent;
+
+	vringh_complete_iomem(&vnet->tx_vrh, param->head, param->len);
+
+	dma_unmap_single(dma_dev, param->dma, param->len, DMA_MEM_TO_DEV);
+
+	kfree(param);
+	kfree(param->buf);
+}
+
+static void tmp_callback(void *p)
+{
+	struct completion *transfer_complete = p;
+	complete(transfer_complete);
+}
+
 static void epf_virtnet_host_tx_handler(struct work_struct *work)
 {
+	u16 tx_head, rx_head;
+	int err;
+	size_t total_len;
+
 	struct epf_virtnet *vnet =
 		container_of(work, struct epf_virtnet, host_tx_handler.work);
-	struct pci_epf *epf = vnet->epf;
-	struct pci_epc *epc = epf->epc;
-	struct vring *vring;
-	u16 used_idx, pre_used_idx, desc_idx;
-	u16 a_idx, pre_a_idx;
-	u16 mod_u_idx;
-	u32 total_len;
+	struct vringh_kiov *riov = &vnet->rxiov;
+	struct vringh_kiov *tiov = &vnet->txiov;
+	struct device *dma_dev = vnet->epf->epc->dev.parent;
 
-	vring = &vnet->vqs[1].vring;
-
-	pre_used_idx = used_idx = ioread16(&vring->used->idx);
-	pre_a_idx = a_idx = ioread16(&vring->avail->idx);
-
-cont:
-	while (used_idx != a_idx) {
-		mod_u_idx = used_idx & EPF_VIRTNET_Q_MASK;
-		desc_idx = ioread16(&vring->avail->ring[mod_u_idx]);
-
-
-		// TODO transfer
-		// - by dma
-		// - by cpu
-
-		iowrite16(desc_idx, &vring->used->ring[mod_u_idx].id);
-		iowrite32(total_len, &vring->used->ring[mod_u_idx].len);
-
-		used_idx++;
+	err = vringh_getdesc_iomem(&vnet->rx_vrh, riov, NULL, &rx_head, GFP_KERNEL);
+	if (err < 0) {
+		pr_err("Failed the vringh_getdesc_iomem with %d", err);
+		goto next;
+	} else if (!err){
+		goto next;
 	}
 
-	if (pre_used_idx != used_idx) {
-		iowrite16(used_idx, &vring->used->idx);
+	total_len = vringh_kiov_length(riov);
 
-		if (!ioread16(&vring->avail->flags) & VRING_AVAIL_F_NO_INTERRUPT)
-			pci_epc_raise_irq(epc, epf->func_no, epf->vfunc_no, PCI_EPC_IRQ_LEGACY, 0);
-
+	err = vringh_getdesc_iomem(&vnet->tx_vrh, NULL, tiov, &tx_head, GFP_KERNEL);
+	if (err < 0) {
+		pr_err("Failed the vringh_getdesc_iomem with %d", err);
+		goto next;
+	} else if (!err) {
+		vringh_abandon_iomem(&vnet->rx_vrh, 1);
+		goto next;
 	}
 
-	a_idx = ioread16(&vring->avail->idx);
-	if (pre_a_idx != a_idx) {
-		pre_a_idx = a_idx;
-		goto cont;
+	// iterate tx/rx iov simultaneously because we can suspect the size of those are same.
+	for(;riov->i < riov->used; riov->i++, tiov->i++) {
+		u32 len, tx_len;
+		u64 base;
+		void *buf;
+		phys_addr_t dma;
+		struct completion transfer_complete;
+
+		// rx
+		len = riov->iov[riov->i].iov_len;
+		base = (u64)riov->iov[riov->i].iov_base;
+
+		buf = kmalloc(len, GFP_KERNEL);
+		if (!buf)
+			BUG();
+
+		dma = dma_map_single(dma_dev, buf, len, DMA_DEV_TO_MEM);
+
+		init_completion(&transfer_complete);
+		err = epf_virtnet_dma_single(vnet, base, dma, len, tmp_callback, &transfer_complete, DMA_DEV_TO_MEM);
+		if (err) {
+			pr_err("failed to request a dma\n");
+			goto next;
+		}
+
+		err = wait_for_completion_interruptible(&transfer_complete);
+		if (err < 0) {
+			pr_err("failed to wait complete\n");
+			goto next;
+		}
+
+		dma_unmap_single(dma_dev, dma, len, DMA_DEV_TO_MEM);
+
+		tx_len = tiov->iov[tiov->i].iov_len;
+		if (tx_len < len)  {
+			pr_err("not enough buffer: %d < %d", tx_len, len);
+			goto next;
+		}
+
+		base = (u64)tiov->iov[tiov->i].iov_base;
+
+		dma = dma_map_single(dma_dev, buf, len, DMA_MEM_TO_DEV);
+		init_completion(&transfer_complete);
+		err = epf_virtnet_dma_single(vnet, base, dma, tx_len, tmp_callback, &transfer_complete, DMA_MEM_TO_DEV);
+		if (err < 0){
+			pr_err("failed the dma(tx)\n");
+			goto next;
+		}
+
+		err = wait_for_completion_interruptible(&transfer_complete);
+		if (err < 0) {
+			pr_err("failed to wait complete\n");
+			goto next;
+		}
 	}
 
+	vringh_complete_iomem(&vnet->rx_vrh, rx_head, total_len);
+	vringh_complete_iomem(&vnet->tx_vrh, tx_head, total_len);
+
+	queue_work(vnet->irq_wq, &vnet->raise_irq_work);
+
+next:
 	queue_delayed_work(vnet->host_tx_wq, &vnet->host_tx_handler,
 			   usecs_to_jiffies(1));
+}
+
+static void epf_virtnet_raise_irq_handler(struct work_struct *work)
+{
+	struct epf_virtnet *vnet =
+		container_of(work, struct epf_virtnet, raise_irq_work);
+
+	struct pci_epf *epf = vnet->epf;
+	struct pci_epc *epc = epf->epc;
+
+	pci_epc_raise_irq(epc, epf->func_no, epf->vfunc_no, PCI_EPC_IRQ_LEGACY, 0);
 }
 
 static int epf_virtnet_config_monitor(void *data)
@@ -230,8 +372,10 @@ static int epf_virtnet_config_monitor(void *data)
 	const u16 q_select_default = epf_virtnet_get_default_q_sel(vnet);
 	register u32 sel, pfn;
 	void __iomem *tmp;
-
-	vnet->vqs = kcalloc(2, sizeof vnet->vqs[0], GFP_KERNEL);
+	struct vring vring;
+	u32 txvq_pfn, rxvq_pfn;
+	int ret;
+	struct kvec *kvec;
 
 	//TODO
 	for (int i = 0; i < q_select_default; i++) {
@@ -245,8 +389,17 @@ static int epf_virtnet_config_monitor(void *data)
 		WRITE_ONCE(common_cfg->q_addr, 0);
 		WRITE_ONCE(common_cfg->q_select, q_select_default);
 
+		switch(sel) {
+			case 0:
+				txvq_pfn = pfn;
+				break;
+			case 1:
+				rxvq_pfn = pfn;
+				break;
+			default:
+				pr_err("found an unknown selector %d\n", sel);
+		}
 		//TODO check the selector to prevent out of range accessing
-		vnet->vqs[sel].pfn = pfn;
 	}
 
 	sched_set_normal(vnet->monitor_config_task, 19);
@@ -254,19 +407,49 @@ static int epf_virtnet_config_monitor(void *data)
 	/*
 	 * setup virtqueues
 	 */
-	tmp = epf_virtnet_map_host_vq(vnet, vnet->vqs[0].pfn);
+	tmp = epf_virtnet_map_host_vq(vnet, rxvq_pfn);
 	if (!tmp) {
 		pr_err("failed to map host virtqueue\n");
 		return -ENOMEM;
 	}
-	vring_init(&vnet->vqs[0].vring, EPF_VIRTNET_Q_SIZE, tmp, VIRTIO_PCI_VRING_ALIGN);
+	vring_init(&vring, EPF_VIRTNET_Q_SIZE, tmp,
+		   VIRTIO_PCI_VRING_ALIGN);
 
-	tmp = epf_virtnet_map_host_vq(vnet, vnet->vqs[1].pfn);
+	ret = vringh_init_kern(&vnet->rx_vrh, 0, EPF_VIRTNET_Q_SIZE, false,
+			       vring.desc, vring.avail, vring.used);
+	if (ret) {
+		pr_err("failed to init tx vringh\n");
+		return ret;
+	}
+
+	kvec = kmalloc_array(EPF_VIRTNET_Q_SIZE, sizeof kvec[0], GFP_KERNEL);
+	if (!kvec) {
+		pr_err("failed malloc\n");
+		return -ENOMEM;
+	}
+	vringh_kiov_init(&vnet->rxiov, kvec, EPF_VIRTNET_Q_SIZE);
+
+	tmp = epf_virtnet_map_host_vq(vnet, txvq_pfn);
 	if (!tmp) {
 		pr_err("failed to map host virtqueue\n");
 		return -ENOMEM;
 	}
-	vring_init(&vnet->vqs[1].vring, EPF_VIRTNET_Q_SIZE, tmp, VIRTIO_PCI_VRING_ALIGN);
+	vring_init(&vring, EPF_VIRTNET_Q_SIZE, tmp,
+		   VIRTIO_PCI_VRING_ALIGN);
+
+	ret = vringh_init_kern(&vnet->tx_vrh, 0, EPF_VIRTNET_Q_SIZE, false,
+			       vring.desc, vring.avail, vring.used);
+	if (ret) {
+		pr_err("failed to init tx vringh\n");
+		return ret;
+	}
+
+	kvec = kmalloc_array(EPF_VIRTNET_Q_SIZE, sizeof kvec[0], GFP_KERNEL);
+	if (!kvec) {
+		pr_err("failed malloc\n");
+		return -ENOMEM;
+	}
+	vringh_kiov_init(&vnet->txiov, kvec, EPF_VIRTNET_Q_SIZE);
 
 	// TODO more investigate a last argument.
 	vnet->host_tx_wq = alloc_workqueue("epf_vnet_host_tx",
@@ -276,7 +459,18 @@ static int epf_virtnet_config_monitor(void *data)
 		return -ENOMEM;
 	}
 
+	vnet->irq_wq = alloc_workqueue("epf-vnet/irq-wq",
+			WQ_MEM_RECLAIM | WQ_HIGHPRI | WQ_UNBOUND, 0);
+	if (!vnet->irq_wq) {
+		return -ENOMEM;
+	}
+
+	vringh_notify_enable_iomem(&vnet->tx_vrh);
+	vringh_notify_enable_iomem(&vnet->rx_vrh);
+
 	INIT_DELAYED_WORK(&vnet->host_tx_handler, epf_virtnet_host_tx_handler);
+	INIT_WORK(&vnet->raise_irq_work, epf_virtnet_raise_irq_handler);
+
 	queue_work(vnet->host_tx_wq, &vnet->host_tx_handler.work);
 
 	return 0;
@@ -295,6 +489,48 @@ static int epf_virtnet_spawn_config_monitor(struct pci_epf *epf)
 
 	sched_set_fifo(vnet->monitor_config_task);
 	wake_up_process(vnet->monitor_config_task);
+
+	return 0;
+}
+
+struct epf_dma_filter_param {
+	struct device *dev;
+	u32 dma_mask;
+};
+
+static bool epf_virtnet_dma_filter(struct dma_chan *chan, void *param)
+{
+	struct epf_dma_filter_param *fparam = param;
+	struct dma_slave_caps caps;
+
+	memset(&caps, 0, sizeof caps);
+	dma_get_slave_caps(chan, &caps);
+
+	return chan->device->dev == fparam->dev &&
+	       (fparam->dma_mask & caps.directions);
+}
+
+static int epf_virtnet_init_dma(struct epf_virtnet *vnet)
+{
+	dma_cap_mask_t mask;
+	struct epf_dma_filter_param param;
+	struct device *dma_dev;
+
+	dma_dev = vnet->epf->epc->dev.parent;
+
+	dma_cap_zero(mask);
+	dma_cap_set(DMA_SLAVE, mask);
+
+	param.dev = vnet->epf->epc->dev.parent;
+	param.dma_mask = BIT(DMA_MEM_TO_DEV);
+
+	vnet->tx_dma_chan = dma_request_channel(
+			mask, epf_virtnet_dma_filter, &param);
+
+	param.dma_mask = BIT(DMA_DEV_TO_MEM);
+
+	vnet->rx_dma_chan = dma_request_channel(
+			mask, epf_virtnet_dma_filter, &param);
 
 	return 0;
 }
@@ -324,6 +560,8 @@ static int epf_virtnet_bind(struct pci_epf *epf)
 	}
 
 	epf_virtnet_init_config(epf);
+
+	epf_virtnet_init_dma(epf_get_drvdata(epf));
 
 	ret = epf_virtnet_spawn_config_monitor(epf);
 	if (ret) {
