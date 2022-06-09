@@ -211,7 +211,7 @@ static void epf_virtnet_host_tx_handler(struct work_struct *work)
 	}
 
 	queue_delayed_work(vnet->host_tx_wq, &vnet->host_tx_handler,
-			   msecs_to_jiffies(1));
+			   usecs_to_jiffies(1));
 }
 
 static int epf_virtnet_config_monitor(void *data)
