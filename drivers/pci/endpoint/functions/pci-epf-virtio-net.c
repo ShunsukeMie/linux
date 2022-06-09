@@ -179,6 +179,7 @@ static void epf_virtnet_host_tx_handler(struct work_struct *work)
 	struct pci_epc *epc = epf->epc;
 	struct vring vring;
 	u16 used_idx, pre_used_idx, desc_idx;
+	u16 a_idx, pre_a_idx;
 	u16 mod_u_idx;
 	u32 total_len;
 
@@ -186,8 +187,10 @@ static void epf_virtnet_host_tx_handler(struct work_struct *work)
 		   VIRTIO_PCI_VRING_ALIGN);
 
 	pre_used_idx = used_idx = ioread16(&vring.used->idx);
+	pre_a_idx = a_idx = ioread16(&vring->avail->idx);
 
-	while (used_idx != (ioread16(&vring.avail->idx))) {
+cont:
+	while (used_idx != a_idx) {
 		mod_u_idx = used_idx & EPF_VIRTNET_Q_MASK;
 		desc_idx = ioread16(&vring.avail->ring[mod_u_idx]);
 
@@ -208,6 +211,12 @@ static void epf_virtnet_host_tx_handler(struct work_struct *work)
 		if (!ioread16(&vring.avail->flags) & VRING_AVAIL_F_NO_INTERRUPT)
 			pci_epc_raise_irq(epc, epf->func_no, epf->vfunc_no, PCI_EPC_IRQ_LEGACY, 0);
 
+	}
+
+	a_idx = ioread16(&vring->avail->idx);
+	if (pre_a_idx != a_idx) {
+		pre_a_idx = a_idx;
+		goto cont;
 	}
 
 	queue_delayed_work(vnet->host_tx_wq, &vnet->host_tx_handler,
