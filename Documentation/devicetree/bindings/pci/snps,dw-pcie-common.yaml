@@ -58,6 +58,36 @@ properties:
     minItems: 1
     maxItems: 26
 
+  clocks:
+    description:
+      DWC PCIe reference manual explicitly defines a set of the clocks required
+      to get the controller working correctly. In general all of them can
+      be divided into two groups':' application and core clocks. Note the
+      platforms may have some of the clock sources unspecified in case if the
+      corresponding domains are fed up from a common clock source.
+    minItems: 1
+    maxItems: 7
+
+  clock-names:
+    minItems: 1
+    maxItems: 7
+
+  resets:
+    description:
+      DWC PCIe reference manual explicitly defines a set of the reset
+      signals required to be de-asserted to properly activate the controller
+      sub-parts. All of these signals can be divided into two sub-groups':'
+      application and core resets with respect to the main sub-domains they
+      are supposed to reset. Note the platforms may have some of these signals
+      unspecified in case if they are automatically handled or aggregated into
+      a comprehensive control module.
+    minItems: 1
+    maxItems: 10
+
+  reset-names:
+    minItems: 1
+    maxItems: 10
+
   phys:
     description:
       There can be up to the number of possible lanes PHYs specified.
@@ -217,5 +247,75 @@ definitions:
           Indicates that the internal safety mechanism detected and
           uncorrectable error.
         const: sft_ue
+
+  clock-names:
+    description:
+      Reference clock names common for the DWC PCIe Root Port and Endpoint
+      controllers.
+    anyOf:
+      - description:
+          Data Bus Interface (DBI) clock. Clock signal for the AXI-bus
+          interface of the Configuration-Dependent Module, which is
+          basically the set of the controller CSRs.
+        const: dbi
+      - description:
+          Application AXI-bus Master interface clock. Basically this is
+          a clock for the controller DMA interface (PCI-to-CPU).
+        const: mstr
+      - description:
+          Application AXI-bus Slave interface clock. This is a clock for
+          the CPU-to-PCI memory IO interface.
+        const: slv
+      - description:
+          Controller Core-PCS PIPE interface clock. It's normally
+          supplied by an external PCS-PHY.
+        const: pipe
+      - description:
+          Controller Primary clock. It's assumed that all controller input
+          signals (except resets) are synchronous to this clock.
+        const: core
+      - description:
+          Auxiliary clock for the controller PMC domain. The controller
+          partitioning implies having some parts to operate with this
+          clock in some power management states.
+        const: aux
+      - description:
+          Generic reference clock. In case if there are several
+          interfaces fed up with a common clock source it's advisable to
+          define it with this name (for instance pipe, core and aux can
+          be connected to a single source of the periodic signal).
+        const: ref
+      - description:
+          Clock for the PHY registers interface. Originally this is
+          a PHY-viewport-based interface, but some platform may have
+          specifically designed one.
+        const: phy_reg
+
+  reset-names:
+    description:
+      Reset signal names common for the DWC PCIe Root Port and Endpoint
+      controllers.
+    anyOf:
+      - description: Data Bus Interface (DBI) domain reset
+        const: dbi
+      - description: AXI-bus Master interface reset
+        const: mstr
+      - description: AXI-bus Slave interface reset
+        const: slv
+      - description: Controller Non-sticky CSR flags reset
+        const: non-sticky
+      - description: Controller sticky CSR flags reset
+        const: sticky
+      - description: PIPE-interface (Core-PCS) logic reset
+        const: pipe
+      - description:
+          Controller primary reset (resets everything except PMC module)
+        const: core
+      - description: PCS/PHY block reset
+        const: phy
+      - description: PMC hot reset signal
+        const: hot
+      - description: Cold reset signal
+        const: pwr
 
 ...

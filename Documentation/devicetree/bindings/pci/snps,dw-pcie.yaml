@@ -78,7 +78,25 @@ properties:
       - contains:
           const: msi
 
-  clocks: true
+  clocks:
+    minItems: 1
+    maxItems: 7
+
+  clock-names:
+    minItems: 1
+    maxItems: 7
+    items:
+      $ref: /schemas/pci/snps,dw-pcie-common.yaml#/definitions/clock-names
+
+  resets:
+    minItems: 1
+    maxItems: 10
+
+  reset-names:
+    minItems: 1
+    maxItems: 10
+    items:
+      $ref: /schemas/pci/snps,dw-pcie-common.yaml#/definitions/reset-names
 
 additionalProperties: true
 
