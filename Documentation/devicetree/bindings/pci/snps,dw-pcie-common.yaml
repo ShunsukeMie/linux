@@ -17,6 +17,25 @@ description:
 select: false
 
 properties:
+  interrupts:
+    description:
+      There are two main sub-blocks which are normally capable of
+      generating interrupts. It's System Information Interface and MSI
+      interface. While the former one has some common for the Host and
+      Endpoint controllers IRQ-signals, the later interface is obviously
+      Root Complex specific since it's responsible for the incoming MSI
+      messages signalling. The System Information IRQ signals are mainly
+      responsible for reporting the generic PCIe hierarchy and Root
+      Complex events like VPD IO request, general AER, PME, Hot-plug, link
+      bandwidth change, link equalization request, INTx asserted/deasserted
+      Message detection, embedded DMA Tx/Rx/Error.
+    minItems: 1
+    maxItems: 26
+
+  interrupt-names:
+    minItems: 1
+    maxItems: 26
+
   phys:
     description:
       There can be up to the number of possible lanes PHYs specified.
@@ -90,5 +109,37 @@ properties:
       registers. This feature has been available since DWC PCIe v4.80a.
 
 additionalProperties: true
+
+definitions:
+  interrupt-names:
+    description:
+      IRQ signal names common for the DWC PCIe Root Port and Endpoint
+      controllers.
+    oneOf:
+      - description:
+          Controller request to read or write virtual product data
+          from/to the VPD capability registers.
+        const: vpd
+      - description:
+          Link Equalization Request flag is set in the Link Status 2
+          register (applicable if the corresponding IRQ is enabled in
+          the Link Control 3 register).
+        const: l_eq
+      - description:
+          Indicates that the eDMA Tx/Rx transfer is complete or that an
+          error has occurred on the corresponding channel. eDMA can have
+          eight Tx (Write) and Rx (Read) eDMA channels thus supporting up
+          to 16 IRQ signals all together. Write eDMA channels shall go
+          first in the ordered row as per default edma_int[*] bus setup.
+        pattern: '^dma([0-9]|1[0-5])?$'
+      - description:
+          PCIe protocol correctable error or a Data Path protection
+          correctable error is detected by the automotive/safety
+          feature.
+        const: sft_ce
+      - description:
+          Indicates that the internal safety mechanism detected and
+          uncorrectable error.
+        const: sft_ue
 
 ...

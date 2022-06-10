@@ -54,9 +54,23 @@ properties:
       enum: [ dbi, dbi2, config, atu, app, elbi, mgmt, ctrl, parf, cfg, link,
               ulreg, smu, mpu, apb, phy ]
 
-  interrupts: true
+  interrupts:
+    description:
+      At least MSI interrupt signal is supposed to be specified for
+      the DWC PCIe host controller.
+    minItems: 1
+    maxItems: 26
 
-  interrupt-names: true
+  interrupt-names:
+    minItems: 1
+    maxItems: 26
+    items:
+      anyOf:
+        - $ref: /schemas/pci/snps,dw-pcie-common.yaml#/definitions/interrupt-names
+        - $ref: '#/definitions/interrupt-names'
+    allOf:
+      - contains:
+          const: msi
 
   clocks: true
 
@@ -66,6 +80,48 @@ required:
   - compatible
   - reg
   - reg-names
+
+definitions:
+  interrupt-names:
+    description:
+      DWC PCIe Root Port/Complex specific IRQ signal names.
+    oneOf:
+      - description:
+          DSP AXI MSI Interrupt detected. It gets de-asserted when there is
+          no more MSI interrupt pending. The interrupt is relevant to the
+          iMSI-RX - Integrated MSI Receiver (AXI bridge).
+        const: msi
+      - description:
+          Legacy A/B/C/D interrupt signal. Basically it's triggered by
+          receiving a Assert_INT{A,B,C,D}/Desassert_INT{A,B,C,D} message
+          from the downstream device.
+        pattern: "^int(a|b|c|d)$"
+      - description:
+          Error condition detected and a bit is set in the Root Error Status
+          register of the AER capability. It's asserted when the RC
+          internally generated an error or an error message is received by
+          the RC.
+        const: aer
+      - description:
+          PME message is received by the port. That means having the PME
+          status bit set in the Root Status register (the event is
+          supposed to be unmasked in the Root Control register).
+        const: pme
+      - description:
+          Hot-plug event is detected. That is a bit has been set in the
+          Slot Status register and the corresponding event is enabled in
+          the Slot Control register.
+        const: hp
+      - description:
+          Link Autonomous Bandwidth Status flag has been set in the Link
+          Status register (the event is supposed to be unmasked in the
+          Link Control register).
+        const: bw_au
+      - description:
+          Bandwidth Management Status flag has been set in the Link
+          Status register (the event is supposed to be unmasked in the
+          Link Control register).
+        const: bw_mg
 
 examples:
   - |
@@ -82,6 +138,7 @@ examples:
       bus-range = <0x0 0xff>;
 
       interrupts = <25>, <24>;
+      interrupt-names = "msi", "hp";
       #interrupt-cells = <1>;
 
       reset-gpios = <&port0 0 1>;
