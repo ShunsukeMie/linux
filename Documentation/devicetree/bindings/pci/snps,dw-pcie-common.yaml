@@ -17,6 +17,21 @@ description:
 select: false
 
 properties:
+  phys:
+    description:
+      There can be up to the number of possible lanes PHYs specified.
+      Obviously each specified PHY is supposed to be able to work in the
+      PCIe mode with a speed implied by the DWC PCIe controller it is
+      attached to.
+    minItems: 1
+    maxItems: 16
+
+  phy-names:
+    minItems: 1
+    maxItems: 16
+    items:
+      pattern: '^pcie([0-9]+|-?phy[0-9]*)?$'
+
   reset-gpio:
     deprecated: true
     description:
