@@ -13,6 +13,12 @@ maintainers:
 description: |
   Synopsys DesignWare PCIe host controller endpoint
 
+# Please create a separate DT-schema for the particular DWC PCIe Endpoint
+# controller and make sure it's assigned with the vendor-specific
+# compatible string together with the generic Synopsys DWC PCIe strings so
+# the bindings would be evaluated against that schema.
+select: false
+
 allOf:
   - $ref: /schemas/pci/pci-ep.yaml#
   - $ref: /schemas/pci/snps,dw-pcie-common.yaml#
@@ -20,8 +26,18 @@ allOf:
 properties:
   compatible:
     anyOf:
-      - {}
-      - const: snps,dw-pcie-ep
+      - description:
+          DWC PCIe Endpoint controller (IP-core version is explicitly
+          specified in the additional compatible string)
+        contains:
+          allOf:
+            - pattern: '^snps,dw-pcie-ep-[0-9]+\.[0-9]+a?$'
+            - const: snps,dw-pcie-ep
+      - description:
+          DWC PCIe Endpoint controller (IP-core version is either unknown
+          or can be read from the PCIe version register of the PL reg-space)
+        contains:
+          const: snps,dw-pcie-ep
 
   reg:
     description: |
@@ -38,16 +54,16 @@ properties:
       enum: [dbi, dbi2, config, atu, addr_space, link, atu_dma, appl]
 
 required:
+  - compatible
   - reg
   - reg-names
-  - compatible
 
 additionalProperties: true
 
 examples:
   - |
     pcie-ep@dfd00000 {
-      compatible = "snps,dw-pcie-ep";
+      compatible = "vendor,soc-pcie", "snps,dw-pcie-ep";
       reg = <0xdfc00000 0x0001000>, /* IP registers 1 */
             <0xdfc01000 0x0001000>, /* IP registers 2 */
             <0xd0000000 0x2000000>; /* Configuration space */

@@ -13,6 +13,12 @@ maintainers:
 description: |
   Synopsys DesignWare PCIe host controller
 
+# Please create a separate DT-schema for the particular DWC PCIe Root Port
+# controller and make sure it's assigned with the vendor-specific
+# compatible string together with the generic Synopsys DWC PCIe strings so
+# the bindings would be evaluated against that schema.
+select: false
+
 allOf:
   - $ref: /schemas/pci/pci-bus.yaml#
   - $ref: /schemas/pci/snps,dw-pcie-common.yaml#
@@ -20,8 +26,18 @@ allOf:
 properties:
   compatible:
     anyOf:
-      - {}
-      - const: snps,dw-pcie
+      - description:
+          DWC PCIe Root Port controller (IP-core version is explicitly
+          specified in the additional compatible string)
+        contains:
+          allOf:
+            - pattern: '^snps,dw-pcie-[0-9]+\.[0-9]+a?$'
+            - const: snps,dw-pcie
+      - description:
+          DWC PCIe Root Port controller (IP-core version is either unknown
+          or can be read from the PCIe version register of the PL reg-space)
+        contains:
+          const: snps,dw-pcie
 
   reg:
     description: |
@@ -47,14 +63,14 @@ properties:
 additionalProperties: true
 
 required:
+  - compatible
   - reg
   - reg-names
-  - compatible
 
 examples:
   - |
     pcie@dfc00000 {
-      compatible = "snps,dw-pcie";
+      compatible = "vendor,soc-pcie", "snps,dw-pcie";
       device_type = "pci";
       reg = <0xdfc00000 0x0001000>, /* IP registers */
             <0xd0000000 0x0002000>; /* Configuration space */
