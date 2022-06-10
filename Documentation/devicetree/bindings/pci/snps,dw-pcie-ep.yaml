@@ -40,18 +40,25 @@ properties:
           const: snps,dw-pcie-ep
 
   reg:
-    description: |
-      It should contain Data Bus Interface (dbi) and config registers for all
-      versions.
-      For designware core version >= 4.80, it may contain ATU address space.
+    description:
+      DBI, DBI2 reg-spaces and outbound memory window are required for the
+      normal controller functioning. iATU memory IO region is also required
+      if the space is unrolled (IP-core version >= 4.80a).
     minItems: 2
-    maxItems: 4
+    maxItems: 5
 
   reg-names:
     minItems: 2
-    maxItems: 4
+    maxItems: 5
     items:
-      enum: [dbi, dbi2, config, atu, addr_space, link, atu_dma, appl]
+      anyOf:
+        - $ref: /schemas/pci/snps,dw-pcie-common.yaml#/definitions/reg-names
+        - $ref: '#/definitions/reg-names'
+    allOf:
+      - contains:
+          const: dbi
+      - contains:
+          const: addr_space
 
   interrupts:
     description:
@@ -76,6 +83,19 @@ required:
   - reg-names
 
 additionalProperties: true
+
+definitions:
+  reg-names:
+    description:
+      DWC PCIe Endpoint specific CSR space names.
+    oneOf:
+      - description:
+          Outbound iATU-capable memory-region which will be used to
+          generate various application-specific traffic on the PCIe bus
+          hierarchy. It's usage scenario depends on the endpoint
+          functionality, for instance it can be used to create MSI(X)
+          messages.
+        const: addr_space
 
 examples:
   - |
