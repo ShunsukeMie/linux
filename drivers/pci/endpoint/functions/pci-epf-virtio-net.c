@@ -179,30 +179,27 @@ static void epf_virtnet_host_tx_handler(struct work_struct *work)
 	struct pci_epc *epc = epf->epc;
 	struct vring vring;
 	u16 used_idx, pre_used_idx, desc_idx;
-	struct vring_desc __iomem *desc;
-	u64 addr;
-	u32 len;
+	u16 mod_u_idx;
+	u32 total_len;
 
 	vring_init(&vring, EPF_VIRTNET_Q_SIZE, vnet->vqs[1].addr,
 		   VIRTIO_PCI_VRING_ALIGN);
 
 	pre_used_idx = used_idx = ioread16(&vring.used->idx);
 
-	while (used_idx != ioread16(&vring.avail->idx)) {
-		desc_idx = ioread16(&vring.avail->ring[used_idx]);
-		desc = &vring.desc[desc_idx];
+	while (used_idx != (ioread16(&vring.avail->idx))) {
+		mod_u_idx = used_idx & EPF_VIRTNET_Q_MASK;
+		desc_idx = ioread16(&vring.avail->ring[mod_u_idx]);
 
-		addr = ioread64(&desc->addr);
-		len = ioread32(&desc->len);
 
 		// TODO transfer
 		// - by dma
 		// - by cpu
 
-		iowrite16(desc_idx, &vring.used->ring[used_idx].id);
-		iowrite32(len, &vring.used->ring[used_idx].len);
+		iowrite16(desc_idx, &vring.used->ring[mod_u_idx].id);
+		iowrite32(total_len, &vring.used->ring[mod_u_idx].len);
 
-		used_idx = (used_idx + 1) & EPF_VIRTNET_Q_MASK;
+		used_idx++;
 	}
 
 	if (pre_used_idx != used_idx) {
