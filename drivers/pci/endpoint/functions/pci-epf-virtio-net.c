@@ -204,7 +204,6 @@ static void epf_virtnet_host_tx_handler(struct work_struct *work)
 
 	if (pre_used_idx != used_idx) {
 		iowrite16(used_idx, &vring.used->idx);
-		smp_mb();
 
 		if (!ioread16(&vring.avail->flags) & VRING_AVAIL_F_NO_INTERRUPT)
 			pci_epc_raise_irq(epc, epf->func_no, epf->vfunc_no, PCI_EPC_IRQ_LEGACY, 0);
