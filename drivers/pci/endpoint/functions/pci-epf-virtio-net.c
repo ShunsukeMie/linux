@@ -37,6 +37,7 @@ struct epf_virtnet {
 	struct {
 		u32 pfn;
 		void __iomem *addr;
+		struct vring vring;
 	} *vqs;
 };
 
@@ -177,38 +178,37 @@ static void epf_virtnet_host_tx_handler(struct work_struct *work)
 		container_of(work, struct epf_virtnet, host_tx_handler.work);
 	struct pci_epf *epf = vnet->epf;
 	struct pci_epc *epc = epf->epc;
-	struct vring vring;
+	struct vring *vring;
 	u16 used_idx, pre_used_idx, desc_idx;
 	u16 a_idx, pre_a_idx;
 	u16 mod_u_idx;
 	u32 total_len;
 
-	vring_init(&vring, EPF_VIRTNET_Q_SIZE, vnet->vqs[1].addr,
-		   VIRTIO_PCI_VRING_ALIGN);
+	vring = &vnet->vqs[1].vring;
 
-	pre_used_idx = used_idx = ioread16(&vring.used->idx);
+	pre_used_idx = used_idx = ioread16(&vring->used->idx);
 	pre_a_idx = a_idx = ioread16(&vring->avail->idx);
 
 cont:
 	while (used_idx != a_idx) {
 		mod_u_idx = used_idx & EPF_VIRTNET_Q_MASK;
-		desc_idx = ioread16(&vring.avail->ring[mod_u_idx]);
+		desc_idx = ioread16(&vring->avail->ring[mod_u_idx]);
 
 
 		// TODO transfer
 		// - by dma
 		// - by cpu
 
-		iowrite16(desc_idx, &vring.used->ring[mod_u_idx].id);
-		iowrite32(total_len, &vring.used->ring[mod_u_idx].len);
+		iowrite16(desc_idx, &vring->used->ring[mod_u_idx].id);
+		iowrite32(total_len, &vring->used->ring[mod_u_idx].len);
 
 		used_idx++;
 	}
 
 	if (pre_used_idx != used_idx) {
-		iowrite16(used_idx, &vring.used->idx);
+		iowrite16(used_idx, &vring->used->idx);
 
-		if (!ioread16(&vring.avail->flags) & VRING_AVAIL_F_NO_INTERRUPT)
+		if (!ioread16(&vring->avail->flags) & VRING_AVAIL_F_NO_INTERRUPT)
 			pci_epc_raise_irq(epc, epf->func_no, epf->vfunc_no, PCI_EPC_IRQ_LEGACY, 0);
 
 	}
@@ -229,6 +229,7 @@ static int epf_virtnet_config_monitor(void *data)
 	struct virtio_common_config *common_cfg = &vnet->pci_config->common_cfg;
 	const u16 q_select_default = epf_virtnet_get_default_q_sel(vnet);
 	register u32 sel, pfn;
+	void __iomem *tmp;
 
 	vnet->vqs = kcalloc(2, sizeof vnet->vqs[0], GFP_KERNEL);
 
@@ -253,17 +254,19 @@ static int epf_virtnet_config_monitor(void *data)
 	/*
 	 * setup virtqueues
 	 */
-	vnet->vqs[0].addr = epf_virtnet_map_host_vq(vnet, vnet->vqs[0].pfn);
-	if (!vnet->vqs[0].addr) {
+	tmp = epf_virtnet_map_host_vq(vnet, vnet->vqs[0].pfn);
+	if (!tmp) {
 		pr_err("failed to map host virtqueue\n");
 		return -ENOMEM;
 	}
+	vring_init(&vnet->vqs[0].vring, EPF_VIRTNET_Q_SIZE, tmp, VIRTIO_PCI_VRING_ALIGN);
 
-	vnet->vqs[1].addr = epf_virtnet_map_host_vq(vnet, vnet->vqs[1].pfn);
-	if (!vnet->vqs[1].addr) {
+	tmp = epf_virtnet_map_host_vq(vnet, vnet->vqs[1].pfn);
+	if (!tmp) {
 		pr_err("failed to map host virtqueue\n");
 		return -ENOMEM;
 	}
+	vring_init(&vnet->vqs[1].vring, EPF_VIRTNET_Q_SIZE, tmp, VIRTIO_PCI_VRING_ALIGN);
 
 	// TODO more investigate a last argument.
 	vnet->host_tx_wq = alloc_workqueue("epf_vnet_host_tx",
