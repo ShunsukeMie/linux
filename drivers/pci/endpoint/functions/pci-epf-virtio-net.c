@@ -3,14 +3,16 @@
  *
  */
 
+#include <linux/etherdevice.h>
+#include <linux/ethtool.h>
 #include <linux/module.h>
+#include <linux/netdevice.h>
 #include <linux/pci-epf.h>
 #include <linux/pci-epc.h>
 #include <linux/virtio_ids.h>
 #include <linux/virtio_net.h>
 #include <linux/virtio_pci.h>
 #include <linux/virtio_ring.h>
-#include <linux/etherdevice.h>
 
 //TODO care for native endianess
 struct virtio_common_config {
@@ -44,6 +46,7 @@ struct epf_virtnet {
 struct virtnet_info {
 	struct net_device *dev;
 	struct epf_virtnet *epf_vnet;
+	unsigned int status;
 
 	/* Max # of queue pairs supported by the device */
 	u16 max_queue_pairs;
@@ -368,6 +371,11 @@ static struct pci_epf_header epf_virtnet_header = {
 	.interrupt_pin = PCI_INTERRUPT_INTA,
 };
 
+static const struct net_device_ops virtnet_netdev;
+static const struct ethtool_ops virtnet_ethtool_ops;
+#define MIN_MTU ETH_MIN_MTU
+#define MAX_MTU ETH_MAX_MTU
+
 static int epf_virtnet_init_netdev(struct epf_virtnet *epf_vnet)
 {
 	int i, err = -ENOMEM;
@@ -548,9 +556,9 @@ static int epf_virtnet_init_netdev(struct epf_virtnet *epf_vnet)
 	vi->max_queue_pairs = max_queue_pairs;
 
 	/* Allocate/initialize the rx/tx queues, and invoke find_vqs */
-	err = init_vqs(vi);
-	if (err)
-		goto free;
+// 	err = init_vqs(vi);
+// 	if (err)
+// 		goto free;
 
 // #ifdef CONFIG_SYSFS
 // 	if (vi->mergeable_rx_bufs)
@@ -581,13 +589,13 @@ static int epf_virtnet_init_netdev(struct epf_virtnet *epf_vnet)
 
 // 	virtio_device_ready(vdev);
 
-	err = virtnet_cpu_notif_add(vi);
-	if (err) {
-		pr_debug("virtio_net: registering cpu notifier failed\n");
-		goto free_unregister_netdev;
-	}
+// 	err = virtnet_cpu_notif_add(vi);
+// 	if (err) {
+// 		pr_debug("virtio_net: registering cpu notifier failed\n");
+// 		goto free_unregister_netdev;
+// 	}
 
-	virtnet_set_queues(vi, vi->curr_queue_pairs);
+// 	virtnet_set_queues(vi, vi->curr_queue_pairs);
 
 	/* Assume link up if device can't report link status,
 	   otherwise get link status from config. */
@@ -597,7 +605,7 @@ static int epf_virtnet_init_netdev(struct epf_virtnet *epf_vnet)
 // 		schedule_work(&vi->config_work);
 // 	} else {
 		vi->status = VIRTIO_NET_S_LINK_UP;
-		virtnet_update_settings(vi);
+// 		virtnet_update_settings(vi);
 		netif_carrier_on(dev);
 // 	}
 
@@ -612,15 +620,15 @@ static int epf_virtnet_init_netdev(struct epf_virtnet *epf_vnet)
 	return 0;
 
 free_unregister_netdev:
-	virtio_reset_device(vdev);
+// 	virtio_reset_device(vdev);
 
 	unregister_netdev(dev);
 free_failover:
-	net_failover_destroy(vi->failover);
+// 	net_failover_destroy(vi->failover);
 free_vqs:
-	cancel_delayed_work_sync(&vi->refill);
-	free_receive_page_frags(vi);
-	virtnet_del_vqs(vi);
+// 	cancel_delayed_work_sync(&vi->refill);
+// 	free_receive_page_frags(vi);
+// 	virtnet_del_vqs(vi);
 free:
 	free_netdev(dev);
 	return err;
@@ -630,6 +638,7 @@ static int epf_virtnet_probe(struct pci_epf *epf)
 {
 	struct epf_virtnet *vnet;
 	struct device *dev;
+	int err;
 
 	dev = &epf->dev;
 
@@ -640,6 +649,11 @@ static int epf_virtnet_probe(struct pci_epf *epf)
 	epf->header = &epf_virtnet_header;
 	vnet->epf = epf;
 	epf_set_drvdata(epf, vnet);
+
+	err = epf_virtnet_init_netdev(vnet);
+	if (err) {
+		return err;
+	}
 
 	return 0;
 }
