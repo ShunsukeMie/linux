@@ -26,6 +26,16 @@ struct virtio_common_config {
 	uint8_t isr_status;
 } __packed;
 
+struct send_queue {
+	struct virtqueue *vq;
+	struct napi_struct napi;
+};
+
+struct receive_queue {
+	struct virtqueue *vq;
+	struct napi_struct napi;
+};
+
 struct epf_virtnet {
 	struct pci_epf *epf;
 	struct {
@@ -46,6 +56,8 @@ struct epf_virtnet {
 struct virtnet_info {
 	struct net_device *dev;
 	struct epf_virtnet *epf_vnet;
+	struct send_queue *sq;
+	struct receive_queue *rq;
 	unsigned int status;
 
 	/* Max # of queue pairs supported by the device */
@@ -56,6 +68,8 @@ struct virtnet_info {
 
 	/* Packet virtio header size */
 	u8 hdr_len;
+
+	struct control_buf *ctrl;
 };
 
 static int epf_virtnet_setup_bar(struct pci_epf *epf)
@@ -371,7 +385,101 @@ static struct pci_epf_header epf_virtnet_header = {
 	.interrupt_pin = PCI_INTERRUPT_INTA,
 };
 
-static const struct net_device_ops virtnet_netdev;
+static int virtnet_alloc_queues(struct virtnet_info *vi)
+{
+// 	int i;
+
+// 	if (vi->has_cvq) {
+// 		vi->ctrl = kzalloc(sizeof(*vi->ctrl), GFP_KERNEL);
+// 		if (!vi->ctrl)
+// 			goto err_ctrl;
+// 	} else {
+// 		vi->ctrl = NULL;
+// 	}
+	vi->sq = kcalloc(vi->max_queue_pairs, sizeof(*vi->sq), GFP_KERNEL);
+	if (!vi->sq)
+		goto err_sq;
+	vi->rq = kcalloc(vi->max_queue_pairs, sizeof(*vi->rq), GFP_KERNEL);
+	if (!vi->rq)
+		goto err_rq;
+
+// 	INIT_DELAYED_WORK(&vi->refill, refill_work);
+// 	for (i = 0; i < vi->max_queue_pairs; i++) {
+// 		vi->rq[i].pages = NULL;
+// 		netif_napi_add(vi->dev, &vi->rq[i].napi, virtnet_poll,
+// 			       napi_weight);
+// 		netif_tx_napi_add(vi->dev, &vi->sq[i].napi, virtnet_poll_tx,
+// 				  napi_tx ? napi_weight : 0);
+// 
+// 		sg_init_table(vi->rq[i].sg, ARRAY_SIZE(vi->rq[i].sg));
+// 		ewma_pkt_len_init(&vi->rq[i].mrg_avg_pkt_len);
+// 		sg_init_table(vi->sq[i].sg, ARRAY_SIZE(vi->sq[i].sg));
+// 
+// 		u64_stats_init(&vi->rq[i].stats.syncp);
+// 		u64_stats_init(&vi->sq[i].stats.syncp);
+// 	}
+
+	return 0;
+
+err_rq:
+	kfree(vi->sq);
+err_sq:
+	kfree(vi->ctrl);
+// err_ctrl:
+	return -ENOMEM;
+}
+
+static int init_vqs(struct virtnet_info *vi)
+{
+	int ret;
+
+	/* Allocate send & receive queues */
+	ret = virtnet_alloc_queues(vi);
+	if (ret)
+		goto err;
+
+// 	ret = virtnet_find_vqs(vi);
+// 	if (ret)
+// 		goto err_free;
+
+// 	cpus_read_lock();
+// 	virtnet_set_affinity(vi);
+// 	cpus_read_unlock();
+
+	return 0;
+
+// err_free:
+// 	virtnet_free_queues(vi);
+err:
+	return ret;
+}
+
+static int epf_virtnet_open(struct net_device *dev)
+{
+// 	struct virtnet_info *vi = netdev_priv(dev);
+	return 0;
+}
+
+static int epf_virtnet_stop(struct net_device *dev)
+{
+// 	struct virtnet_info *vi = netdev_priv(dev);
+	return 0;
+}
+
+static netdev_tx_t epf_virtnet_start_xmit(struct sk_buff *skb, struct net_device *dev)
+{
+	//XXX: current implementation drops all of packets.
+	dev->stats.tx_dropped++;
+
+	return NETDEV_TX_OK;
+}
+
+static const struct net_device_ops epf_virtnet_netdev = {
+	.ndo_open = epf_virtnet_open,
+	.ndo_stop = epf_virtnet_stop,
+	.ndo_start_xmit = epf_virtnet_start_xmit,
+};
+
 static const struct ethtool_ops virtnet_ethtool_ops;
 #define MIN_MTU ETH_MIN_MTU
 #define MAX_MTU ETH_MAX_MTU
@@ -382,7 +490,7 @@ static int epf_virtnet_init_netdev(struct epf_virtnet *epf_vnet)
 	struct net_device *dev;
 	struct virtnet_info *vi;
 	u16 max_queue_pairs;
-	int mtu;
+// 	int mtu;
 
 	/* Find if host supports multiqueue/rss virtio_net device */
 	//TODO read from config space?
@@ -405,7 +513,7 @@ static int epf_virtnet_init_netdev(struct epf_virtnet *epf_vnet)
 	/* Set up network device as normal. */
 	dev->priv_flags |= IFF_UNICAST_FLT | IFF_LIVE_ADDR_CHANGE |
 			   IFF_TX_SKB_NO_LINEAR;
-	dev->netdev_ops = &virtnet_netdev;
+	dev->netdev_ops = &epf_virtnet_netdev;
 	dev->features = NETIF_F_HIGHDMA;
 
 	dev->ethtool_ops = &virtnet_ethtool_ops;
@@ -556,9 +664,9 @@ static int epf_virtnet_init_netdev(struct epf_virtnet *epf_vnet)
 	vi->max_queue_pairs = max_queue_pairs;
 
 	/* Allocate/initialize the rx/tx queues, and invoke find_vqs */
-// 	err = init_vqs(vi);
-// 	if (err)
-// 		goto free;
+	err = init_vqs(vi);
+	if (err)
+		goto free;
 
 // #ifdef CONFIG_SYSFS
 // 	if (vi->mergeable_rx_bufs)
@@ -619,13 +727,13 @@ static int epf_virtnet_init_netdev(struct epf_virtnet *epf_vnet)
 
 	return 0;
 
-free_unregister_netdev:
+// free_unregister_netdev:
 // 	virtio_reset_device(vdev);
 
 	unregister_netdev(dev);
 free_failover:
 // 	net_failover_destroy(vi->failover);
-free_vqs:
+// free_vqs:
 // 	cancel_delayed_work_sync(&vi->refill);
 // 	free_receive_page_frags(vi);
 // 	virtnet_del_vqs(vi);
