@@ -701,6 +701,9 @@ int dw_pcie_ep_init(struct dw_pcie_ep *ep)
 
 	dw_pcie_version_detect(pci);
 
+	if (ep->ops->ep_pre_init)
+		ep->ops->ep_pre_init(ep);
+
 	dw_pcie_iatu_detect(pci);
 
 	ep->ib_window_map = devm_bitmap_zalloc(dev, pci->num_ib_windows,
