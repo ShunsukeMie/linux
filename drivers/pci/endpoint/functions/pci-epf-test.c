@@ -211,7 +211,7 @@ static int pci_epf_test_init_dma_chan(struct pci_epf_test *epf_test)
 	dma_cap_zero(mask);
 	dma_cap_set(DMA_SLAVE, mask);
 	dma_chan = dma_request_channel(mask, epf_dma_filter_fn, &filter);
-	if (IS_ERR_OR_NULL(dma_chan)) {
+	if (!dma_chan) {
 		dev_info(dev, "Failed to get private DMA rx channel. Falling back to generic one\n");
 		goto fail_back_tx;
 	}
