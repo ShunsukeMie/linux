@@ -11,6 +11,7 @@
 #include <linux/virtio_pci.h>
 #include <linux/virtio_ring.h>
 #include <linux/etherdevice.h>
+#include <linux/netdevice.h>
 
 //TODO care for native endianess
 struct virtio_common_config {
@@ -26,6 +27,7 @@ struct virtio_common_config {
 
 struct epf_virtnet {
 	struct pci_epf *epf;
+	struct net_device *ndev;
 	struct {
 		struct virtio_common_config common_cfg;
 		struct virtio_net_config net_cfg;
@@ -39,6 +41,17 @@ struct epf_virtnet {
 		void __iomem *addr;
 		struct vring vring;
 	} *vqs;
+	u16 rx_last_a_idx;
+
+	void __iomem *epc_mem;
+	phys_addr_t epc_mem_phys;
+	struct work_struct raise_irq_work;
+};
+
+struct local_ndev_adapter {
+	struct net_device *dev;
+	struct epf_virtnet *vnet;
+	struct napi_struct napi;
 };
 
 static int epf_virtnet_setup_bar(struct pci_epf *epf)
@@ -279,6 +292,9 @@ static int epf_virtnet_config_monitor(void *data)
 	INIT_DELAYED_WORK(&vnet->host_tx_handler, epf_virtnet_host_tx_handler);
 	queue_work(vnet->host_tx_wq, &vnet->host_tx_handler.work);
 
+	// this call should be after an rc configuration
+	netif_carrier_on(vnet->ndev);
+
 	return 0;
 }
 
@@ -295,6 +311,194 @@ static int epf_virtnet_spawn_config_monitor(struct pci_epf *epf)
 
 	sched_set_fifo(vnet->monitor_config_task);
 	wake_up_process(vnet->monitor_config_task);
+
+	return 0;
+}
+
+static int local_ndev_open(struct net_device *dev)
+{
+	struct local_ndev_adapter *adapter = netdev_priv(dev);
+	pr_debug("net_device_ops: open\n");
+
+	napi_enable(&adapter->napi);
+	// 	XXX:
+ 	netif_start_queue(dev);
+
+	return 0;
+}
+
+static int local_ndev_close(struct net_device *dev)
+{
+	return 0;
+}
+
+static int epf_virtnet_send_packet(struct epf_virtnet *vnet,
+				   struct virtio_net_hdr *hdr, void *buf,
+				   size_t len)
+{
+	int ret;
+	u16 rx_u_idx, rx_a_idx, rx_d_idx;
+	u16 mod_u_idx, mod_last_a_idx;
+	struct vring *vring;
+	struct vring_desc *rx_desc;
+
+	vring = &vnet->vqs[0].vring;
+
+	rx_u_idx = ioread16(&vring->used->idx);
+	rx_a_idx = ioread16(&vring->avail->idx);
+	mod_u_idx = rx_u_idx & EPF_VIRTNET_Q_MASK;
+	mod_last_a_idx = vnet->rx_last_a_idx & EPF_VIRTNET_Q_MASK;
+
+	pr_info("a_idx: %d\n", rx_a_idx);
+	if (vnet->rx_last_a_idx == rx_a_idx) {
+		pr_err("virtqueue is full\n");
+		return -EAGAIN;
+	}
+
+	rx_d_idx = ioread16(&vring->avail->ring[mod_last_a_idx]);
+	rx_desc = &vring->desc[rx_d_idx];
+
+	/* transport data to root complex */
+	{
+		struct pci_epf *epf = vnet->epf;
+		struct pci_epc *epc = epf->epc;
+
+		ret = pci_epc_map_addr(epc, epf->func_no, epf->vfunc_no,
+				       vnet->epc_mem_phys,
+				       ioread64(&rx_desc->addr), 1500);
+		if (ret) {
+			pr_info("failed to map addr\n");
+			return ret;
+		}
+
+		memcpy_toio(vnet->epc_mem, hdr, sizeof *hdr);
+		memcpy_toio(vnet->epc_mem + sizeof *hdr, buf, len);
+
+		pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no,
+				   vnet->epc_mem_phys);
+
+		len += sizeof *hdr;
+	}
+
+	iowrite32(len, &rx_desc->len);
+	iowrite16(ioread16(&rx_desc->flags) & ~0x1, &rx_desc->flags);
+
+	iowrite32(len, &vring->used->ring[mod_u_idx].len);
+	iowrite32(rx_d_idx, &vring->used->ring[mod_u_idx].id);
+
+	vnet->rx_last_a_idx++;
+
+	rx_u_idx++;
+	iowrite16(rx_u_idx, &vring->used->idx);
+
+	return 0;
+}
+
+static netdev_tx_t local_ndev_start_xmit(struct sk_buff *skb,
+					 struct net_device *dev)
+{
+	struct local_ndev_adapter *adapter = netdev_priv(dev);
+	struct epf_virtnet *vnet = adapter->vnet;
+	struct virtio_net_hdr hdr;
+	int ret;
+
+	hdr.flags = 0;
+	hdr.gso_type = VIRTIO_NET_HDR_GSO_NONE;
+
+	ret = epf_virtnet_send_packet(vnet, &hdr, skb->data, skb->len);
+	if (ret) {
+		pr_err("sending packet failed\n");
+		return NETDEV_TX_OK;
+	}
+
+	schedule_work(&vnet->raise_irq_work);
+
+	return NETDEV_TX_OK;
+}
+
+static const struct net_device_ops epf_virtnet_ndev_ops = {
+	.ndo_open = local_ndev_open,
+	.ndo_stop = local_ndev_close,
+	.ndo_start_xmit = local_ndev_start_xmit,
+// 	.ndo_get_stats64 = virtnet_stats,
+};
+
+static int local_ndev_rx_poll(struct napi_struct *napi, int budget)
+{
+// 	struct local_ndev_adapter *adapter = container_of(napi, struct local_ndev_adapter, napi);
+
+	return 0;
+}
+
+static void epf_virtnet_raise_irq_handler(struct work_struct *work)
+{
+	struct epf_virtnet *vnet =
+		container_of(work, struct epf_virtnet, raise_irq_work);
+
+	struct pci_epf *epf = vnet->epf;
+	struct pci_epc *epc = epf->epc;
+
+	pci_epc_raise_irq(epc, epf->func_no, epf->vfunc_no, PCI_EPC_IRQ_LEGACY, 0);
+}
+
+static int epf_virtnet_create_netdev(struct pci_epf *epf)
+{
+	int err;
+	struct net_device *ndev;
+	struct local_ndev_adapter *ndev_adapter;
+	struct epf_virtnet *vnet = epf_get_drvdata(epf);
+	struct virtio_net_config *net_cfg = &vnet->pci_config->net_cfg;
+
+	vnet->epc_mem = pci_epc_mem_alloc_addr(epf->epc, &vnet->epc_mem_phys, 1500);
+	if (!vnet->epc_mem) {
+		pr_info("failed to allocate epc mem %s:%d\n", __func__,
+				__LINE__);
+		return -ENOMEM;
+	}
+
+	ndev = alloc_etherdev_mq(0, net_cfg->max_virtqueue_pairs);
+	if (!ndev)
+		return -ENOMEM;
+
+	ndev_adapter = netdev_priv(ndev);
+	ndev_adapter->dev = ndev;
+	ndev_adapter->vnet = vnet;
+	vnet->ndev = ndev;
+
+// 	ndev->priv_flags;
+
+	ndev->netdev_ops = &epf_virtnet_ndev_ops;
+// 	ndev->features;
+// 	ndev->ethtool_ops;
+
+	// setup hardware features
+	SET_NETDEV_DEV(ndev, &epf->dev);
+// 	ndev->hw_features;
+
+// 	ndev->features;
+
+// 	ndev->vlan_features;
+
+	ndev->min_mtu = ETH_MIN_MTU;
+	ndev->max_mtu = ETH_MAX_MTU;
+
+	eth_hw_addr_random(ndev);
+
+	ndev->mtu = ETH_MAX_MTU;
+
+// 	ndev->needed_headroom;
+
+	netif_napi_add(ndev, &ndev_adapter->napi, local_ndev_rx_poll, NAPI_POLL_WEIGHT);
+
+	netif_carrier_off(ndev);
+
+	err = register_netdev(ndev);
+	if (err) {
+		pr_err("registering net device failed");
+		return err;
+	}
+
+	INIT_WORK(&vnet->raise_irq_work, epf_virtnet_raise_irq_handler);
 
 	return 0;
 }
@@ -324,6 +528,12 @@ static int epf_virtnet_bind(struct pci_epf *epf)
 	}
 
 	epf_virtnet_init_config(epf);
+
+	ret = epf_virtnet_create_netdev(epf);
+	if (ret) {
+		pr_err("Network device creation failed\n");
+		return ret;
+	}
 
 	ret = epf_virtnet_spawn_config_monitor(epf);
 	if (ret) {
