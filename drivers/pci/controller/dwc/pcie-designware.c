@@ -839,8 +839,7 @@ static int dw_pcie_edma_find_chip(struct dw_pcie *pci)
 {
 	u32 val;
 
-	val = dw_pcie_readl_dbi(pci, PCIE_DMA_VIEWPORT_BASE + PCIE_DMA_CTRL);
-	if (val == 0xFFFFFFFF && pci->edma.reg_base) {
+	if (pci->edma.reg_base) {
 		pci->edma.mf = EDMA_MF_EDMA_UNROLL;
 
 		val = dw_pcie_readl_dma(pci, PCIE_DMA_CTRL);
@@ -848,6 +847,7 @@ static int dw_pcie_edma_find_chip(struct dw_pcie *pci)
 		pci->edma.mf = EDMA_MF_EDMA_LEGACY;
 
 		pci->edma.reg_base = pci->dbi_base + PCIE_DMA_VIEWPORT_BASE;
+		val = dw_pcie_readl_dbi(pci, PCIE_DMA_VIEWPORT_BASE + PCIE_DMA_CTRL);
 	} else {
 		return -ENODEV;
 	}
