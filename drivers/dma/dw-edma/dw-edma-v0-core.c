@@ -180,10 +180,10 @@ static inline void writeq_ch(struct dw_edma *dw, enum dw_edma_dir dir, u16 ch,
 		       &(__dw_regs(dw)->type.legacy.viewport_sel));
 	}
 
-	if (dw->chip->flags & DW_EDMA_CHIP_32BIT_DBI)
+//	if (dw->chip->flags & DW_EDMA_CHIP_32BIT_DBI)
 		lo_hi_writeq(value, addr);
-	else
-		writeq(value, addr);
+//	else
+//		writeq(value, addr);
 
 	if (dw->chip->mf == EDMA_MF_EDMA_LEGACY)
 		raw_spin_unlock_irqrestore(&dw->lock, flags);
@@ -208,10 +208,10 @@ static inline u64 readq_ch(struct dw_edma *dw, enum dw_edma_dir dir, u16 ch,
 		       &(__dw_regs(dw)->type.legacy.viewport_sel));
 	}
 
-	if (dw->chip->flags & DW_EDMA_CHIP_32BIT_DBI)
+//	if (dw->chip->flags & DW_EDMA_CHIP_32BIT_DBI)
 		value = lo_hi_readq(addr);
-	else
-		value = readq(addr);
+//	else
+//		value = readq(addr);
 
 	if (dw->chip->mf == EDMA_MF_EDMA_LEGACY)
 		raw_spin_unlock_irqrestore(&dw->lock, flags);
