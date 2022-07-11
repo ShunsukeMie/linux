@@ -245,18 +245,14 @@ static int epf_virtnet_notify_monitor(void *data)
 	u16 queue;
 
 	while (true) {
-		while ((queue = READ_ONCE(common_cfg->q_notify)) == 0)
+		while ((queue = READ_ONCE(common_cfg->q_notify)) == 2)
 			;
-		WRITE_ONCE(common_cfg->q_notify, 0);
+		WRITE_ONCE(common_cfg->q_notify, 2);
 
-		if (queue != 1) {
+		if (queue != 1)
 			continue;
-		}
 
-		pr_info("updated queue notify: %d\n", queue);
-
-// 		if (napi_schedule_prep(&adapter->napi))
-// 			__napi_schedule(&adapter->napi);
+		napi_schedule(&adapter->napi);
 	}
 
 	return 0;
@@ -400,7 +396,6 @@ static int epf_virtnet_send_packet(struct epf_virtnet *vnet,
 	mod_u_idx = rx_u_idx & EPF_VIRTNET_Q_MASK;
 	mod_last_a_idx = vnet->rx_last_a_idx & EPF_VIRTNET_Q_MASK;
 
-	pr_info("a_idx: %d(%d)\n", rx_a_idx, rx_a_idx & EPF_VIRTNET_Q_MASK);
 	if (vnet->rx_last_a_idx == rx_a_idx) {
 		pr_err("virtqueue is full\n");
 		return -EAGAIN;
@@ -510,7 +505,7 @@ static void *local_ndev_receive(struct epf_virtnet *vnet, struct vring *vring,
 	struct vring_desc *desc;
 	// 	struct device *dma_dev = vnet->epf->epc->dev.parent;
 	struct page *buf_page;
-	u16 d_idx;
+	u16 d_idx, next_d_idx;
 	// 	dma_addr_t dma_handle;
 	void *buf, *cur;
 	int ret;
@@ -540,13 +535,11 @@ static void *local_ndev_receive(struct epf_virtnet *vnet, struct vring *vring,
 		flags = ioread16(&desc->flags);
 		len = ioread32(&desc->len);
 		addr = ioread64(&desc->addr);
+		next_d_idx = ioread16(&desc->next);
 
 		offset = *total_size;
 		*total_size += len;
 		cur = buf + offset;
-
-		pr_info("d_idx %d, len %d (total %d)\n", d_idx, len,
-			*total_size);
 
 		{
 			struct pci_epf *epf = vnet->epf;
@@ -561,23 +554,15 @@ static void *local_ndev_receive(struct epf_virtnet *vnet, struct vring *vring,
 			}
 
 			memcpy_fromio(cur, vnet->rx_epc_mem, len);
-			// 			memcpy_toio(vnet->tx_epc_mem, hdr, sizeof *hdr);
-			// 			memcpy_toio(vnet->tx_epc_mem + sizeof *hdr, buf, len);
 
 			pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no,
 					   vnet->rx_epc_mem_phys);
-
-			// 			len += sizeof *hdr;
 		}
-		// 		ret = memcpy_frompci(vnet->epf, cur, addr, len);
-		// 		if (ret) {
-		// 			pr_err("failed to copy data from PCI address space\n");
-		// 			return NULL;
-		// 		}
 
-		if (!(flags & VRING_DESC_F_NEXT)) {
+		if (!(flags & VRING_DESC_F_NEXT))
 			break;
-		}
+
+		d_idx = next_d_idx;
 	}
 
 	return buf;
@@ -588,18 +573,18 @@ static int local_ndev_rx_poll(struct napi_struct *napi, int budget)
 {
 	struct local_ndev_adapter *adapter = container_of(napi, struct local_ndev_adapter, napi);
 	struct epf_virtnet *vnet = adapter->vnet;
+	struct net_device *dev = adapter->dev;
 
 	struct pci_epf *epf = vnet->epf;
 	struct pci_epc *epc = epf->epc;
-	struct vring *vring = &vnet->vqs[0].vring;
+	struct vring *vring = &vnet->vqs[1].vring;
 	u16 used_idx, pre_used_idx, desc_idx;
 	u16 a_idx, pre_a_idx;
 	u16 mod_u_idx;
 	u32 total_len;
+	int len;
 	void *buf;
 	struct sk_buff *skb;
-	u32 total_size;
-
 
 	int done = 0;
 
@@ -616,8 +601,8 @@ static int local_ndev_rx_poll(struct napi_struct *napi, int budget)
 			return -1;
 		}
 
-		{
-			size_t size = min(total_size, (u32)32);
+		if (0) {
+			size_t size = min(total_len, (u32)32);
 			pr_info("data dump start (%ld)--------\n", size);
 			for (int i = 0; i < size / 4; i++) {
 				u8 *b = buf + i * 4;
@@ -628,14 +613,17 @@ static int local_ndev_rx_poll(struct napi_struct *napi, int budget)
 		}
 
 		// skip virito_net header
-		skb = build_skb(buf + sizeof(struct virtio_net_hdr),
-				total_len - sizeof(struct virtio_net_hdr));
+		len = SKB_DATA_ALIGN(total_len) + SKB_DATA_ALIGN(sizeof (struct skb_shared_info));
+		skb = build_skb(buf, len);
 		if (!skb) {
 			pr_err("failed to build skb");
 			return -1;
 		}
 
-		skb_dump("", skb, false);
+		skb_reserve(skb, sizeof (struct virtio_net_hdr));
+		skb_put(skb, total_len - sizeof (struct virtio_net_hdr));
+
+		skb->protocol = eth_type_trans(skb, dev);
 
 		napi_gro_receive(&adapter->napi, skb);
 
@@ -649,8 +637,10 @@ static int local_ndev_rx_poll(struct napi_struct *napi, int budget)
 	if (pre_used_idx != used_idx) {
 		iowrite16(used_idx, &vring->used->idx);
 
-		if (!ioread16(&vring->avail->flags) & VRING_AVAIL_F_NO_INTERRUPT)
-			pci_epc_raise_irq(epc, epf->func_no, epf->vfunc_no, PCI_EPC_IRQ_LEGACY, 0);
+		if (!ioread16(&vring->avail->flags) & VRING_AVAIL_F_NO_INTERRUPT) {
+// 			pci_epc_raise_irq(epc, epf->func_no, epf->vfunc_no, PCI_EPC_IRQ_LEGACY, 0);
+			schedule_work(&vnet->raise_irq_work);
+		}
 	}
 
 	if (done == budget)
@@ -730,6 +720,13 @@ static int epf_virtnet_create_netdev(struct pci_epf *epf)
 	if (!vnet->rx_buf_pages) {
 		pr_err("failed to allocate rx buffer");
 		return -ENOMEM;
+	}
+
+	// pci-epc core uses mutex.
+	err = dev_set_threaded(ndev, true);
+	if (err) {
+		pr_err("network devince threading failed\n");
+		return err;
 	}
 
 	netif_napi_add(ndev, &ndev_adapter->napi, local_ndev_rx_poll, NAPI_POLL_WEIGHT);
