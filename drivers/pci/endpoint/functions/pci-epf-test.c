@@ -113,7 +113,7 @@ static int pci_epf_test_data_transfer(struct pci_epf_test *epf_test,
 				      enum dma_transfer_direction dir)
 {
 	struct dma_chan *chan = (dir == DMA_DEV_TO_MEM) ?
-				 epf_test->dma_chan_tx : epf_test->dma_chan_rx;
+				 epf_test->dma_chan_rx : epf_test->dma_chan_tx;
 	dma_addr_t dma_local = (dir == DMA_MEM_TO_DEV) ? dma_src : dma_dst;
 	enum dma_ctrl_flags flags = DMA_CTRL_ACK | DMA_PREP_INTERRUPT;
 	struct pci_epf *epf = epf_test->epf;
