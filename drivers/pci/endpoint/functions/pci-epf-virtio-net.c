@@ -388,8 +388,6 @@ static netdev_tx_t local_ndev_start_xmit(struct sk_buff *skb,
 {
 	struct local_ndev_adapter *adapter = netdev_priv(dev);
 	struct epf_virtnet *vnet = adapter->vnet;
-	struct pci_epf *epf = vnet->epf;
-	struct pci_epc *epc = epf->epc;
 	struct virtio_net_hdr hdr;
 	int ret;
 
@@ -486,17 +484,10 @@ static int local_ndev_rx_poll(struct napi_struct *napi, int budget)
 {
  	struct local_ndev_adapter *adapter = container_of(napi, struct local_ndev_adapter, napi);
  	struct epf_virtnet *vnet = adapter->vnet;
-	int rxs = 0;
 
-// 	schedule_work(&vnet->rx_poll_work);
 	queue_work(vnet->workqueue, &vnet->rx_poll_work);
 
-	rxs = atomic_xchg(&vnet->rx_packets, 0);
-// 	if (rxs < budget) {
-// 		napi_complete_done(&adapter->napi, rxs);
-// 	}
-
-	return rxs;
+	return atomic_xchg(&vnet->rx_packets, 0);
 }
 
 static void epf_virtnet_rx_poll_handler(struct work_struct *work)
@@ -507,8 +498,6 @@ static void epf_virtnet_rx_poll_handler(struct work_struct *work)
 	struct local_ndev_adapter *adapter = netdev_priv(vnet->ndev);
 	struct net_device *dev = adapter->dev;
 
-	struct pci_epf *epf = vnet->epf;
-	struct pci_epc *epc = epf->epc;
 	struct vring *vring = &vnet->vqs[1].vring;
 	u16 used_idx, pre_used_idx, desc_idx;
 	u16 a_idx, pre_a_idx;
@@ -530,17 +519,6 @@ static void epf_virtnet_rx_poll_handler(struct work_struct *work)
 		if (!buf) {
 			pr_err("failed to receive a packet");
 			return;
-		}
-
-		if (0) {
-			size_t size = min(total_len, (u32)32);
-			pr_info("data dump start (%ld)--------\n", size);
-			for (int i = 0; i < size / 4; i++) {
-				u8 *b = buf + i * 4;
-				pr_info("%02x %02x %02x %02x %02x %02x %02x %02x\n",
-						b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
-			}
-			pr_info("data dump end --------\n");
 		}
 
 		// skip virito_net header
@@ -569,10 +547,10 @@ static void epf_virtnet_rx_poll_handler(struct work_struct *work)
 	if (pre_used_idx != used_idx) {
 		iowrite16(used_idx, &vring->used->idx);
 
-		if (!ioread16(&vring->avail->flags) & VRING_AVAIL_F_NO_INTERRUPT) {
+// 		if (!ioread16(&vring->avail->flags) & VRING_AVAIL_F_NO_INTERRUPT) {
 // 			pci_epc_raise_irq(epc, epf->func_no, epf->vfunc_no, PCI_EPC_IRQ_LEGACY, 0);
 // 			schedule_work(&vnet->raise_irq_work);
-		}
+// 		}
 	}
 
 	napi_complete_done(&adapter->napi, rxs);
@@ -752,8 +730,6 @@ static int epf_virtnet_probe(struct pci_epf *epf)
 	epf->header = &epf_virtnet_header;
 	vnet->epf = epf;
 	epf_set_drvdata(epf, vnet);
-
-// 	vnet->workqueue = create_workqueue("epf-vnet-wq");
 
 	vnet->workqueue = alloc_workqueue("epf-vnet-wq",
 			WQ_MEM_RECLAIM | WQ_HIGHPRI, 0);
