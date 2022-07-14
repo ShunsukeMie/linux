@@ -58,7 +58,6 @@ struct local_ndev_adapter {
 	struct net_device *dev;
 	struct epf_virtnet *vnet;
 	struct napi_struct napi;
-// 	spinlock_t napi_lock;
 };
 
 static int epf_virtnet_setup_bar(struct pci_epf *epf)
@@ -257,9 +256,7 @@ static int epf_virtnet_notify_monitor(void *data)
 		if (queue != 1)
 			continue;
 
-// 		spin_lock(&adapter->napi_lock);
 		napi_schedule(&adapter->napi);
-// 		spin_unlock(&adapter->napi_lock);
 	}
 
 	return 0;
@@ -603,9 +600,7 @@ static int local_ndev_rx_poll(struct napi_struct *napi, int budget)
 
 	rxs = atomic_xchg(&vnet->rx_packets, 0);
 // 	if (rxs < budget) {
-// 		spin_lock(&adapter->napi_lock);
 // 		napi_complete_done(&adapter->napi, rxs);
-// 		spin_unlock(&adapter->napi_lock);
 // 	}
 
 	return rxs;
@@ -750,9 +745,7 @@ static void epf_virtnet_rx_poll_handler(struct work_struct *work)
 
 		skb->protocol = eth_type_trans(skb, dev);
 
-// 		spin_lock(&adapter->napi_lock);
 		napi_gro_receive(&adapter->napi, skb);
-// 		spin_unlock(&adapter->napi_lock);
 
 		iowrite16(desc_idx, &vring->used->ring[mod_u_idx].id);
 		iowrite32(total_len, &vring->used->ring[mod_u_idx].len);
@@ -816,7 +809,6 @@ static int epf_virtnet_create_netdev(struct pci_epf *epf)
 	ndev_adapter = netdev_priv(ndev);
 	ndev_adapter->dev = ndev;
 	ndev_adapter->vnet = vnet;
-// 	spin_lock_init(&ndev_adapter->napi_lock);
 	spin_lock_init(&vnet->epf_lock);
 	vnet->ndev = ndev;
 
