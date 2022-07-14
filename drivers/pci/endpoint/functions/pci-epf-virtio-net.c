@@ -49,7 +49,6 @@ struct epf_virtnet {
 	struct work_struct raise_irq_work;
 	struct work_struct rx_poll_work;
 	atomic_t rx_packets;
-	spinlock_t epf_lock;
 };
 
 struct local_ndev_adapter {
@@ -346,7 +345,6 @@ static int epf_virtnet_send_packet(struct epf_virtnet *vnet,
 	rx_desc = &vring->desc[rx_d_idx];
 
 	/* transport data to root complex */
-	spin_lock(&vnet->epf_lock);
 	{
 		struct pci_epf *epf = vnet->epf;
 		struct pci_epc *epc = epf->epc;
@@ -367,7 +365,6 @@ static int epf_virtnet_send_packet(struct epf_virtnet *vnet,
 
 		len += sizeof *hdr;
 	}
-	spin_unlock(&vnet->epf_lock);
 
 	iowrite32(len, &rx_desc->len);
 	iowrite16(ioread16(&rx_desc->flags) & ~0x1, &rx_desc->flags);
@@ -437,21 +434,15 @@ static void *local_ndev_receive(struct epf_virtnet *vnet, struct vring *vring,
 
 		desc = &vring->desc[d_idx];
 
-		memcpy_fromio(&desc_local, desc, sizeof desc_local);
-		flags = desc_local.flags;
-		len = desc_local.len;
-		addr = desc_local.addr;
-		next_d_idx = desc_local.next;
-// 		flags = ioread16(&desc->flags);
-// 		len = ioread32(&desc->len);
-// 		addr = ioread64(&desc->addr);
-// 		next_d_idx = ioread16(&desc->next);
+		flags = ioread16(&desc->flags);
+		len = ioread32(&desc->len);
+		addr = ioread64(&desc->addr);
+		next_d_idx = ioread16(&desc->next);
 
 		offset = *total_size;
 		*total_size += len;
 		cur = buf + offset;
 
-		spin_lock(&vnet->epf_lock);
 		{
 			struct pci_epf *epf = vnet->epf;
 			struct pci_epc *epc = epf->epc;
@@ -469,7 +460,6 @@ static void *local_ndev_receive(struct epf_virtnet *vnet, struct vring *vring,
 			pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no,
 					   vnet->rx_epc_mem_phys);
 		}
-		spin_unlock(&vnet->epf_lock);
 
 		if (!(flags & VRING_DESC_F_NEXT))
 			break;
@@ -547,10 +537,8 @@ static void epf_virtnet_rx_poll_handler(struct work_struct *work)
 	if (pre_used_idx != used_idx) {
 		iowrite16(used_idx, &vring->used->idx);
 
-// 		if (!ioread16(&vring->avail->flags) & VRING_AVAIL_F_NO_INTERRUPT) {
-// 			pci_epc_raise_irq(epc, epf->func_no, epf->vfunc_no, PCI_EPC_IRQ_LEGACY, 0);
-// 			schedule_work(&vnet->raise_irq_work);
-// 		}
+		if (!ioread16(&vring->avail->flags) & VRING_AVAIL_F_NO_INTERRUPT)
+			queue_work(vnet->workqueue, &vnet->raise_irq_work);
 	}
 
 	napi_complete_done(&adapter->napi, rxs);
@@ -564,9 +552,7 @@ static void epf_virtnet_raise_irq_handler(struct work_struct *work)
 	struct pci_epf *epf = vnet->epf;
 	struct pci_epc *epc = epf->epc;
 
-	spin_lock(&vnet->epf_lock);
 	pci_epc_raise_irq(epc, epf->func_no, epf->vfunc_no, PCI_EPC_IRQ_LEGACY, 0);
-	spin_unlock(&vnet->epf_lock);
 }
 
 static int epf_virtnet_create_netdev(struct pci_epf *epf)
@@ -598,7 +584,6 @@ static int epf_virtnet_create_netdev(struct pci_epf *epf)
 	ndev_adapter = netdev_priv(ndev);
 	ndev_adapter->dev = ndev;
 	ndev_adapter->vnet = vnet;
-	spin_lock_init(&vnet->epf_lock);
 	vnet->ndev = ndev;
 
 // 	ndev->priv_flags;
