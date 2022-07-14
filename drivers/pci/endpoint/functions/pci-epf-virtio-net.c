@@ -37,8 +37,6 @@ struct epf_virtnet {
 	struct task_struct *monitor_notify_task;
 	struct page *rx_buf_pages;
 	struct workqueue_struct *workqueue;
-	// 	struct workqueue_struct *host_tx_wq;
-	// 	struct delayed_work host_tx_handler;
 	struct {
 		u32 pfn;
 		void __iomem *addr;
@@ -191,56 +189,6 @@ err_alloc:
 	return NULL;
 }
 
-// static void epf_virtnet_host_tx_handler(struct work_struct *work)
-// {
-// 	struct epf_virtnet *vnet =
-// 		container_of(work, struct epf_virtnet, host_tx_handler.work);
-// 	struct pci_epf *epf = vnet->epf;
-// 	struct pci_epc *epc = epf->epc;
-// 	struct vring *vring;
-// 	u16 used_idx, pre_used_idx, desc_idx;
-// 	u16 a_idx, pre_a_idx;
-// 	u16 mod_u_idx;
-// 	u32 total_len;
-//
-// 	vring = &vnet->vqs[1].vring;
-//
-// 	pre_used_idx = used_idx = ioread16(&vring->used->idx);
-// 	pre_a_idx = a_idx = ioread16(&vring->avail->idx);
-//
-// cont:
-// 	while (used_idx != a_idx) {
-// 		mod_u_idx = used_idx & EPF_VIRTNET_Q_MASK;
-// 		desc_idx = ioread16(&vring->avail->ring[mod_u_idx]);
-//
-// 		// TODO transfer
-// 		// - by dma
-// 		// - by cpu
-//
-// 		iowrite16(desc_idx, &vring->used->ring[mod_u_idx].id);
-// 		iowrite32(total_len, &vring->used->ring[mod_u_idx].len);
-//
-// 		used_idx++;
-// 	}
-//
-// 	if (pre_used_idx != used_idx) {
-// 		iowrite16(used_idx, &vring->used->idx);
-//
-// 		if (!ioread16(&vring->avail->flags) & VRING_AVAIL_F_NO_INTERRUPT)
-// 			pci_epc_raise_irq(epc, epf->func_no, epf->vfunc_no, PCI_EPC_IRQ_LEGACY, 0);
-//
-// 	}
-//
-// 	a_idx = ioread16(&vring->avail->idx);
-// 	if (pre_a_idx != a_idx) {
-// 		pre_a_idx = a_idx;
-// 		goto cont;
-// 	}
-//
-// 	queue_delayed_work(vnet->host_tx_wq, &vnet->host_tx_handler,
-// 			   usecs_to_jiffies(1));
-// }
-
 static int epf_virtnet_notify_monitor(void *data)
 {
 	struct epf_virtnet *vnet = data;
@@ -324,17 +272,6 @@ static int epf_virtnet_config_monitor(void *data)
 	}
 	vring_init(&vnet->vqs[1].vring, EPF_VIRTNET_Q_SIZE, tmp,
 		   VIRTIO_PCI_VRING_ALIGN);
-
-	// TODO more investigate a last argument.
-	// 	vnet->host_tx_wq = alloc_workqueue("epf_vnet_host_tx",
-	// 					   WQ_MEM_RECLAIM | WQ_HIGHPRI, 0);
-	// 	if (!vnet->host_tx_wq) {
-	// 		pr_err("Failed to allocate a workqueue for host tx virtqueue");
-	// 		return -ENOMEM;
-	// 	}
-
-	// 	INIT_DELAYED_WORK(&vnet->host_tx_handler, epf_virtnet_host_tx_handler);
-	// 	queue_work(vnet->host_tx_wq, &vnet->host_tx_handler.work);
 
 	// TODO spawn kernel thread for monitoring queue_notify
 	ret = epf_virtnet_spawn_notify_monitor(vnet);
