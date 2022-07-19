@@ -389,14 +389,23 @@ static void epf_virtnet_tx_handler(struct work_struct *work)
 	struct epf_virtnet *vnet =
 		container_of(work, struct epf_virtnet, tx_work);
 	struct virtio_net_hdr hdr;
-	struct sk_buff *skb, *tmp;
+	struct sk_buff *skb;
+	struct list_head *entry;
 	int res;
 
 	hdr.flags = 0;
 	hdr.gso_type = VIRTIO_NET_HDR_GSO_NONE;
 
-	spin_lock(&vnet->tx_list_lock);
-	list_for_each_entry_safe(skb, tmp, &vnet->tx_list, list) {
+	while(true) {
+		spin_lock(&vnet->tx_list_lock);
+		if (list_empty(&vnet->tx_list)) {
+			break;
+		}
+		entry = vnet->tx_list.next;
+		list_del(entry);
+		spin_unlock(&vnet->tx_list_lock);
+
+		skb = list_entry(entry, struct sk_buff, list);
 
 		res = epf_virtnet_send_packet(vnet, &hdr, skb->data, skb->len);
 		if (res)
@@ -563,8 +572,9 @@ static void epf_virtnet_rx_poll_handler(struct work_struct *work)
 	if (pre_used_idx != used_idx) {
 		iowrite16(used_idx, &vring->used->idx);
 
-		if (!ioread16(&vring->avail->flags) & VRING_AVAIL_F_NO_INTERRUPT)
-			queue_work(vnet->workqueue, &vnet->raise_irq_work);
+		// TODO
+// 		if (!ioread16(&vring->avail->flags) & VRING_AVAIL_F_NO_INTERRUPT)
+// 			queue_work(vnet->workqueue, &vnet->raise_irq_work);
 	}
 
 	napi_complete_done(&adapter->napi, rxs);
