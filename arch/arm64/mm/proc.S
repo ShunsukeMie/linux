@@ -293,7 +293,7 @@ SYM_FUNC_START(idmap_kpti_install_ng_mappings)
 	isb
 
 	mov	temp_pte, x5
-	mov	pte_flags, #KPTI_NG_PTE_FLAGS
+	mov_q	pte_flags, KPTI_NG_PTE_FLAGS
 
 	/* Everybody is enjoying the idmap, so we can rewrite swapper. */
 	/* PGD */
