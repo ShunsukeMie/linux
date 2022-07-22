@@ -5,6 +5,7 @@
  * Copyright (C) 2021 Renesas Electronics Corp.
  */
 
+#include <dt-bindings/gpio/gpio.h>
 #include "r8a779f0.dtsi"
 
 / {
@@ -49,6 +50,28 @@
 	clock-frequency = <32768>;
 };
 
+&i2c0 {
+	pinctrl-0 = <&i2c0_pins>;
+	pinctrl-names = "default";
+
+	status = "okay";
+	clock-frequency = <400000>;
+
+	gpio_exp_20: gpio@20 {
+		compatible = "ti,tca9554";
+		reg = <0x20>;
+		gpio-controller;
+		#gpio-cells = <2>;
+
+		pcie-perst-hog {
+			gpio-hog;
+			gpios = <0 GPIO_ACTIVE_HIGH>;
+			output-high;
+			line-name = "PCIE_PERSTn";
+		};
+	};
+};
+
 &i2c4 {
 	pinctrl-0 = <&i2c4_pins>;
 	pinctrl-names = "default";
@@ -85,9 +108,20 @@
 	status = "okay";
 };
 
+&pciec0 {
+	pinctrl-0 = <&pcie0_pins>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
 &pfc {
 	pinctrl-0 = <&scif_clk_pins>;
 	pinctrl-names = "default";
+
+	i2c0_pins: i2c0 {
+		groups = "i2c0";
+		function = "i2c0";
+	};
 
 	i2c4_pins: i2c4 {
 		groups = "i2c4";
@@ -98,6 +132,11 @@
 		groups = "mmc_data8", "mmc_ctrl", "mmc_ds";
 		function = "mmc";
 		power-source = <1800>;
+	};
+
+	pcie0_pins: pcie0 {
+		groups = "pcie0_clkreq_n";
+		function = "pcie";
 	};
 
 	scif0_pins: scif0 {
