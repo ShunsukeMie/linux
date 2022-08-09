@@ -488,16 +488,22 @@ static void *local_ndev_receive(struct epf_virtnet *vnet, struct vring *vring,
 		{
 			struct pci_epf *epf = vnet->epf;
 			struct pci_epc *epc = epf->epc;
+			size_t off;
+			u64 aaddr;
+
+			// alignment 0x1000 (vnet->alignment)
+			off = addr & (0x1000 - 1);
+			aaddr = addr & ~(0x1000 - 1);
 
 			ret = pci_epc_map_addr(epc, epf->func_no, epf->vfunc_no,
-					       vnet->rx_epc_mem_phys, addr,
-					       2000);
+					       vnet->rx_epc_mem_phys, aaddr,
+					       0x1000);
 			if (ret) {
 				pr_err("failed to map addr\n");
 				return NULL;
 			}
 
-			memcpy_fromio(cur, vnet->rx_epc_mem, len);
+			memcpy_fromio(cur, vnet->rx_epc_mem + off, len);
 
 			pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no,
 					   vnet->rx_epc_mem_phys);
