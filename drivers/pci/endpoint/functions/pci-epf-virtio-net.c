@@ -354,17 +354,24 @@ static int epf_virtnet_send_packet(struct epf_virtnet *vnet,
 	{
 		struct pci_epf *epf = vnet->epf;
 		struct pci_epc *epc = epf->epc;
+		size_t offset;
+		u64 aaddr;
+		u64 addr = ioread64(&rx_desc->addr);
+
+		// alignment 0x1000 (vnet->alignment)
+		offset = addr & (0x1000 - 1);
+		aaddr = addr & ~(0x1000 - 1);
 
 		ret = pci_epc_map_addr(epc, epf->func_no, epf->vfunc_no,
 				       vnet->tx_epc_mem_phys,
-				       ioread64(&rx_desc->addr), 2000);
+				       aaddr, 0x1000);
 		if (ret) {
 			pr_err("failed to map addr\n");
 			return ret;
 		}
 
-		memcpy_toio(vnet->tx_epc_mem, hdr, sizeof *hdr);
-		memcpy_toio(vnet->tx_epc_mem + sizeof *hdr, buf, len);
+		memcpy_toio(vnet->tx_epc_mem + offset, hdr, sizeof *hdr);
+		memcpy_toio(vnet->tx_epc_mem + offset + sizeof *hdr, buf, len);
 
 		pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no,
 				   vnet->tx_epc_mem_phys);
@@ -647,14 +654,14 @@ static int epf_virtnet_create_netdev(struct pci_epf *epf)
 	struct epf_virtnet *vnet = epf_get_drvdata(epf);
 	struct virtio_net_config *net_cfg = &vnet->pci_config->net_cfg;
 
-	vnet->tx_epc_mem = pci_epc_mem_alloc_addr(epf->epc, &vnet->tx_epc_mem_phys, 2000);
+	vnet->tx_epc_mem = pci_epc_mem_alloc_addr(epf->epc, &vnet->tx_epc_mem_phys, 0x1000);
 	if (!vnet->tx_epc_mem) {
 		pr_err("failed to allocate epc mem %s:%d\n", __func__,
 				__LINE__);
 		return -ENOMEM;
 	}
 
-	vnet->rx_epc_mem = pci_epc_mem_alloc_addr(epf->epc, &vnet->rx_epc_mem_phys, 2000);
+	vnet->rx_epc_mem = pci_epc_mem_alloc_addr(epf->epc, &vnet->rx_epc_mem_phys, 0x1000);
 	if (!vnet->rx_epc_mem) {
 		pr_err("failed to allocate epc mem %s:%d\n", __func__,
 				__LINE__);
