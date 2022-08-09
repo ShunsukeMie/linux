@@ -169,27 +169,34 @@ static void __iomem *epf_virtnet_map_host_vq(struct epf_virtnet *vnet, u32 pfn)
 	size_t vq_size;
 	struct pci_epf *epf = vnet->epf;
 	struct pci_epc *epc = epf->epc;
+	size_t offset, asize;
+	phys_addr_t aaddr, aaddr_end;
 
 	vq_addr = (phys_addr_t)pfn << VIRTIO_PCI_QUEUE_ADDR_SHIFT;
 	vq_size = vring_size(EPF_VIRTNET_Q_SIZE, VIRTIO_PCI_VRING_ALIGN);
 
-	ioaddr = pci_epc_mem_alloc_addr(epc, &phys_addr, vq_size);
+	offset = vq_addr & (0x1000 - 1);
+	aaddr = vq_addr & ~(0x1000 - 1);
+	aaddr_end = ((vq_addr + vq_size) + (0x1000 - 1))& ~(0x1000 - 1);
+	asize = aaddr_end - aaddr;
+
+	ioaddr = pci_epc_mem_alloc_addr(epc, &phys_addr, asize);
 	if (!ioaddr) {
 		pr_err("Failed to allocate epc memory area\n");
 		return NULL;
 	}
 
 	ret = pci_epc_map_addr(epc, epf->func_no, epf->vfunc_no, phys_addr,
-			       vq_addr, vq_size);
+			       aaddr, asize);
 	if (ret) {
 		pr_err("failed to map virtqueue address\n");
 		goto err_alloc;
 	}
 
-	return ioaddr;
+	return ioaddr + offset;
 
 err_alloc:
-	pci_epc_mem_free_addr(epc, phys_addr, ioaddr, vq_size);
+	pci_epc_mem_free_addr(epc, phys_addr, ioaddr, asize);
 
 	return NULL;
 }
