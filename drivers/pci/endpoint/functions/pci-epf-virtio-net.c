@@ -139,7 +139,8 @@ static void epf_virtnet_init_config(struct pci_epf *epf)
 	//TODO care about endianness (must be guest(root complex) endianness)
 	common_cfg->dev_feat =
 		BIT(VIRTIO_NET_F_MAC) | BIT(VIRTIO_NET_F_GUEST_CSUM) |
-		BIT(VIRTIO_NET_F_MTU) | BIT(VIRTIO_NET_F_STATUS);
+		BIT(VIRTIO_NET_F_MTU) | BIT(VIRTIO_NET_F_MRG_RXBUF) |
+		BIT(VIRTIO_NET_F_STATUS);
 
 	/*
 	 * Initialy indicates out of ranged index to detect changing from host.
@@ -342,32 +343,84 @@ static int local_ndev_close(struct net_device *dev)
 	return 0;
 }
 
-static int epf_virtnet_send_packet(struct epf_virtnet *vnet,
-				   struct virtio_net_hdr *hdr, void *buf,
+static int epf_virtnet_send_packet(struct epf_virtnet *vnet, void *buf,
 				   size_t len)
 {
-	int ret;
-	u16 rx_u_idx, rx_a_idx, rx_d_idx;
+	int ret, remain;
+	u16 rx_u_idx, rx_a_idx, rx_d_idx, rx_hdr_d_idx;
 	u16 mod_u_idx, mod_last_a_idx;
 	struct vring *vring;
 	struct vring_desc *rx_desc;
+	struct virtio_net_hdr_mrg_rxbuf hdr = {
+		.hdr.flags = 0,
+		.hdr.gso_type = VIRTIO_NET_HDR_GSO_NONE,
+		.num_buffers = 0,
+	};
+	u32 desc_len, data_len, offset, copy_len;
 
 	vring = &vnet->vqs[0].vring;
 
 	rx_u_idx = ioread16(&vring->used->idx);
 	rx_a_idx = ioread16(&vring->avail->idx);
-	mod_u_idx = rx_u_idx & EPF_VIRTNET_Q_MASK;
-	mod_last_a_idx = vnet->rx_last_a_idx & EPF_VIRTNET_Q_MASK;
 
-	if (vnet->rx_last_a_idx == rx_a_idx) {
-		pr_err("virtqueue is full\n");
-		return -EAGAIN;
+	mod_last_a_idx = vnet->rx_last_a_idx & EPF_VIRTNET_Q_MASK;
+	rx_hdr_d_idx = ioread16(&vring->avail->ring[mod_last_a_idx]);
+
+	remain = len;
+	while (remain) {
+		hdr.num_buffers++;
+		if (vnet->rx_last_a_idx == rx_a_idx) {
+			pr_err("virtqueue is full\n");
+			return -EAGAIN;
+		}
+		mod_last_a_idx = vnet->rx_last_a_idx & EPF_VIRTNET_Q_MASK;
+		rx_d_idx = ioread16(&vring->avail->ring[mod_last_a_idx]);
+		rx_desc = &vring->desc[rx_d_idx];
+
+		desc_len = ioread32(&rx_desc->len);
+		{
+			struct pci_epf *epf = vnet->epf;
+			struct pci_epc *epc = epf->epc;
+
+			ret = pci_epc_map_addr(epc, epf->func_no, epf->vfunc_no,
+					       vnet->tx_epc_mem_phys,
+					       ioread64(&rx_desc->addr), 2000);
+			if (ret) {
+				pr_err("failed to map addr\n");
+				return ret;
+			}
+
+			offset = hdr.num_buffers == 1 ? sizeof hdr : 0;
+			copy_len = desc_len - offset;
+			if (copy_len > len) {
+				copy_len = len;
+			}
+
+			data_len = copy_len + offset;
+
+			memcpy_toio(vnet->tx_epc_mem + offset, buf, copy_len);
+
+			pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no,
+					   vnet->tx_epc_mem_phys);
+
+			buf += copy_len;
+			remain -= copy_len;
+		}
+
+		iowrite32(data_len, &rx_desc->len);
+		iowrite16(ioread16(&rx_desc->flags) & ~0x1, &rx_desc->flags);
+
+		mod_u_idx = rx_u_idx & EPF_VIRTNET_Q_MASK;
+		iowrite32(data_len, &vring->used->ring[mod_u_idx].len);
+		iowrite32(rx_d_idx, &vring->used->ring[mod_u_idx].id);
+
+		vnet->rx_last_a_idx++;
+
+		rx_u_idx++;
 	}
 
-	rx_d_idx = ioread16(&vring->avail->ring[mod_last_a_idx]);
-	rx_desc = &vring->desc[rx_d_idx];
-
-	/* transport data to root complex */
+	// fill hdr
+	rx_desc = &vring->desc[rx_hdr_d_idx];
 	{
 		struct pci_epf *epf = vnet->epf;
 		struct pci_epc *epc = epf->epc;
@@ -380,24 +433,12 @@ static int epf_virtnet_send_packet(struct epf_virtnet *vnet,
 			return ret;
 		}
 
-		memcpy_toio(vnet->tx_epc_mem, hdr, sizeof *hdr);
-		memcpy_toio(vnet->tx_epc_mem + sizeof *hdr, buf, len);
+		memcpy_toio(vnet->tx_epc_mem, &hdr, sizeof hdr);
 
 		pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no,
 				   vnet->tx_epc_mem_phys);
-
-		len += sizeof *hdr;
 	}
 
-	iowrite32(len, &rx_desc->len);
-	iowrite16(ioread16(&rx_desc->flags) & ~0x1, &rx_desc->flags);
-
-	iowrite32(len, &vring->used->ring[mod_u_idx].len);
-	iowrite32(rx_d_idx, &vring->used->ring[mod_u_idx].id);
-
-	vnet->rx_last_a_idx++;
-
-	rx_u_idx++;
 	iowrite16(rx_u_idx, &vring->used->idx);
 
 	return 0;
@@ -407,13 +448,9 @@ static void epf_virtnet_tx_handler(struct work_struct *work)
 {
 	struct epf_virtnet *vnet =
 		container_of(work, struct epf_virtnet, tx_work);
-	struct virtio_net_hdr hdr;
 	struct sk_buff *skb;
 	struct list_head *entry;
 	int res;
-
-	hdr.flags = 0;
-	hdr.gso_type = VIRTIO_NET_HDR_GSO_NONE;
 
 	while(true) {
 		spin_lock(&vnet->tx_list_lock);
@@ -426,7 +463,7 @@ static void epf_virtnet_tx_handler(struct work_struct *work)
 
 		skb = list_entry(entry, struct sk_buff, list);
 
-		res = epf_virtnet_send_packet(vnet, &hdr, skb->data, skb->len);
+		res = epf_virtnet_send_packet(vnet, skb->data, skb->len);
 		if (res)
 			pr_err("sending packet failed\n");
 
@@ -608,8 +645,8 @@ static void epf_virtnet_rx_packets(struct epf_virtnet *vnet)
 			return;
 		}
 
-		skb_reserve(skb, sizeof (struct virtio_net_hdr));
-		skb_put(skb, total_len - sizeof (struct virtio_net_hdr));
+		skb_reserve(skb, sizeof (struct virtio_net_hdr_mrg_rxbuf));
+		skb_put(skb, total_len - sizeof (struct virtio_net_hdr_mrg_rxbuf));
 
 		skb->protocol = eth_type_trans(skb, dev);
 
@@ -708,7 +745,7 @@ static int epf_virtnet_create_netdev(struct pci_epf *epf)
 
 	ndev->mtu = ETH_MAX_MTU;
 
-	ndev->needed_headroom = sizeof (struct virtio_net_hdr);
+	ndev->needed_headroom = sizeof (struct virtio_net_hdr_mrg_rxbuf);
 
 	// TODO examine GFP frags GFP_ATOMIC or GFP_KERNEL
 	vnet->rx_bufs = kmalloc_array(sizeof (void *), EPF_VIRTNET_Q_SIZE, GFP_ATOMIC);
