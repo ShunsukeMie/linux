@@ -106,15 +106,9 @@ static int epf_virtnet_setup_bar(struct pci_epf *epf,
 #define EPF_VIRTNET_Q_SIZE 0x100
 #define EPF_VIRTNET_Q_MASK 0x0ff
 
-static u16 epf_virtnet_get_default_q_sel(struct epf_virtnet *vnet)
+static u16 epf_virtnet_get_nvq(struct epf_virtnet *vnet)
 {
-	struct virtio_net_config *net_cfg = &vnet->pci_config->net_cfg;
-
-	/*
-	 * Initialy indicates out of ranged index to detect changing from host.
-	 * See the `epf_virtnet_config_monitor()` to get details.
-	 */
-	return net_cfg->max_virtqueue_pairs * 2;
+	return vnet->pci_config->net_cfg.max_virtqueue_pairs * 2;
 }
 
 static void epf_virtnet_init_config(struct pci_epf *epf)
@@ -129,6 +123,11 @@ static void epf_virtnet_init_config(struct pci_epf *epf)
 		BIT(VIRTIO_NET_F_MAC) | BIT(VIRTIO_NET_F_GUEST_CSUM) |
 		BIT(VIRTIO_NET_F_MTU) | BIT(VIRTIO_NET_F_STATUS);
 
+	/*
+	 * Initialy indicates out of ranged index to detect changing from host.
+	 * See the `epf_virtnet_config_monitor()` to get details.
+	 */
+	common_cfg->q_select = epf_virtnet_get_nvq(vnet);
 	common_cfg->q_addr = 0;
 	common_cfg->q_size = EPF_VIRTNET_Q_SIZE;
 	common_cfg->q_notify = 2;
@@ -137,8 +136,6 @@ static void epf_virtnet_init_config(struct pci_epf *epf)
 	net_cfg->max_virtqueue_pairs = 1;
 	net_cfg->status = VIRTIO_NET_S_LINK_UP;
 	net_cfg->mtu = PAGE_SIZE;
-
-	common_cfg->q_select = epf_virtnet_get_default_q_sel(vnet);
 
 	eth_random_addr(net_cfg->mac);
 }
@@ -185,9 +182,9 @@ static int epf_virtnet_notify_monitor(void *data)
 	u16 queue;
 
 	while (true) {
-		while ((queue = READ_ONCE(common_cfg->q_notify)) == 2)
+		while ((queue = ioread16(&common_cfg->q_notify)) == 2)
 			;
-		WRITE_ONCE(common_cfg->q_notify, 2);
+		iowrite16(2, &common_cfg->q_notify);
 
 		if (queue != 1)
 			continue;
@@ -217,30 +214,45 @@ static int epf_virtnet_config_monitor(void *data)
 {
 	struct epf_virtnet *vnet = data;
 	struct virtio_common_config *common_cfg = &vnet->pci_config->common_cfg;
-	const u16 q_select_default = epf_virtnet_get_default_q_sel(vnet);
+	const u16 qsel_max = epf_virtnet_get_nvq(vnet);
+	const u16 qsel_default = qsel_max;
 	register u32 sel, pfn;
 	void __iomem *tmp;
 	int ret;
 
-	vnet->vqs = kcalloc(2, sizeof vnet->vqs[0], GFP_KERNEL);
+	vnet->vqs = kcalloc(qsel_max, sizeof vnet->vqs[0], GFP_KERNEL);
 	if (!vnet->vqs) {
 		pr_err("failed to allocate memory\n");
 		return -ENOMEM;
 	}
 
-	//TODO
-	for (int i = 0; i < q_select_default; i++) {
-		while ((sel = READ_ONCE(common_cfg->q_select)) ==
-		       q_select_default)
-			;
-		while ((pfn = READ_ONCE(common_cfg->q_addr)) == 0)
-			;
+	while (true) {
+		sel = ioread16(&common_cfg->q_select);
+		if (sel == qsel_default) {
+			if (!(ioread8(&common_cfg->dev_status) &
+			      VIRTIO_CONFIG_S_DRIVER_OK))
+				continue;
 
-		/* reset to default to detect changes */
-		WRITE_ONCE(common_cfg->q_addr, 0);
-		WRITE_ONCE(common_cfg->q_select, q_select_default);
+			iowrite8(0, &common_cfg->dev_status);
+			break;
+		}
 
-		//TODO check the selector to prevent out of range accessing
+		iowrite16(qsel_default, &common_cfg->q_select);
+
+		pfn = ioread32(&common_cfg->q_addr);
+		/* driver changes queue selector to access the other registers */
+		if (pfn == 0) {
+			pr_debug("change the qsel(%d) to read another reg\n", sel);
+			continue;
+		}
+
+		/* reset the queue related registers to detect changes in next loop */
+		iowrite32(0, &common_cfg->q_addr);
+
+		if (sel >= qsel_max) {
+			pr_warn("driver ties to use invalid queue: %d\n", sel);
+			continue;
+		}
 		vnet->vqs[sel].pfn = pfn;
 	}
 
