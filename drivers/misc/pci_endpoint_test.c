@@ -356,7 +356,7 @@ static bool pci_endpoint_test_copy(struct pci_endpoint_test *test,
 	}
 
 	size = param.size;
-	if (size > SIZE_MAX)
+	if (size > SIZE_MAX || !size)
 		goto err;
 
 	use_dma = !!(param.flags & PCITEST_FLAGS_USE_DMA);
@@ -466,7 +466,7 @@ static bool pci_endpoint_test_write(struct pci_endpoint_test *test,
 	}
 
 	size = param.size;
-	if (size > SIZE_MAX)
+	if (size > SIZE_MAX || !size)
 		goto err;
 
 	use_dma = !!(param.flags & PCITEST_FLAGS_USE_DMA);
@@ -549,7 +549,7 @@ static bool pci_endpoint_test_read(struct pci_endpoint_test *test,
 	}
 
 	size = param.size;
-	if (size > SIZE_MAX)
+	if (size > SIZE_MAX || !size)
 		goto err;
 
 	use_dma = !!(param.flags & PCITEST_FLAGS_USE_DMA);
