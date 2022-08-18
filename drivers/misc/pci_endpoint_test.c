@@ -90,10 +90,6 @@ static bool no_msi;
 module_param(no_msi, bool, 0444);
 MODULE_PARM_DESC(no_msi, "Disable MSI interrupt in pci_endpoint_test");
 
-static int irq_type = IRQ_TYPE_MSI;
-module_param(irq_type, int, 0444);
-MODULE_PARM_DESC(irq_type, "IRQ mode selection in pci_endpoint_test (0 - Legacy, 1 - MSI, 2 - MSI-X)");
-
 enum pci_barno {
 	BAR_0,
 	BAR_1,
@@ -248,7 +244,7 @@ static long pci_endpoint_test_request_irq(struct pci_endpoint_test *test)
 	return 0;
 
 fail:
-	switch (irq_type) {
+	switch (test->irq_type) {
 	case IRQ_TYPE_LEGACY:
 		dev_err(dev, "Failed to request IRQ %d for Legacy\n",
 			pci_irq_vector(pdev, i));
@@ -765,7 +761,7 @@ static long pci_endpoint_test_ioctl(struct file *file, unsigned int cmd,
 		ret = pci_endpoint_test_set_irq(test, arg);
 		break;
 	case PCITEST_GET_IRQTYPE:
-		ret = irq_type;
+		ret = test->irq_type;
 		break;
 	case PCITEST_CLEAR_IRQ:
 		ret = pci_endpoint_test_clear_irq(test);
@@ -805,17 +801,18 @@ static int pci_endpoint_test_probe(struct pci_dev *pdev,
 	test->test_reg_bar = 0;
 	test->alignment = 0;
 	test->pdev = pdev;
-	test->irq_type = IRQ_TYPE_UNDEFINED;
 
 	if (no_msi)
-		irq_type = IRQ_TYPE_LEGACY;
+		test->irq_type = IRQ_TYPE_LEGACY;
+	else
+		test->irq_type = IRQ_TYPE_MSI;
 
 	data = (struct pci_endpoint_test_data *)ent->driver_data;
 	if (data) {
 		test_reg_bar = data->test_reg_bar;
 		test->test_reg_bar = test_reg_bar;
 		test->alignment = data->alignment;
-		irq_type = data->irq_type;
+		test->irq_type = data->irq_type;
 	}
 
 	init_completion(&test->irq_raised);
@@ -841,7 +838,7 @@ static int pci_endpoint_test_probe(struct pci_dev *pdev,
 
 	pci_set_master(pdev);
 
-	err = pci_endpoint_test_alloc_irq_vectors(test, irq_type);
+	err = pci_endpoint_test_alloc_irq_vectors(test, test->irq_type);
 	if (err < 0)
 		goto err_disable_irq;
 
