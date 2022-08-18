@@ -710,9 +710,9 @@ static long pci_endpoint_test_ioctl(struct file *file, unsigned int cmd,
 	case PCITEST_BAR:
 		bar = arg;
 		if (bar > BAR_5)
-			goto ret;
+			break;
 		if (is_am654_pci_dev(pdev) && bar == BAR_0)
-			goto ret;
+			break;
 		ret = pci_endpoint_test_bar(test, bar);
 		break;
 	case PCITEST_LEGACY_IRQ:
@@ -742,7 +742,6 @@ static long pci_endpoint_test_ioctl(struct file *file, unsigned int cmd,
 		break;
 	}
 
-ret:
 	mutex_unlock(&test->mutex);
 	return ret;
 }
