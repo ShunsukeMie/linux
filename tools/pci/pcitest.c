@@ -18,7 +18,7 @@
 
 #define BILLION 1E9
 
-static char *result[] = { "NOT OKAY", "OKAY" };
+static char *result[] = { "OKAY", "NOT OKAY" };
 static char *irq[] = { "LEGACY", "MSI", "MSI-X" };
 
 struct pci_test {
@@ -38,6 +38,12 @@ struct pci_test {
 	bool		use_dma;
 };
 
+#define pcitest_ioctl(fd, req, ...) ({ \
+		int __ret; \
+		__ret = ioctl(fd, req, ##__VA_ARGS__); \
+		__ret < 0 ? -errno : __ret; \
+	})
+
 static int run_test(struct pci_test *test)
 {
 	struct pci_endpoint_test_xfer_param param = {};
@@ -51,7 +57,7 @@ static int run_test(struct pci_test *test)
 	}
 
 	if (test->barnum >= 0 && test->barnum <= 5) {
-		ret = ioctl(fd, PCITEST_BAR, test->barnum);
+		ret = pcitest_ioctl(fd, PCITEST_BAR, test->barnum);
 		fprintf(stdout, "BAR%d:\t\t", test->barnum);
 		if (ret < 0)
 			fprintf(stdout, "TEST FAILED\n");
@@ -60,7 +66,7 @@ static int run_test(struct pci_test *test)
 	}
 
 	if (test->set_irqtype) {
-		ret = ioctl(fd, PCITEST_SET_IRQTYPE, test->irqtype);
+		ret = pcitest_ioctl(fd, PCITEST_SET_IRQTYPE, test->irqtype);
 		fprintf(stdout, "SET IRQ TYPE TO %s:\t\t", irq[test->irqtype]);
 		if (ret < 0)
 			fprintf(stdout, "FAILED\n");
@@ -69,7 +75,7 @@ static int run_test(struct pci_test *test)
 	}
 
 	if (test->get_irqtype) {
-		ret = ioctl(fd, PCITEST_GET_IRQTYPE);
+		ret = pcitest_ioctl(fd, PCITEST_GET_IRQTYPE);
 		fprintf(stdout, "GET IRQ TYPE:\t\t");
 		if (ret < 0)
 			fprintf(stdout, "FAILED\n");
@@ -78,7 +84,7 @@ static int run_test(struct pci_test *test)
 	}
 
 	if (test->clear_irq) {
-		ret = ioctl(fd, PCITEST_CLEAR_IRQ);
+		ret = pcitest_ioctl(fd, PCITEST_CLEAR_IRQ);
 		fprintf(stdout, "CLEAR IRQ:\t\t");
 		if (ret < 0)
 			fprintf(stdout, "FAILED\n");
@@ -87,7 +93,7 @@ static int run_test(struct pci_test *test)
 	}
 
 	if (test->legacyirq) {
-		ret = ioctl(fd, PCITEST_LEGACY_IRQ, 0);
+		ret = pcitest_ioctl(fd, PCITEST_LEGACY_IRQ, 0);
 		fprintf(stdout, "LEGACY IRQ:\t");
 		if (ret < 0)
 			fprintf(stdout, "TEST FAILED\n");
@@ -96,7 +102,7 @@ static int run_test(struct pci_test *test)
 	}
 
 	if (test->msinum > 0 && test->msinum <= 32) {
-		ret = ioctl(fd, PCITEST_MSI, test->msinum);
+		ret = pcitest_ioctl(fd, PCITEST_MSI, test->msinum);
 		fprintf(stdout, "MSI%d:\t\t", test->msinum);
 		if (ret < 0)
 			fprintf(stdout, "TEST FAILED\n");
@@ -105,7 +111,7 @@ static int run_test(struct pci_test *test)
 	}
 
 	if (test->msixnum > 0 && test->msixnum <= 2048) {
-		ret = ioctl(fd, PCITEST_MSIX, test->msixnum);
+		ret = pcitest_ioctl(fd, PCITEST_MSIX, test->msixnum);
 		fprintf(stdout, "MSI-X%d:\t\t", test->msixnum);
 		if (ret < 0)
 			fprintf(stdout, "TEST FAILED\n");
@@ -117,7 +123,7 @@ static int run_test(struct pci_test *test)
 		param.size = test->size;
 		if (test->use_dma)
 			param.flags = PCITEST_FLAGS_USE_DMA;
-		ret = ioctl(fd, PCITEST_WRITE, &param);
+		ret = pcitest_ioctl(fd, PCITEST_WRITE, &param);
 		fprintf(stdout, "WRITE (%7ld bytes):\t\t", test->size);
 		if (ret < 0)
 			fprintf(stdout, "TEST FAILED\n");
@@ -129,7 +135,7 @@ static int run_test(struct pci_test *test)
 		param.size = test->size;
 		if (test->use_dma)
 			param.flags = PCITEST_FLAGS_USE_DMA;
-		ret = ioctl(fd, PCITEST_READ, &param);
+		ret = pcitest_ioctl(fd, PCITEST_READ, &param);
 		fprintf(stdout, "READ (%7ld bytes):\t\t", test->size);
 		if (ret < 0)
 			fprintf(stdout, "TEST FAILED\n");
@@ -141,7 +147,7 @@ static int run_test(struct pci_test *test)
 		param.size = test->size;
 		if (test->use_dma)
 			param.flags = PCITEST_FLAGS_USE_DMA;
-		ret = ioctl(fd, PCITEST_COPY, &param);
+		ret = pcitest_ioctl(fd, PCITEST_COPY, &param);
 		fprintf(stdout, "COPY (%7ld bytes):\t\t", test->size);
 		if (ret < 0)
 			fprintf(stdout, "TEST FAILED\n");
@@ -151,7 +157,7 @@ static int run_test(struct pci_test *test)
 
 	fflush(stdout);
 	close(fd);
-	return (ret < 0) ? ret : 1 - ret; /* return 0 if test succeeded */
+	return ret; /* return 0 if test succeeded */
 }
 
 int main(int argc, char **argv)
