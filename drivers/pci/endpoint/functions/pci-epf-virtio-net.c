@@ -12,6 +12,7 @@
 #include <linux/virtio_ring.h>
 #include <linux/etherdevice.h>
 #include <linux/netdevice.h>
+#include <linux/ethtool.h>
 
 //TODO care for native endianess
 struct virtio_common_config {
@@ -675,6 +676,21 @@ static void epf_virtnet_raise_irq_handler(struct work_struct *work)
 	pci_epc_raise_irq(epc, epf->func_no, epf->vfunc_no, PCI_EPC_IRQ_LEGACY, 0);
 }
 
+static int epf_virtnet_get_link_ksettings(struct net_device *ndev,
+		struct ethtool_link_ksettings *cmd)
+{
+	cmd->base.speed = SPEED_1000;
+	cmd->base.duplex = DUPLEX_HALF;
+	cmd->base.port = PORT_OTHER;
+
+	return 0;
+}
+
+static const struct ethtool_ops epf_virtnet_ethtool_ops = {
+	.get_link = ethtool_op_get_link,
+	.get_link_ksettings = epf_virtnet_get_link_ksettings,
+};
+
 static int epf_virtnet_create_netdev(struct pci_epf *epf)
 {
 	int err;
@@ -708,9 +724,8 @@ static int epf_virtnet_create_netdev(struct pci_epf *epf)
 
 	ndev->priv_flags = 0;
 	ndev->netdev_ops = &epf_virtnet_ndev_ops;
-//
- 	//TODO
-// 	ndev->ethtool_ops;
+
+	ndev->ethtool_ops = &epf_virtnet_ethtool_ops;
 
 	// setup hardware features
 	SET_NETDEV_DEV(ndev, &epf->dev);
