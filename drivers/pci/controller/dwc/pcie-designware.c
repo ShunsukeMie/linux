@@ -544,6 +544,15 @@ int dw_pcie_prog_ep_outbound_atu(struct dw_pcie *pci, u8 func_no, int index,
 					   cpu_addr, pci_addr, size);
 }
 
+int dw_pcie_prog_ep_outbound_atu_for_msg(struct dw_pcie *pci, u8 func_no,
+					 int index, int type, u8 code,
+					 u8 routing, u64 cpu_addr, u64 pci_addr,
+					 u64 size)
+{
+	return __dw_pcie_prog_outbound_atu(pci, func_no, index, type, code,
+					   routing, cpu_addr, pci_addr, size);
+}
+
 static inline u32 dw_pcie_readl_atu_ib(struct dw_pcie *pci, u32 index, u32 reg)
 {
 	return dw_pcie_readl_atu(pci, PCIE_ATU_REGION_DIR_IB, index, reg);
