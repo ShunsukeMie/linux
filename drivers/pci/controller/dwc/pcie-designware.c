@@ -468,8 +468,8 @@ static inline u32 dw_pcie_enable_ecrc(u32 val)
 }
 
 static int __dw_pcie_prog_outbound_atu(struct dw_pcie *pci, u8 func_no,
-				       int index, int type, u64 cpu_addr,
-				       u64 pci_addr, u64 size)
+				       int index, int type, u8 code, u8 routing,
+				       u64 cpu_addr, u64 pci_addr, u64 size)
 {
 	u32 retries, val;
 	u64 limit_addr;
@@ -501,7 +501,7 @@ static int __dw_pcie_prog_outbound_atu(struct dw_pcie *pci, u8 func_no,
 	dw_pcie_writel_atu_ob(pci, index, PCIE_ATU_UPPER_TARGET,
 			      upper_32_bits(pci_addr));
 
-	val = type | PCIE_ATU_FUNC_NUM(func_no);
+	val = type | routing | PCIE_ATU_FUNC_NUM(func_no);
 	if (upper_32_bits(limit_addr) > upper_32_bits(cpu_addr) &&
 	    dw_pcie_ver_is_ge(pci, 460A))
 		val |= PCIE_ATU_INCREASE_REGION_SIZE;
@@ -509,7 +509,8 @@ static int __dw_pcie_prog_outbound_atu(struct dw_pcie *pci, u8 func_no,
 		val = dw_pcie_enable_ecrc(val);
 	dw_pcie_writel_atu_ob(pci, index, PCIE_ATU_REGION_CTRL1, val);
 
-	dw_pcie_writel_atu_ob(pci, index, PCIE_ATU_REGION_CTRL2, PCIE_ATU_ENABLE);
+	dw_pcie_writel_atu_ob(pci, index, PCIE_ATU_REGION_CTRL2,
+			      PCIE_ATU_ENABLE | code);
 
 	/*
 	 * Make sure ATU enable takes effect before any subsequent config
@@ -531,7 +532,7 @@ static int __dw_pcie_prog_outbound_atu(struct dw_pcie *pci, u8 func_no,
 int dw_pcie_prog_outbound_atu(struct dw_pcie *pci, int index, int type,
 			      u64 cpu_addr, u64 pci_addr, u64 size)
 {
-	return __dw_pcie_prog_outbound_atu(pci, 0, index, type,
+	return __dw_pcie_prog_outbound_atu(pci, 0, index, type, 0, 0,
 					   cpu_addr, pci_addr, size);
 }
 
@@ -539,7 +540,7 @@ int dw_pcie_prog_ep_outbound_atu(struct dw_pcie *pci, u8 func_no, int index,
 				 int type, u64 cpu_addr, u64 pci_addr,
 				 u64 size)
 {
-	return __dw_pcie_prog_outbound_atu(pci, func_no, index, type,
+	return __dw_pcie_prog_outbound_atu(pci, func_no, index, type, 0, 0,
 					   cpu_addr, pci_addr, size);
 }
 
