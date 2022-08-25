@@ -6,6 +6,7 @@
  * Author: Kishon Vijay Abraham I <kishon@ti.com>
  */
 
+#include <linux/delay.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
 
@@ -523,14 +524,29 @@ static const struct pci_epc_ops epc_ops = {
 	.get_features		= dw_pcie_ep_get_features,
 };
 
+static int dw_pcie_ep_send_msg(struct dw_pcie_ep *ep, u8 func_no, u8 code,
+			       u8 routing)
+{
+	int ret;
+
+	ret = dw_pcie_ep_outbound_atu_for_msg(ep, func_no, code, routing,
+					      ep->intx_mem_phys, 0, 4096);
+	if (ret)
+		return ret;
+	writel(0, ep->intx_mem);
+	dw_pcie_ep_outbound_atu_for_msg_free(ep, ep->intx_mem_phys);
+
+	return 0;
+}
+
 int dw_pcie_ep_raise_legacy_irq(struct dw_pcie_ep *ep, u8 func_no)
 {
-	struct dw_pcie *pci = to_dw_pcie_from_ep(ep);
-	struct device *dev = pci->dev;
+	/* FIXME: Hardcoded. Assert_INTA */
+	dw_pcie_ep_send_msg(ep, func_no, 0x20, 0x4);
+	usleep_range(1000, 1001);
+	dw_pcie_ep_send_msg(ep, func_no, 0x24, 0x4);
 
-	dev_err(dev, "EP cannot trigger legacy IRQs\n");
-
-	return -EINVAL;
+	return 0;
 }
 EXPORT_SYMBOL_GPL(dw_pcie_ep_raise_legacy_irq);
 
