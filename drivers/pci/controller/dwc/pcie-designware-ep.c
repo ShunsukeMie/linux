@@ -645,6 +645,8 @@ void dw_pcie_ep_exit(struct dw_pcie_ep *ep)
 
 	dw_pcie_edma_remove(pci);
 
+	pci_epc_mem_free_addr(epc, ep->intx_mem_phys, ep->intx_mem,
+			      epc->mem->window.page_size);
 	pci_epc_mem_free_addr(epc, ep->msi_mem_phys, ep->msi_mem,
 			      epc->mem->window.page_size);
 
@@ -805,9 +807,17 @@ int dw_pcie_ep_init(struct dw_pcie_ep *ep)
 		goto err_exit_epc_mem;
 	}
 
+	ep->intx_mem = pci_epc_mem_alloc_addr(epc, &ep->intx_mem_phys,
+					      epc->mem->window.page_size);
+	if (!ep->intx_mem) {
+		ret = -ENOMEM;
+		dev_err(dev, "Failed to reserve memory for INTx\n");
+		goto err_free_epc_mem;
+	}
+
 	ret = dw_pcie_edma_detect(pci);
 	if (ret)
-		goto err_free_epc_mem;
+		goto err_free_epc_mem_intx;
 
 	if (ep->ops->get_features) {
 		epc_features = ep->ops->get_features(ep);
@@ -823,6 +833,10 @@ int dw_pcie_ep_init(struct dw_pcie_ep *ep)
 
 err_remove_edma:
 	dw_pcie_edma_remove(pci);
+
+err_free_epc_mem_intx:
+	pci_epc_mem_free_addr(epc, ep->intx_mem_phys, ep->intx_mem,
+			      epc->mem->window.page_size);
 
 err_free_epc_mem:
 	pci_epc_mem_free_addr(epc, ep->msi_mem_phys, ep->msi_mem,
