@@ -146,6 +146,7 @@
 #define PCIE_ATU_TYPE_IO		0x2
 #define PCIE_ATU_TYPE_CFG0		0x4
 #define PCIE_ATU_TYPE_CFG1		0x5
+#define PCIE_ATU_TYPE_MSG		0x10
 #define PCIE_ATU_TD			BIT(8)
 #define PCIE_ATU_FUNC_NUM(pf)           ((pf) << 20)
 #define PCIE_ATU_REGION_CTRL2		0x004
@@ -531,6 +532,9 @@ int dw_pcie_ep_raise_msix_irq_doorbell(struct dw_pcie_ep *ep, u8 func_no,
 void dw_pcie_ep_reset_bar(struct dw_pcie *pci, enum pci_barno bar);
 struct dw_pcie_ep_func *
 dw_pcie_ep_get_func_from_ep(struct dw_pcie_ep *ep, u8 func_no);
+int dw_pcie_ep_outbound_atu_for_msg(struct dw_pcie_ep *ep, u8 func_no, u8 code,
+				    u8 routing, phys_addr_t phys_addr,
+				    u64 pci_addr, size_t size);
 #else
 static inline void dw_pcie_ep_linkup(struct dw_pcie_ep *ep)
 {
@@ -586,6 +590,14 @@ static inline struct dw_pcie_ep_func *
 dw_pcie_ep_get_func_from_ep(struct dw_pcie_ep *ep, u8 func_no)
 {
 	return NULL;
+}
+static inline int dw_pcie_ep_outbound_atu_for_msg(struct dw_pcie_ep *ep,
+						  u8 func_no, u8 code,
+						  u8 routing,
+						  phys_addr_t phys_addr,
+						  u64 pci_addr, size_t size)
+{
+	return 0;
 }
 #endif
 #endif /* _PCIE_DESIGNWARE_H */
