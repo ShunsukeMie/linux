@@ -311,6 +311,22 @@ static int dw_pcie_find_index(struct dw_pcie_ep *ep, phys_addr_t addr,
 	return -EINVAL;
 }
 
+void dw_pcie_ep_outbound_atu_for_msg_free(struct dw_pcie_ep *ep,
+					  phys_addr_t phys_addr)
+{
+	int ret;
+	u32 atu_index;
+	struct dw_pcie *pci = to_dw_pcie_from_ep(ep);
+
+	ret = dw_pcie_find_index(ep, phys_addr, &atu_index);
+	if (ret < 0)
+		return;
+
+	dw_pcie_disable_atu(pci, PCIE_ATU_REGION_DIR_OB, atu_index);
+	clear_bit(atu_index, ep->ob_window_map);
+}
+EXPORT_SYMBOL_GPL(dw_pcie_ep_outbound_atu_for_msg_free);
+
 static void dw_pcie_ep_unmap_addr(struct pci_epc *epc, u8 func_no, u8 vfunc_no,
 				  phys_addr_t addr)
 {
