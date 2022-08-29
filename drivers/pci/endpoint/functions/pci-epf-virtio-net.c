@@ -359,23 +359,24 @@ static int epf_virtnet_send_packet(struct epf_virtnet *vnet, void *buf,
 	};
 	u32 desc_len, data_len, offset, copy_len;
 	u64 addr;
+	u16 last_a_idx = vnet->rx_last_a_idx;
 
 	vring = &vnet->vqs[0].vring;
 
 	rx_u_idx = ioread16(&vring->used->idx);
 	rx_a_idx = ioread16(&vring->avail->idx);
 
-	mod_last_a_idx = vnet->rx_last_a_idx & EPF_VIRTNET_Q_MASK;
+	mod_last_a_idx = last_a_idx & EPF_VIRTNET_Q_MASK;
 	rx_hdr_d_idx = ioread16(&vring->avail->ring[mod_last_a_idx]);
 
 	remain = len;
 	while (remain) {
 		hdr.num_buffers++;
-		if (vnet->rx_last_a_idx == rx_a_idx) {
-			pr_err("virtqueue is full\n");
+		if (last_a_idx == rx_a_idx) {
+			pr_debug("virtqueue is full\n");
 			return -EAGAIN;
 		}
-		mod_last_a_idx = vnet->rx_last_a_idx & EPF_VIRTNET_Q_MASK;
+		mod_last_a_idx = last_a_idx & EPF_VIRTNET_Q_MASK;
 		rx_d_idx = ioread16(&vring->avail->ring[mod_last_a_idx]);
 		rx_desc = &vring->desc[rx_d_idx];
 
@@ -393,7 +394,6 @@ static int epf_virtnet_send_packet(struct epf_virtnet *vnet, void *buf,
 				return -EIO;
 			}
 			pcioff = addr - aaddr;
-
 
 			vnet->tx_epc_mem = pci_epc_mem_alloc_addr(epc, &vnet->tx_epc_mem_phys, asize);
 			if (!vnet->tx_epc_mem) {
@@ -434,8 +434,7 @@ static int epf_virtnet_send_packet(struct epf_virtnet *vnet, void *buf,
 		iowrite32(data_len, &vring->used->ring[mod_u_idx].len);
 		iowrite32(rx_d_idx, &vring->used->ring[mod_u_idx].id);
 
-		vnet->rx_last_a_idx++;
-
+		last_a_idx++;
 		rx_u_idx++;
 	}
 
@@ -477,6 +476,8 @@ static int epf_virtnet_send_packet(struct epf_virtnet *vnet, void *buf,
 		pci_epc_mem_free_addr(epc, vnet->tx_epc_mem_phys, vnet->tx_epc_mem, asize);
 	}
 
+	vnet->rx_last_a_idx = last_a_idx;
+
 	iowrite16(rx_u_idx, &vring->used->idx);
 
 	return 0;
@@ -502,8 +503,13 @@ static void epf_virtnet_tx_handler(struct work_struct *work)
 		skb = list_entry(entry, struct sk_buff, list);
 
 		res = epf_virtnet_send_packet(vnet, skb->data, skb->len);
-		if (res)
+		if (res == -EAGAIN) {
+			dev_kfree_skb_any(skb);
+			skb = NULL;
+			continue;
+		} else if(res)  {
 			pr_err("sending packet failed\n");
+		}
 
 		napi_consume_skb(skb, 0);
 	}
