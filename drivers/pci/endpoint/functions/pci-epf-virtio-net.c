@@ -344,6 +344,22 @@ static int local_ndev_close(struct net_device *dev)
 	return 0;
 }
 
+static int rcar_s4_pci_memory_align(u64 addr, u32 size, u64 *aligned_addr,
+				    u32 *aligned_size)
+{
+	size_t off;
+	u64 aaddr, asize;
+
+	aaddr = ALIGN_DOWN(addr, 0x1000);
+	off = addr - aaddr;
+	asize = size + off;
+
+	*aligned_addr = aaddr;
+	*aligned_size = asize;
+
+	return 0;
+}
+
 static int rcar_gen3_pci_memory_align(u64 addr, u32 size, u64 *aligned_addr, u32 *aligned_size)
 {
 	u64 align;
@@ -403,13 +419,12 @@ static int epf_virtnet_send_packet(struct epf_virtnet *vnet, void *buf,
 
 			u64 aaddr, pcioff;
 			u32 asize;
-			ret = rcar_gen3_pci_memory_align(addr, desc_len, &aaddr, &asize);
+			ret = rcar_s4_pci_memory_align(addr, desc_len, &aaddr, &asize);
 			if (ret) {
 				pr_err("invalid address\n");
 				return -EIO;
 			}
 			pcioff = addr - aaddr;
-
 
 			vnet->tx_epc_mem = pci_epc_mem_alloc_addr(epc, &vnet->tx_epc_mem_phys, asize);
 			if (!vnet->tx_epc_mem) {
@@ -465,7 +480,7 @@ static int epf_virtnet_send_packet(struct epf_virtnet *vnet, void *buf,
 
 		u64 aaddr, pcioff;
 		u32 asize;
-		ret = rcar_gen3_pci_memory_align(addr, desc_len, &aaddr, &asize);
+		ret = rcar_s4_pci_memory_align(addr, desc_len, &aaddr, &asize);
 		if (ret) {
 			pr_err("invalid address\n");
 			return -EIO;
@@ -592,7 +607,7 @@ static void *local_ndev_receive(struct epf_virtnet *vnet, struct vring *vring,
 
 			u64 aaddr, pcioff;
 			u32 asize;
-			ret = rcar_gen3_pci_memory_align(addr, len, &aaddr, &asize);
+			ret = rcar_s4_pci_memory_align(addr, len, &aaddr, &asize);
 			if (ret) {
 				pr_err("invalid address\n");
 				return NULL;
