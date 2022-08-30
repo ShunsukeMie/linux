@@ -176,14 +176,17 @@ void __iomem *pci_epc_mem_alloc_addr(struct pci_epc *epc,
 	int order;
 	int i;
 
+printk("%s:%d\n", __func__, __LINE__);
 	for (i = 0; i < epc->num_windows; i++) {
 		mem = epc->windows[i];
 		mutex_lock(&mem->lock);
 		align_size = ALIGN(size, mem->window.page_size);
+printk("%s:%d %ld %ld %ld\n", __func__, __LINE__, align_size, size, mem->window.page_size);
 		order = pci_epc_mem_get_order(mem, align_size);
 
 		pageno = bitmap_find_free_region(mem->bitmap, mem->pages,
 						 order);
+printk("%s:%d %d %d %x\n", __func__, __LINE__, pageno, mem->pages, order);
 		if (pageno >= 0) {
 			page_shift = ilog2(mem->window.page_size);
 			*phys_addr = mem->window.phys_base +

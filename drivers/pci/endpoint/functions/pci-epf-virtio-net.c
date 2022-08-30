@@ -354,6 +354,9 @@ static int rcar_s4_pci_memory_align(u64 addr, u32 size, u64 *aligned_addr,
 	off = addr - aaddr;
 	asize = size + off;
 
+printk("%s:%d addr: %llx aaddr: %llx size: %d asize: %lld\n", __func__, __LINE__,
+	addr, aaddr, size, asize);
+
 	*aligned_addr = aaddr;
 	*aligned_size = asize;
 
@@ -381,6 +384,8 @@ static int epf_virtnet_send_packet(struct epf_virtnet *vnet, void *buf,
 	rx_u_idx = ioread16(&vring->used->idx);
 	rx_a_idx = ioread16(&vring->avail->idx);
 
+printk("%s:%d %llx %d %d %d\n", __func__, __LINE__, (u64)vring, rx_u_idx, rx_a_idx, vring->num);
+
 	mod_last_a_idx = vnet->rx_last_a_idx & EPF_VIRTNET_Q_MASK;
 	rx_hdr_d_idx = ioread16(&vring->avail->ring[mod_last_a_idx]);
 
@@ -394,6 +399,7 @@ static int epf_virtnet_send_packet(struct epf_virtnet *vnet, void *buf,
 		mod_last_a_idx = vnet->rx_last_a_idx & EPF_VIRTNET_Q_MASK;
 		rx_d_idx = ioread16(&vring->avail->ring[mod_last_a_idx]);
 		rx_desc = &vring->desc[rx_d_idx];
+printk("%s:%d %llx %d\n", __func__, __LINE__, (u64)rx_desc, rx_d_idx);
 
 		desc_len = ioread32(&rx_desc->len);
 		addr = ioread64(&rx_desc->addr);
