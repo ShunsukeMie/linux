@@ -50,11 +50,8 @@ struct epf_virtnet {
 	struct work_struct raise_irq_work;
 	struct work_struct tx_work;
 
-	struct list_head tx_list;
-	spinlock_t tx_list_lock;
-
-	struct list_head rx_list;
-	spinlock_t rx_list_lock;
+	struct sk_buff_head txq;
+	struct sk_buff_head rxq;
 };
 
 struct local_ndev_adapter {
@@ -470,19 +467,9 @@ static void epf_virtnet_tx_handler(struct work_struct *work)
 	struct epf_virtnet *vnet =
 		container_of(work, struct epf_virtnet, tx_work);
 	struct sk_buff *skb;
-	struct list_head *entry;
-	int res;
+	int res = 0;
 
-	while(true) {
-		spin_lock(&vnet->tx_list_lock);
-		if (list_empty(&vnet->tx_list)) {
-			break;
-		}
-		entry = vnet->tx_list.next;
-		list_del(entry);
-		spin_unlock(&vnet->tx_list_lock);
-
-		skb = list_entry(entry, struct sk_buff, list);
+	while((skb = skb_dequeue(&vnet->txq))) {
 
 		res = epf_virtnet_send_packet(vnet, skb->data, skb->len);
 		if (res == -EAGAIN) {
@@ -496,10 +483,7 @@ static void epf_virtnet_tx_handler(struct work_struct *work)
 		napi_consume_skb(skb, 0);
 	}
 
-	INIT_LIST_HEAD(&vnet->tx_list);
-	spin_unlock(&vnet->tx_list_lock);
-
-	if (skb)
+	if (!res || res == -EAGAIN)
 		queue_work(vnet->workqueue, &vnet->raise_irq_work);
 }
 
@@ -509,9 +493,7 @@ static netdev_tx_t local_ndev_start_xmit(struct sk_buff *skb,
 	struct local_ndev_adapter *adapter = netdev_priv(dev);
 	struct epf_virtnet *vnet = adapter->vnet;
 
-	spin_lock(&vnet->tx_list_lock);
-	list_add_tail(&skb->list, &vnet->tx_list);
-	spin_unlock(&vnet->tx_list_lock);
+	skb_queue_tail(&vnet->txq, skb);
 
 	queue_work(vnet->workqueue, &vnet->tx_work);
 
@@ -609,16 +591,7 @@ static int local_ndev_rx_poll(struct napi_struct *napi, int budget)
 	struct sk_buff *skb;
 	int n_rx = 0;
 
-	while(true) {
-		spin_lock(&vnet->rx_list_lock);
-		skb = list_first_entry_or_null(&vnet->rx_list, struct sk_buff, list);
-		if (!skb) {
-			spin_unlock(&vnet->rx_list_lock);
-			break;
-		}
-		skb_list_del_init(skb);
-		spin_unlock(&vnet->rx_list_lock);
-
+	while((skb = skb_dequeue(&vnet->rxq))) {
 		napi_gro_receive(&adapter->napi, skb);
 
 		n_rx++;
@@ -692,9 +665,7 @@ static void epf_virtnet_rx_packets(struct epf_virtnet *vnet)
 
 		skb->protocol = eth_type_trans(skb, dev);
 
-		spin_lock(&vnet->rx_list_lock);
-		list_add_tail(&skb->list, &vnet->rx_list);
-		spin_unlock(&vnet->rx_list_lock);
+		skb_queue_tail(&vnet->rxq, skb);
 
 		iowrite16(desc_idx, &vring->used->ring[mod_u_idx].id);
 		iowrite32(total_len, &vring->used->ring[mod_u_idx].len);
@@ -819,10 +790,8 @@ static int epf_virtnet_create_netdev(struct pci_epf *epf)
 	INIT_WORK(&vnet->raise_irq_work, epf_virtnet_raise_irq_handler);
 	INIT_WORK(&vnet->tx_work, epf_virtnet_tx_handler);
 
-	INIT_LIST_HEAD(&vnet->tx_list);
-	spin_lock_init(&vnet->tx_list_lock);
-	INIT_LIST_HEAD(&vnet->rx_list);
-	spin_lock_init(&vnet->rx_list_lock);
+	skb_queue_head_init(&vnet->txq);
+	skb_queue_head_init(&vnet->rxq);
 
 	err = register_netdev(ndev);
 	if (err) {
