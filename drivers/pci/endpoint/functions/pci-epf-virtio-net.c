@@ -505,7 +505,7 @@ static void epf_virtnet_tx_handler(struct work_struct *work)
 		container_of(work, struct epf_virtnet, tx_work);
 	struct sk_buff *skb;
 	struct list_head *entry;
-	int res;
+	int res = 0;
 
 	while(true) {
 		spin_lock(&vnet->tx_list_lock);
@@ -533,7 +533,7 @@ static void epf_virtnet_tx_handler(struct work_struct *work)
 	INIT_LIST_HEAD(&vnet->tx_list);
 	spin_unlock(&vnet->tx_list_lock);
 
-	if (skb)
+	if (skb || res == -EAGAIN)
 		queue_work(vnet->workqueue, &vnet->raise_irq_work);
 }
 
