@@ -13,6 +13,7 @@
 #include <linux/etherdevice.h>
 #include <linux/netdevice.h>
 #include <linux/ethtool.h>
+#include <linux/vringh.h>
 
 //TODO care for native endianess
 struct virtio_common_config {
@@ -38,15 +39,11 @@ struct epf_virtnet {
 	void **rx_bufs;
 	size_t rx_bufs_idx, rx_bufs_used_idx;
 	struct workqueue_struct *workqueue;
-	struct {
-		u32 pfn;
-		void __iomem *addr;
-		struct vring vring;
-	} * vqs;
-	u16 rx_last_a_idx;
+	struct vringh rx_vrh, tx_vrh;
+	struct vringh_kiov txiov, rxiov;
+	struct vring_used_elem *tx_used_elems, *rx_used_elems;
 
 	void __iomem *tx_epc_mem, *rx_epc_mem;
-	phys_addr_t tx_epc_mem_phys, rx_epc_mem_phys;
 	struct work_struct raise_irq_work;
 	struct work_struct tx_work;
 
@@ -173,22 +170,29 @@ err_alloc:
 	return NULL;
 }
 
-static void epf_virtnet_rx_packets(struct epf_virtnet *vnet);
+static int epf_virtnet_rx_packets(struct epf_virtnet *vnet);
 static int epf_virtnet_notify_monitor(void *data)
 {
 	struct epf_virtnet *vnet = data;
 	struct virtio_common_config *common_cfg = &vnet->pci_config->common_cfg;
 	u16 queue;
+	int ret;
 
 	while (true) {
 		while ((queue = ioread16(&common_cfg->q_notify)) == 2)
 			;
 		iowrite16(2, &common_cfg->q_notify);
 
-		if (queue != 1)
-			continue;
+		while(true) {
+			ret = epf_virtnet_rx_packets(vnet);
+			if (ret < 0) {
+				pr_err("what happend?\n");
+				return -1;
+			}
 
-		epf_virtnet_rx_packets(vnet);
+			if (!ret)
+				break;
+		}
 	}
 
 	return 0;
@@ -218,12 +222,10 @@ static int epf_virtnet_config_monitor(void *data)
 	register u32 sel, pfn;
 	void __iomem *tmp;
 	int ret;
-
-	vnet->vqs = kcalloc(qsel_max, sizeof vnet->vqs[0], GFP_KERNEL);
-	if (!vnet->vqs) {
-		pr_err("failed to allocate memory\n");
-		return -ENOMEM;
-	}
+	struct vring vring;
+	struct kvec *kvec;
+	u32 txpfn = 0;
+	u32 rxpfn = 0;
 
 	while (true) {
 		sel = ioread16(&common_cfg->q_select);
@@ -248,33 +250,81 @@ static int epf_virtnet_config_monitor(void *data)
 		/* reset the queue related registers to detect changes in next loop */
 		iowrite32(0, &common_cfg->q_addr);
 
-		if (sel >= qsel_max) {
-			pr_warn("driver ties to use invalid queue: %d\n", sel);
-			continue;
+		switch (sel) {
+			case 0:
+				txpfn = pfn;
+				break;
+			case 1:
+				rxpfn = pfn;
+				break;
+			default:
+				pr_warn("driver ties to use invalid queue: %d\n", sel);
 		}
-		vnet->vqs[sel].pfn = pfn;
 	}
 
 	sched_set_normal(vnet->monitor_config_task, 19);
 
+	if (!txpfn || !rxpfn) {
+		pr_warn("driver should setup both tx/rx queues\n");
+		return -EINVAL;
+	}
+
 	/*
 	 * setup virtqueues
 	 */
-	tmp = epf_virtnet_map_host_vq(vnet, vnet->vqs[0].pfn);
+	tmp = epf_virtnet_map_host_vq(vnet, txpfn);
 	if (!tmp) {
 		pr_err("failed to map host virtqueue\n");
 		return -ENOMEM;
 	}
-	vring_init(&vnet->vqs[0].vring, EPF_VIRTNET_Q_SIZE, tmp,
+	vring_init(&vring, EPF_VIRTNET_Q_SIZE, tmp,
 		   VIRTIO_PCI_VRING_ALIGN);
 
-	tmp = epf_virtnet_map_host_vq(vnet, vnet->vqs[1].pfn);
+	ret = vringh_init_kern(&vnet->tx_vrh, 0, EPF_VIRTNET_Q_SIZE, false,
+			       vring.desc, vring.avail, vring.used);
+	if (ret) {
+		pr_err("failed to init tx vringh\n");
+		return ret;
+	}
+
+	kvec = kmalloc_array(EPF_VIRTNET_Q_SIZE, sizeof *kvec, GFP_KERNEL);
+	vringh_kiov_init(&vnet->txiov, kvec, EPF_VIRTNET_Q_SIZE);
+
+	vnet->tx_used_elems = kmalloc_array(4, sizeof vnet->tx_used_elems[0], GFP_KERNEL);
+	if (!vnet->tx_used_elems) {
+		pr_err("failed malloc\n");
+		return -ENOMEM;
+	}
+
+	/* rx */
+	tmp = epf_virtnet_map_host_vq(vnet, rxpfn);
 	if (!tmp) {
 		pr_err("failed to map host virtqueue\n");
 		return -ENOMEM;
 	}
-	vring_init(&vnet->vqs[1].vring, EPF_VIRTNET_Q_SIZE, tmp,
+	vring_init(&vring, EPF_VIRTNET_Q_SIZE, tmp,
 		   VIRTIO_PCI_VRING_ALIGN);
+
+	ret = vringh_init_kern(&vnet->rx_vrh, 0, EPF_VIRTNET_Q_SIZE, false,
+			       vring.desc, vring.avail, vring.used);
+	if (ret) {
+		pr_err("failed to init rx virtio ring\n");
+		return ret;
+	}
+
+	kvec = kmalloc_array(EPF_VIRTNET_Q_SIZE, sizeof kvec[0], GFP_KERNEL);
+	if (!kvec) {
+		pr_err("failed malloc\n");
+		return -ENOMEM;
+	}
+	vringh_kiov_init(&vnet->rxiov, kvec, EPF_VIRTNET_Q_SIZE);
+
+	vnet->rx_used_elems = kmalloc_array(4, sizeof vnet->rx_used_elems[0], GFP_KERNEL);
+	if (!vnet->rx_used_elems) {
+		pr_err("failed malloc\n");
+		return -ENOMEM;
+	}
+
 
 	// TODO spawn kernel thread for monitoring queue_notify
 	ret = epf_virtnet_spawn_notify_monitor(vnet);
@@ -327,40 +377,38 @@ static int epf_virtnet_send_packet(struct epf_virtnet *vnet, void *buf,
 				   size_t len)
 {
 	int ret, remain;
-	u16 rx_u_idx, rx_a_idx, rx_d_idx, rx_hdr_d_idx;
-	u16 mod_u_idx, mod_last_a_idx;
-	struct vring *vring;
-	struct vring_desc *rx_desc;
 	struct virtio_net_hdr_mrg_rxbuf hdr = {
 		.hdr.flags = 0,
 		.hdr.gso_type = VIRTIO_NET_HDR_GSO_NONE,
 		.num_buffers = 0,
 	};
-	u32 desc_len, data_len, offset, copy_len;
-	u64 addr;
-	u16 last_a_idx = vnet->rx_last_a_idx;
-
-	vring = &vnet->vqs[0].vring;
-
-	rx_u_idx = ioread16(&vring->used->idx);
-	rx_a_idx = ioread16(&vring->avail->idx);
-
-	mod_last_a_idx = last_a_idx & EPF_VIRTNET_Q_MASK;
-	rx_hdr_d_idx = ioread16(&vring->avail->ring[mod_last_a_idx]);
+	u64 hdr_addr;
+	u32 hdr_desc_len;
+	phys_addr_t epc_phys;
 
 	remain = len;
 	while (remain) {
-		hdr.num_buffers++;
-		if (last_a_idx == rx_a_idx) {
-			pr_debug("virtqueue is full\n");
+		u32 desc_len, data_len, offset, copy_len;
+		u64 addr;
+		u16 head;
+
+		ret = vringh_getdesc_iomem(&vnet->tx_vrh, NULL, &vnet->txiov, &head, GFP_KERNEL);
+		if (ret < 0 ) {
+			pr_err("failed the vringh_getesc_iomem\n");
+			return ret;
+		} else if (!ret) {
+			pr_debug("buffer full\n");
 			return -EAGAIN;
 		}
-		mod_last_a_idx = last_a_idx & EPF_VIRTNET_Q_MASK;
-		rx_d_idx = ioread16(&vring->avail->ring[mod_last_a_idx]);
-		rx_desc = &vring->desc[rx_d_idx];
 
-		desc_len = ioread32(&rx_desc->len);
-		addr = ioread64(&rx_desc->addr);
+		addr = (u64)vnet->txiov.iov[vnet->txiov.i].iov_base;
+		desc_len = vnet->txiov.iov[vnet->txiov.i].iov_len;
+
+		if (hdr.num_buffers == 0) {
+			hdr_addr = addr;
+			hdr_desc_len = desc_len;
+		}
+
 		{
 			struct pci_epf *epf = vnet->epf;
 			struct pci_epc *epc = epf->epc;
@@ -374,20 +422,20 @@ static int epf_virtnet_send_packet(struct epf_virtnet *vnet, void *buf,
 			}
 			pcioff = addr - aaddr;
 
-			vnet->tx_epc_mem = pci_epc_mem_alloc_addr(epc, &vnet->tx_epc_mem_phys, asize);
+			vnet->tx_epc_mem = pci_epc_mem_alloc_addr(epc, &epc_phys, asize);
 			if (!vnet->tx_epc_mem) {
 				pr_err("Failed to allocate pci epc memory\n");
 				return -ENOMEM;
 			}
 
 			ret = pci_epc_map_addr(epc, epf->func_no, epf->vfunc_no,
-					       vnet->tx_epc_mem_phys, aaddr, asize);
+					       epc_phys, aaddr, asize);
 			if (ret) {
 				pr_err("failed to map addr\n");
 				return ret;
 			}
 
-			offset = hdr.num_buffers == 1 ? sizeof hdr : 0;
+			offset = hdr.num_buffers == 0 ? sizeof hdr : 0;
 			copy_len = desc_len - offset;
 			if (copy_len > remain) {
 				copy_len = remain;
@@ -397,31 +445,24 @@ static int epf_virtnet_send_packet(struct epf_virtnet *vnet, void *buf,
 
 			memcpy_toio(vnet->tx_epc_mem + pcioff + offset, buf, copy_len);
 
-			pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no,
-					   vnet->tx_epc_mem_phys);
+			pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no, epc_phys);
 
-			pci_epc_mem_free_addr(epc, vnet->tx_epc_mem_phys, vnet->tx_epc_mem, asize);
+			pci_epc_mem_free_addr(epc, epc_phys, vnet->tx_epc_mem, asize);
 
 			buf += copy_len;
 			remain -= copy_len;
 		}
 
-		iowrite32(data_len, &rx_desc->len);
-		iowrite16(ioread16(&rx_desc->flags) & ~0x1, &rx_desc->flags);
+		vnet->tx_used_elems[hdr.num_buffers].id = head;
+		vnet->tx_used_elems[hdr.num_buffers].len = data_len;
 
-		mod_u_idx = rx_u_idx & EPF_VIRTNET_Q_MASK;
-		iowrite32(data_len, &vring->used->ring[mod_u_idx].len);
-		iowrite32(rx_d_idx, &vring->used->ring[mod_u_idx].id);
-
-		last_a_idx++;
-		rx_u_idx++;
+		hdr.num_buffers++;
 	}
 
 	// fill hdr
-	rx_desc = &vring->desc[rx_hdr_d_idx];
-	desc_len = ioread32(&rx_desc->len);
-	addr = ioread64(&rx_desc->addr);
 	{
+		u64 addr = hdr_addr;
+		u32 desc_len = hdr_desc_len;
 		struct pci_epf *epf = vnet->epf;
 		struct pci_epc *epc = epf->epc;
 
@@ -434,14 +475,14 @@ static int epf_virtnet_send_packet(struct epf_virtnet *vnet, void *buf,
 		}
 		pcioff = addr - aaddr;
 
-		vnet->tx_epc_mem = pci_epc_mem_alloc_addr(epc, &vnet->tx_epc_mem_phys, asize);
+		vnet->tx_epc_mem = pci_epc_mem_alloc_addr(epc, &epc_phys, asize);
 		if (!vnet->tx_epc_mem) {
 			pr_err("Failed to allocate pci epc memory\n");
 			return -ENOMEM;
 		}
 
 		ret = pci_epc_map_addr(epc, epf->func_no, epf->vfunc_no,
-				vnet->tx_epc_mem_phys, aaddr, asize);
+				epc_phys, aaddr, asize);
 		if (ret) {
 			pr_err("failed to map addr\n");
 			return ret;
@@ -449,15 +490,15 @@ static int epf_virtnet_send_packet(struct epf_virtnet *vnet, void *buf,
 
 		memcpy_toio(vnet->tx_epc_mem + pcioff, &hdr, sizeof hdr);
 
-		pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no,
-				   vnet->tx_epc_mem_phys);
+		pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no, epc_phys);
 
-		pci_epc_mem_free_addr(epc, vnet->tx_epc_mem_phys, vnet->tx_epc_mem, asize);
+		pci_epc_mem_free_addr(epc, epc_phys, vnet->tx_epc_mem, asize);
 	}
 
-	vnet->rx_last_a_idx = last_a_idx;
+	if(hdr.num_buffers > 4)
+		pr_err("not enough buffers\n");
 
-	iowrite16(rx_u_idx, &vring->used->idx);
+	vringh_complete_multi_iomem(&vnet->tx_vrh, vnet->tx_used_elems, hdr.num_buffers);
 
 	return 0;
 }
@@ -507,38 +548,32 @@ static const struct net_device_ops epf_virtnet_ndev_ops = {
 	// 	.ndo_get_stats64 = virtnet_stats,
 };
 
-static void *local_ndev_receive(struct epf_virtnet *vnet, struct vring *vring,
-				u16 u_idx, u32 *total_size)
+static void *local_ndev_receive(struct epf_virtnet *vnet, size_t *total_size)
 {
-	struct vring_desc *desc;
-	u16 d_idx, next_d_idx;
 	void *buf, *cur;
 	int ret;
+	size_t size = 0;
+	struct vringh_kiov *riov = &vnet->rxiov;
+	u16 head;
+	phys_addr_t epc_phys;
 
-	d_idx = ioread16(&vring->avail->ring[u_idx]);
-
-	WARN_ON(d_idx > EPF_VIRTNET_Q_SIZE);
 	buf = vnet->rx_bufs[vnet->rx_bufs_idx];
 	vnet->rx_bufs_idx = (vnet->rx_bufs_idx + 1) & EPF_VIRTNET_Q_MASK;
 
-	*total_size = 0;
+	ret = vringh_getdesc_iomem(&vnet->rx_vrh, riov, NULL, &head,
+				   GFP_KERNEL);
+	if (ret < 0) {
+		pr_err("Failed the vringh_getdesc\n");
+		return NULL;
+	} else if (!ret) {
+		return NULL;
+	}
 
-	while (true) {
-		u16 flags;
-		u32 len;
-		u64 addr;
-		u64 offset;
+	for (; riov->i < riov->used; riov->i++) {
+		u64 addr = (u64)riov->iov[riov->i].iov_base;
+		u32 len = riov->iov[riov->i].iov_len;
 
-		desc = &vring->desc[d_idx];
-
-		flags = ioread16(&desc->flags);
-		len = ioread32(&desc->len);
-		addr = ioread64(&desc->addr);
-		next_d_idx = ioread16(&desc->next);
-
-		offset = *total_size;
-		*total_size += len;
-		cur = buf + offset;
+		cur = buf + size;
 
 		{
 			struct pci_epf *epf = vnet->epf;
@@ -553,14 +588,14 @@ static void *local_ndev_receive(struct epf_virtnet *vnet, struct vring *vring,
 			}
 			pcioff = addr - aaddr;
 
-			vnet->rx_epc_mem = pci_epc_mem_alloc_addr(epc, &vnet->rx_epc_mem_phys, asize);
+			vnet->rx_epc_mem = pci_epc_mem_alloc_addr(epc, &epc_phys, asize);
 			if (!vnet->rx_epc_mem) {
 				pr_err("Failed to allocate pci epc memory\n");
 				return NULL;
 			}
 
 			ret = pci_epc_map_addr(epc, epf->func_no, epf->vfunc_no,
-					vnet->rx_epc_mem_phys, aaddr, asize);
+					       epc_phys, aaddr, asize);
 			if (ret) {
 				pr_err("failed to map addr\n");
 				return NULL;
@@ -568,17 +603,17 @@ static void *local_ndev_receive(struct epf_virtnet *vnet, struct vring *vring,
 
 			memcpy_fromio(cur, vnet->rx_epc_mem + pcioff, len);
 
-			pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no,
-					   vnet->rx_epc_mem_phys);
+			pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no, epc_phys);
 
-			pci_epc_mem_free_addr(epc, vnet->rx_epc_mem_phys, vnet->rx_epc_mem, asize);
+			pci_epc_mem_free_addr(epc, epc_phys, vnet->rx_epc_mem, asize);
 		}
 
-		if (!(flags & VRING_DESC_F_NEXT))
-			break;
-
-		d_idx = next_d_idx;
+		size += len;
 	}
+
+	vringh_complete_iomem(&vnet->rx_vrh, head, size);
+
+	*total_size = size;
 
 	return buf;
 }
@@ -624,65 +659,40 @@ static void epf_virtnet_refill_rx_bufs(struct epf_virtnet *vnet)
 	vnet->rx_bufs_used_idx = u_idx;
 }
 
-static void epf_virtnet_rx_packets(struct epf_virtnet *vnet)
+static int epf_virtnet_rx_packets(struct epf_virtnet *vnet)
 {
+	void *buf;
 	struct local_ndev_adapter *adapter = netdev_priv(vnet->ndev);
 	struct net_device *dev = adapter->dev;
-
-	struct vring *vring = &vnet->vqs[1].vring;
-	u16 used_idx, pre_used_idx, desc_idx;
-	u16 a_idx, pre_a_idx;
-	u16 mod_u_idx;
-	u32 total_len;
-	int len;
-	void *buf;
 	struct sk_buff *skb;
-	int rxs = 0;
 
-	pre_used_idx = used_idx = ioread16(&vring->used->idx);
-	pre_a_idx = a_idx = ioread16(&vring->avail->idx);
+	unsigned int len;
+	size_t total_len;
 
-	while (used_idx != a_idx) {
-		mod_u_idx = used_idx & EPF_VIRTNET_Q_MASK;
-		desc_idx = ioread16(&vring->avail->ring[mod_u_idx]);
-
-		buf = local_ndev_receive(vnet, vring, mod_u_idx, &total_len);
-		if (!buf) {
-			pr_err("failed to receive a packet");
-			return;
-		}
-
-		// skip virito_net header
-		len = SKB_DATA_ALIGN(total_len) + SKB_DATA_ALIGN(sizeof (struct skb_shared_info));
-		skb = napi_build_skb(buf, len);
-		if (!skb) {
-			pr_err("failed to build skb");
-			return;
-		}
-
-		skb_reserve(skb, sizeof (struct virtio_net_hdr_mrg_rxbuf));
-		skb_put(skb, total_len - sizeof (struct virtio_net_hdr_mrg_rxbuf));
-
-		skb->protocol = eth_type_trans(skb, dev);
-
-		skb_queue_tail(&vnet->rxq, skb);
-
-		iowrite16(desc_idx, &vring->used->ring[mod_u_idx].id);
-		iowrite32(total_len, &vring->used->ring[mod_u_idx].len);
-
-		used_idx++;
-		rxs++;
+	buf = local_ndev_receive(vnet, &total_len);
+	if (!buf) {
+		return 0;
 	}
 
-	if (pre_used_idx != used_idx) {
-		iowrite16(used_idx, &vring->used->idx);
+	//     if (vringh_need_notify_iomem(&vnet->rx_vrh) > 0)
+	//             queue_work(vnet->workqueue, &vnet->raise_irq_work);
 
-		// TODO
-// 		if (!ioread16(&vring->avail->flags) & VRING_AVAIL_F_NO_INTERRUPT)
-// 			queue_work(vnet->workqueue, &vnet->raise_irq_work);
-
-		napi_schedule(&adapter->napi);
+	len = SKB_DATA_ALIGN(total_len) +
+	      SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
+	skb = napi_build_skb(buf, len);
+	if (!skb) {
+		pr_err("failed to build skb");
+		return -1;
 	}
+
+	skb_reserve(skb, sizeof(struct virtio_net_hdr_mrg_rxbuf));
+	skb_put(skb, total_len - sizeof(struct virtio_net_hdr_mrg_rxbuf));
+
+	skb->protocol = eth_type_trans(skb, dev);
+
+	skb_queue_tail(&vnet->rxq, skb);
+
+	napi_schedule(&adapter->napi);
 
 	{
 		const size_t rx_bufs_refill_threshold = 16;
@@ -693,6 +703,8 @@ static void epf_virtnet_rx_packets(struct epf_virtnet *vnet)
 		if (diff > rx_bufs_refill_threshold)
 			epf_virtnet_refill_rx_bufs(vnet);
 	}
+
+	return 1;
 }
 
 static void epf_virtnet_raise_irq_handler(struct work_struct *work)
