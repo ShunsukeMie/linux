@@ -195,22 +195,29 @@ err_alloc:
 	return NULL;
 }
 
-static void epf_virtnet_rx_packets(struct epf_virtnet *vnet);
+static int epf_virtnet_rx_packets(struct epf_virtnet *vnet);
 static int epf_virtnet_notify_monitor(void *data)
 {
 	struct epf_virtnet *vnet = data;
 	struct virtio_common_config *common_cfg = &vnet->pci_config->common_cfg;
 	u16 queue;
+	int ret;
 
 	while (true) {
 		while ((queue = ioread16(&common_cfg->q_notify)) == 2)
 			;
 		iowrite16(2, &common_cfg->q_notify);
 
-		if (queue != 1)
-			continue;
+		while(true) {
+			ret = epf_virtnet_rx_packets(vnet);
+			if (ret < 0) {
+				pr_err("what happend?\n");
+				return -1;
+			}
 
-		epf_virtnet_rx_packets(vnet);
+			if (!ret)
+				break;
+		}
 	}
 
 	return 0;
@@ -594,7 +601,6 @@ static void *local_ndev_receive(struct epf_virtnet *vnet, size_t *total_size)
 		pr_err("Failed the vringh_getdesc\n");
 		return NULL;
 	} else if (!ret) {
-		pr_info("done\n");
 		return NULL;
 	}
 
@@ -693,7 +699,7 @@ static void epf_virtnet_refill_rx_bufs(struct epf_virtnet *vnet)
 	vnet->rx_bufs_used_idx = u_idx;
 }
 
-static void epf_virtnet_rx_packets(struct epf_virtnet *vnet)
+static int epf_virtnet_rx_packets(struct epf_virtnet *vnet)
 {
 	void *buf;
 	struct local_ndev_adapter *adapter = netdev_priv(vnet->ndev);
@@ -704,6 +710,9 @@ static void epf_virtnet_rx_packets(struct epf_virtnet *vnet)
 	size_t total_len;
 
 	buf = local_ndev_receive(vnet, &total_len);
+	if (!buf) {
+		return 0;
+	}
 
 	//     if (vringh_need_notify_iomem(&vnet->rx_vrh) > 0)
 	//             queue_work(vnet->workqueue, &vnet->raise_irq_work);
@@ -713,7 +722,7 @@ static void epf_virtnet_rx_packets(struct epf_virtnet *vnet)
 	skb = napi_build_skb(buf, len);
 	if (!skb) {
 		pr_err("failed to build skb");
-		return;
+		return -1;
 	}
 
 	skb_reserve(skb, sizeof(struct virtio_net_hdr_mrg_rxbuf));
@@ -734,6 +743,8 @@ static void epf_virtnet_rx_packets(struct epf_virtnet *vnet)
 		if (diff > rx_bufs_refill_threshold)
 			epf_virtnet_refill_rx_bufs(vnet);
 	}
+
+	return 1;
 }
 
 static void epf_virtnet_raise_irq_handler(struct work_struct *work)
