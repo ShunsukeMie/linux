@@ -195,7 +195,8 @@ err_alloc:
 	return NULL;
 }
 
-static void epf_virtnet_rx_packets(struct epf_virtnet *vnet);
+static void epf_virtnet_rx_packets2(struct epf_virtnet *vnet);
+// static void epf_virtnet_rx_packets(struct epf_virtnet *vnet);
 static int epf_virtnet_notify_monitor(void *data)
 {
 	struct epf_virtnet *vnet = data;
@@ -210,7 +211,7 @@ static int epf_virtnet_notify_monitor(void *data)
 		if (queue != 1)
 			continue;
 
-		epf_virtnet_rx_packets(vnet);
+		epf_virtnet_rx_packets2(vnet);
 	}
 
 	return 0;
@@ -314,8 +315,29 @@ static int epf_virtnet_config_monitor(void *data)
 		pr_err("failed to map host virtqueue\n");
 		return -ENOMEM;
 	}
-	vring_init(&vnet->vqs[1].vring, EPF_VIRTNET_Q_SIZE, tmp,
+	vring_init(&vring, EPF_VIRTNET_Q_SIZE, tmp,
 		   VIRTIO_PCI_VRING_ALIGN);
+
+	ret = vringh_init_kern(&vnet->rx_vrh, 0, EPF_VIRTNET_Q_SIZE, false,
+			       vring.desc, vring.avail, vring.used);
+	if (ret) {
+		pr_err("failed to init rx virtio ring\n");
+		return ret;
+	}
+
+	kvec = kmalloc_array(EPF_VIRTNET_Q_SIZE, sizeof kvec[0], GFP_KERNEL);
+	if (!kvec) {
+		pr_err("failed malloc\n");
+		return -ENOMEM;
+	}
+	vringh_kiov_init(&vnet->rxiov, kvec, EPF_VIRTNET_Q_SIZE);
+
+	vnet->rx_used_elems = kmalloc_array(4, sizeof vnet->rx_used_elems[0], GFP_KERNEL);
+	if (!vnet->rx_used_elems) {
+		pr_err("failed malloc\n");
+		return -ENOMEM;
+	}
+
 
 	// TODO spawn kernel thread for monitoring queue_notify
 	ret = epf_virtnet_spawn_notify_monitor(vnet);
@@ -675,6 +697,118 @@ static void epf_virtnet_refill_rx_bufs(struct epf_virtnet *vnet)
 	vnet->rx_bufs_used_idx = u_idx;
 }
 
+static void epf_virtnet_rx_packets2(struct epf_virtnet *vnet)
+{
+	int ret;
+	void *buf;
+	struct vringh_kiov *riov = &vnet->rxiov;
+	struct local_ndev_adapter *adapter = netdev_priv(vnet->ndev);
+	struct net_device *dev = adapter->dev;
+	struct sk_buff *skb;
+
+	u64 addr;
+	u32 len;
+	void *cur;
+	size_t size = 0;
+	size_t total_len;
+	u16 head;
+
+	buf = vnet->rx_bufs[vnet->rx_bufs_idx];
+	vnet->rx_bufs_idx = (vnet->rx_bufs_idx + 1) & EPF_VIRTNET_Q_MASK;
+
+	ret = vringh_getdesc_iomem(&vnet->rx_vrh, riov, NULL, &head,
+				   GFP_KERNEL);
+	if (ret < 0) {
+		pr_err("Failed the vringh_getdesc\n");
+		return;
+	} else if (!ret) {
+		pr_info("done\n");
+		return;
+	}
+
+	total_len = vringh_kiov_length(riov);
+
+	for (; riov->i < riov->used; riov->i++) {
+		addr = (u64)riov->iov[riov->i].iov_base;
+		len = riov->iov[riov->i].iov_len;
+
+		cur = buf + size;
+
+		{
+			struct pci_epf *epf = vnet->epf;
+			struct pci_epc *epc = epf->epc;
+
+			u64 aaddr, pcioff;
+			u32 asize;
+			ret = rcar_gen3_pci_memory_align(addr, len, &aaddr,
+							 &asize);
+			if (ret) {
+				pr_err("invalid address\n");
+				return;
+			}
+			pcioff = addr - aaddr;
+
+			vnet->rx_epc_mem = pci_epc_mem_alloc_addr(
+				epc, &vnet->rx_epc_mem_phys, asize);
+			if (!vnet->rx_epc_mem) {
+				pr_err("Failed to allocate pci epc memory\n");
+				return;
+			}
+
+			ret = pci_epc_map_addr(epc, epf->func_no, epf->vfunc_no,
+					       vnet->rx_epc_mem_phys, aaddr,
+					       asize);
+			if (ret) {
+				pr_err("failed to map addr\n");
+				return;
+			}
+
+			memcpy_fromio(cur, vnet->rx_epc_mem + pcioff, len);
+
+			pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no,
+					   vnet->rx_epc_mem_phys);
+
+			pci_epc_mem_free_addr(epc, vnet->rx_epc_mem_phys,
+					      vnet->rx_epc_mem, asize);
+		}
+
+		size += len;
+	}
+
+	vringh_complete_iomem(&vnet->rx_vrh, head, total_len);
+
+	//     if (vringh_need_notify_iomem(&vnet->rx_vrh) > 0)
+	//             queue_work(vnet->workqueue, &vnet->raise_irq_work);
+
+	len = SKB_DATA_ALIGN(total_len) +
+	      SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
+	skb = napi_build_skb(buf, len);
+	if (!skb) {
+		pr_err("failed to build skb");
+		return;
+	}
+
+	skb_reserve(skb, sizeof(struct virtio_net_hdr_mrg_rxbuf));
+	skb_put(skb, total_len - sizeof(struct virtio_net_hdr_mrg_rxbuf));
+
+	skb->protocol = eth_type_trans(skb, dev);
+
+	skb_queue_tail(&vnet->rxq, skb);
+
+	napi_schedule(&adapter->napi);
+
+	{
+		const size_t rx_bufs_refill_threshold = 16;
+		int diff = vnet->rx_bufs_idx - vnet->rx_bufs_used_idx;
+		if (diff < 0)
+			diff += EPF_VIRTNET_Q_SIZE;
+
+		if (diff > rx_bufs_refill_threshold)
+			epf_virtnet_refill_rx_bufs(vnet);
+	}
+}
+
+/*
 static void epf_virtnet_rx_packets(struct epf_virtnet *vnet)
 {
 	struct local_ndev_adapter *adapter = netdev_priv(vnet->ndev);
@@ -745,6 +879,7 @@ static void epf_virtnet_rx_packets(struct epf_virtnet *vnet)
 			epf_virtnet_refill_rx_bufs(vnet);
 	}
 }
+*/
 
 static void epf_virtnet_raise_irq_handler(struct work_struct *work)
 {
