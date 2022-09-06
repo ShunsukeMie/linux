@@ -40,11 +40,6 @@ struct epf_virtnet {
 	void **rx_bufs;
 	size_t rx_bufs_idx, rx_bufs_used_idx;
 	struct workqueue_struct *workqueue;
-	struct {
-		u32 pfn;
-		void __iomem *addr;
-		struct vring vring;
-	} * vqs;
 	u16 rx_last_a_idx;
 	struct vringh rx_vrh, tx_vrh;
 	struct vringh_kiov txiov, rxiov;
@@ -249,12 +244,8 @@ static int epf_virtnet_config_monitor(void *data)
 	int ret;
 	struct vring vring;
 	struct kvec *kvec;
-
-	vnet->vqs = kcalloc(qsel_max, sizeof vnet->vqs[0], GFP_KERNEL);
-	if (!vnet->vqs) {
-		pr_err("failed to allocate memory\n");
-		return -ENOMEM;
-	}
+	u32 txpfn = 0;
+	u32 rxpfn = 0;
 
 	while (true) {
 		sel = ioread16(&common_cfg->q_select);
@@ -279,19 +270,29 @@ static int epf_virtnet_config_monitor(void *data)
 		/* reset the queue related registers to detect changes in next loop */
 		iowrite32(0, &common_cfg->q_addr);
 
-		if (sel >= qsel_max) {
-			pr_warn("driver ties to use invalid queue: %d\n", sel);
-			continue;
+		switch (sel) {
+			case 0:
+				txpfn = pfn;
+				break;
+			case 1:
+				rxpfn = pfn;
+				break;
+			default:
+				pr_warn("driver ties to use invalid queue: %d\n", sel);
 		}
-		vnet->vqs[sel].pfn = pfn;
 	}
 
 	sched_set_normal(vnet->monitor_config_task, 19);
 
+	if (!txpfn || !rxpfn) {
+		pr_warn("driver should setup both tx/rx queues\n");
+		return -EINVAL;
+	}
+
 	/*
 	 * setup virtqueues
 	 */
-	tmp = epf_virtnet_map_host_vq(vnet, vnet->vqs[0].pfn);
+	tmp = epf_virtnet_map_host_vq(vnet, txpfn);
 	if (!tmp) {
 		pr_err("failed to map host virtqueue\n");
 		return -ENOMEM;
@@ -316,7 +317,7 @@ static int epf_virtnet_config_monitor(void *data)
 	}
 
 	/* rx */
-	tmp = epf_virtnet_map_host_vq(vnet, vnet->vqs[1].pfn);
+	tmp = epf_virtnet_map_host_vq(vnet, rxpfn);
 	if (!tmp) {
 		pr_err("failed to map host virtqueue\n");
 		return -ENOMEM;
