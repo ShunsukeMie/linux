@@ -45,7 +45,7 @@ struct epf_virtnet {
 	struct vring_used_elem *tx_used_elems, *rx_used_elems;
 
 	void __iomem *tx_epc_mem, *rx_epc_mem;
-	phys_addr_t tx_epc_mem_phys, rx_epc_mem_phys;
+	phys_addr_t rx_epc_mem_phys;
 	struct work_struct raise_irq_work;
 	struct work_struct tx_work;
 
@@ -419,6 +419,7 @@ static int epf_virtnet_send_packet(struct epf_virtnet *vnet, void *buf,
 	};
 	u64 hdr_addr;
 	u32 hdr_desc_len;
+	phys_addr_t epc_phys;
 
 	remain = len;
 	while (remain) {
@@ -456,14 +457,14 @@ static int epf_virtnet_send_packet(struct epf_virtnet *vnet, void *buf,
 			}
 			pcioff = addr - aaddr;
 
-			vnet->tx_epc_mem = pci_epc_mem_alloc_addr(epc, &vnet->tx_epc_mem_phys, asize);
+			vnet->tx_epc_mem = pci_epc_mem_alloc_addr(epc, &epc_phys, asize);
 			if (!vnet->tx_epc_mem) {
 				pr_err("Failed to allocate pci epc memory\n");
 				return -ENOMEM;
 			}
 
 			ret = pci_epc_map_addr(epc, epf->func_no, epf->vfunc_no,
-					       vnet->tx_epc_mem_phys, aaddr, asize);
+					       epc_phys, aaddr, asize);
 			if (ret) {
 				pr_err("failed to map addr\n");
 				return ret;
@@ -479,10 +480,9 @@ static int epf_virtnet_send_packet(struct epf_virtnet *vnet, void *buf,
 
 			memcpy_toio(vnet->tx_epc_mem + pcioff + offset, buf, copy_len);
 
-			pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no,
-					   vnet->tx_epc_mem_phys);
+			pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no, epc_phys);
 
-			pci_epc_mem_free_addr(epc, vnet->tx_epc_mem_phys, vnet->tx_epc_mem, asize);
+			pci_epc_mem_free_addr(epc, epc_phys, vnet->tx_epc_mem, asize);
 
 			buf += copy_len;
 			remain -= copy_len;
@@ -510,14 +510,14 @@ static int epf_virtnet_send_packet(struct epf_virtnet *vnet, void *buf,
 		}
 		pcioff = addr - aaddr;
 
-		vnet->tx_epc_mem = pci_epc_mem_alloc_addr(epc, &vnet->tx_epc_mem_phys, asize);
+		vnet->tx_epc_mem = pci_epc_mem_alloc_addr(epc, &epc_phys, asize);
 		if (!vnet->tx_epc_mem) {
 			pr_err("Failed to allocate pci epc memory\n");
 			return -ENOMEM;
 		}
 
 		ret = pci_epc_map_addr(epc, epf->func_no, epf->vfunc_no,
-				vnet->tx_epc_mem_phys, aaddr, asize);
+				epc_phys, aaddr, asize);
 		if (ret) {
 			pr_err("failed to map addr\n");
 			return ret;
@@ -525,10 +525,9 @@ static int epf_virtnet_send_packet(struct epf_virtnet *vnet, void *buf,
 
 		memcpy_toio(vnet->tx_epc_mem + pcioff, &hdr, sizeof hdr);
 
-		pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no,
-				   vnet->tx_epc_mem_phys);
+		pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no, epc_phys);
 
-		pci_epc_mem_free_addr(epc, vnet->tx_epc_mem_phys, vnet->tx_epc_mem, asize);
+		pci_epc_mem_free_addr(epc, epc_phys, vnet->tx_epc_mem, asize);
 	}
 
 	if(hdr.num_buffers > 4)
