@@ -33,7 +33,6 @@ struct epf_virtnet {
 		struct virtio_common_config common_cfg;
 		struct virtio_net_config net_cfg;
 	} __packed *pci_config;
-	const struct pci_epc_features *epc_features;
 	struct task_struct *monitor_config_task;
 	struct task_struct *monitor_notify_task;
 	void **rx_bufs;
@@ -61,7 +60,8 @@ struct local_ndev_adapter {
 	struct napi_struct napi;
 };
 
-static int epf_virtnet_setup_bar(struct pci_epf *epf)
+static int epf_virtnet_setup_bar(struct pci_epf *epf,
+				 const struct pci_epc_features *epc_features)
 {
 	struct pci_epc *epc = epf->epc;
 	const enum pci_barno cfg_bar = BAR_0;
@@ -69,7 +69,6 @@ static int epf_virtnet_setup_bar(struct pci_epf *epf)
 	struct epf_virtnet *vnet = epf_get_drvdata(epf);
 	size_t cfg_bar_size = sizeof(struct virtio_common_config) +
 			      sizeof(struct virtio_net_config);
-	const struct pci_epc_features *epc_features = vnet->epc_features;
 	void *cfg_base;
 	int ret;
 
@@ -98,23 +97,6 @@ static int epf_virtnet_setup_bar(struct pci_epf *epf)
 		pr_err("Failed to set PCI BAR\n");
 		return ret;
 	}
-
-	return 0;
-}
-
-static int epf_virtnet_load_epc_features(struct pci_epf *epf)
-{
-	const struct pci_epc_features *epc_features;
-	struct epf_virtnet *epf_virtnet = epf_get_drvdata(epf);
-	struct pci_epc *epc = epf->epc;
-
-	epc_features = pci_epc_get_features(epc, epf->func_no, epf->vfunc_no);
-	if (!epc_features) {
-		pr_err("epc_features not implemented\n");
-		return -EOPNOTSUPP;
-	}
-
-	epf_virtnet->epc_features = epc_features;
 
 	return 0;
 }
@@ -824,12 +806,7 @@ static int epf_virtnet_bind(struct pci_epf *epf)
 {
 	int ret;
 	struct pci_epc *epc = epf->epc;
-
-	ret = epf_virtnet_load_epc_features(epf);
-	if (ret) {
-		pr_err("Load epc feature failed\n");
-		return ret;
-	}
+	const struct pci_epc_features *epc_features;
 
 	ret = pci_epc_write_header(epc, epf->func_no, epf->vfunc_no,
 				   epf->header);
@@ -838,7 +815,13 @@ static int epf_virtnet_bind(struct pci_epf *epf)
 		return ret;
 	}
 
-	ret = epf_virtnet_setup_bar(epf);
+	epc_features = pci_epc_get_features(epc, epf->func_no, epf->vfunc_no);
+	if (!epc_features) {
+		pr_err("epc_features not implemented\n");
+		return -EOPNOTSUPP;
+	}
+
+	ret = epf_virtnet_setup_bar(epf, epc_features);
 	if (ret) {
 		pr_err("PCI bar set failed\n");
 		return ret;
