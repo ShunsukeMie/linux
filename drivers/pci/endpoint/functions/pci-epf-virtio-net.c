@@ -40,7 +40,6 @@ struct epf_virtnet {
 	void **rx_bufs;
 	size_t rx_bufs_idx, rx_bufs_used_idx;
 	struct workqueue_struct *workqueue;
-	u16 rx_last_a_idx;
 	struct vringh rx_vrh, tx_vrh;
 	struct vringh_kiov txiov, rxiov;
 	struct vring_used_elem *tx_used_elems, *rx_used_elems;
