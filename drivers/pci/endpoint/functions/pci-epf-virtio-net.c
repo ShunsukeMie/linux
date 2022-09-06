@@ -45,7 +45,6 @@ struct epf_virtnet {
 	struct vring_used_elem *tx_used_elems, *rx_used_elems;
 
 	void __iomem *tx_epc_mem, *rx_epc_mem;
-	phys_addr_t rx_epc_mem_phys;
 	struct work_struct raise_irq_work;
 	struct work_struct tx_work;
 
@@ -590,6 +589,7 @@ static void *local_ndev_receive(struct epf_virtnet *vnet, size_t *total_size)
 	size_t size = 0;
 	struct vringh_kiov *riov = &vnet->rxiov;
 	u16 head;
+	phys_addr_t epc_phys;
 
 	buf = vnet->rx_bufs[vnet->rx_bufs_idx];
 	vnet->rx_bufs_idx = (vnet->rx_bufs_idx + 1) & EPF_VIRTNET_Q_MASK;
@@ -615,24 +615,21 @@ static void *local_ndev_receive(struct epf_virtnet *vnet, size_t *total_size)
 
 			u64 aaddr, pcioff;
 			u32 asize;
-			ret = rcar_gen3_pci_memory_align(addr, len, &aaddr,
-							 &asize);
+			ret = rcar_gen3_pci_memory_align(addr, len, &aaddr, &asize);
 			if (ret) {
 				pr_err("invalid address\n");
 				return NULL;
 			}
 			pcioff = addr - aaddr;
 
-			vnet->rx_epc_mem = pci_epc_mem_alloc_addr(
-				epc, &vnet->rx_epc_mem_phys, asize);
+			vnet->rx_epc_mem = pci_epc_mem_alloc_addr(epc, &epc_phys, asize);
 			if (!vnet->rx_epc_mem) {
 				pr_err("Failed to allocate pci epc memory\n");
 				return NULL;
 			}
 
 			ret = pci_epc_map_addr(epc, epf->func_no, epf->vfunc_no,
-					       vnet->rx_epc_mem_phys, aaddr,
-					       asize);
+					       epc_phys, aaddr, asize);
 			if (ret) {
 				pr_err("failed to map addr\n");
 				return NULL;
@@ -640,11 +637,9 @@ static void *local_ndev_receive(struct epf_virtnet *vnet, size_t *total_size)
 
 			memcpy_fromio(cur, vnet->rx_epc_mem + pcioff, len);
 
-			pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no,
-					   vnet->rx_epc_mem_phys);
+			pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no, epc_phys);
 
-			pci_epc_mem_free_addr(epc, vnet->rx_epc_mem_phys,
-					      vnet->rx_epc_mem, asize);
+			pci_epc_mem_free_addr(epc, epc_phys, vnet->rx_epc_mem, asize);
 		}
 
 		size += len;
