@@ -115,13 +115,11 @@ struct pci_endpoint_test {
 	struct mutex	mutex;
 	struct miscdevice miscdev;
 	enum pci_barno test_reg_bar;
-	size_t alignment;
 	const char *name;
 };
 
 struct pci_endpoint_test_data {
 	enum pci_barno test_reg_bar;
-	size_t alignment;
 	int irq_type;
 };
 
@@ -346,12 +344,6 @@ static bool pci_endpoint_test_copy(struct pci_endpoint_test *test,
 	dma_addr_t dst_phys_addr;
 	struct pci_dev *pdev = test->pdev;
 	struct device *dev = &pdev->dev;
-	void *orig_src_addr;
-	dma_addr_t orig_src_phys_addr;
-	void *orig_dst_addr;
-	dma_addr_t orig_dst_phys_addr;
-	size_t offset;
-	size_t alignment = test->alignment;
 	int irq_type = test->irq_type;
 	u32 src_crc32;
 	u32 dst_crc32;
@@ -364,7 +356,7 @@ static bool pci_endpoint_test_copy(struct pci_endpoint_test *test,
 	}
 
 	size = param.size;
-	if (size > SIZE_MAX - alignment)
+	if (size > SIZE_MAX)
 		goto err;
 
 	use_dma = !!(param.flags & PCITEST_FLAGS_USE_DMA);
@@ -376,29 +368,20 @@ static bool pci_endpoint_test_copy(struct pci_endpoint_test *test,
 		goto err;
 	}
 
-	orig_src_addr = kzalloc(size + alignment, GFP_KERNEL);
-	if (!orig_src_addr) {
+	src_addr = kzalloc(size, GFP_KERNEL);
+	if (!src_addr) {
 		dev_err(dev, "Failed to allocate source buffer\n");
 		ret = false;
 		goto err;
 	}
 
-	get_random_bytes(orig_src_addr, size + alignment);
-	orig_src_phys_addr = dma_map_single(dev, orig_src_addr,
-					    size + alignment, DMA_TO_DEVICE);
-	if (dma_mapping_error(dev, orig_src_phys_addr)) {
+	get_random_bytes(src_addr, size);
+	src_phys_addr = dma_map_single(dev, src_addr,
+					    size, DMA_TO_DEVICE);
+	if (dma_mapping_error(dev, src_phys_addr)) {
 		dev_err(dev, "failed to map source buffer address\n");
 		ret = false;
 		goto err_src_phys_addr;
-	}
-
-	if (alignment && !IS_ALIGNED(orig_src_phys_addr, alignment)) {
-		src_phys_addr = PTR_ALIGN(orig_src_phys_addr, alignment);
-		offset = src_phys_addr - orig_src_phys_addr;
-		src_addr = orig_src_addr + offset;
-	} else {
-		src_phys_addr = orig_src_phys_addr;
-		src_addr = orig_src_addr;
 	}
 
 	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_LOWER_SRC_ADDR,
@@ -409,28 +392,19 @@ static bool pci_endpoint_test_copy(struct pci_endpoint_test *test,
 
 	src_crc32 = crc32_le(~0, src_addr, size);
 
-	orig_dst_addr = kzalloc(size + alignment, GFP_KERNEL);
-	if (!orig_dst_addr) {
+	dst_addr = kzalloc(size, GFP_KERNEL);
+	if (!dst_addr) {
 		dev_err(dev, "Failed to allocate destination address\n");
 		ret = false;
 		goto err_dst_addr;
 	}
 
-	orig_dst_phys_addr = dma_map_single(dev, orig_dst_addr,
-					    size + alignment, DMA_FROM_DEVICE);
-	if (dma_mapping_error(dev, orig_dst_phys_addr)) {
+	dst_phys_addr = dma_map_single(dev, dst_addr,
+					    size, DMA_FROM_DEVICE);
+	if (dma_mapping_error(dev, dst_phys_addr)) {
 		dev_err(dev, "failed to map destination buffer address\n");
 		ret = false;
 		goto err_dst_phys_addr;
-	}
-
-	if (alignment && !IS_ALIGNED(orig_dst_phys_addr, alignment)) {
-		dst_phys_addr = PTR_ALIGN(orig_dst_phys_addr, alignment);
-		offset = dst_phys_addr - orig_dst_phys_addr;
-		dst_addr = orig_dst_addr + offset;
-	} else {
-		dst_phys_addr = orig_dst_phys_addr;
-		dst_addr = orig_dst_addr;
 	}
 
 	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_LOWER_DST_ADDR,
@@ -449,22 +423,20 @@ static bool pci_endpoint_test_copy(struct pci_endpoint_test *test,
 
 	wait_for_completion(&test->irq_raised);
 
-	dma_unmap_single(dev, orig_dst_phys_addr, size + alignment,
-			 DMA_FROM_DEVICE);
+	dma_unmap_single(dev, dst_phys_addr, size, DMA_FROM_DEVICE);
 
 	dst_crc32 = crc32_le(~0, dst_addr, size);
 	if (dst_crc32 == src_crc32)
 		ret = true;
 
 err_dst_phys_addr:
-	kfree(orig_dst_addr);
+	kfree(dst_addr);
 
 err_dst_addr:
-	dma_unmap_single(dev, orig_src_phys_addr, size + alignment,
-			 DMA_TO_DEVICE);
+	dma_unmap_single(dev, src_phys_addr, size, DMA_TO_DEVICE);
 
 err_src_phys_addr:
-	kfree(orig_src_addr);
+	kfree(src_addr);
 
 err:
 	return ret;
@@ -482,10 +454,6 @@ static bool pci_endpoint_test_write(struct pci_endpoint_test *test,
 	dma_addr_t phys_addr;
 	struct pci_dev *pdev = test->pdev;
 	struct device *dev = &pdev->dev;
-	void *orig_addr;
-	dma_addr_t orig_phys_addr;
-	size_t offset;
-	size_t alignment = test->alignment;
 	int irq_type = test->irq_type;
 	size_t size;
 	u32 crc32;
@@ -498,7 +466,7 @@ static bool pci_endpoint_test_write(struct pci_endpoint_test *test,
 	}
 
 	size = param.size;
-	if (size > SIZE_MAX - alignment)
+	if (size > SIZE_MAX)
 		goto err;
 
 	use_dma = !!(param.flags & PCITEST_FLAGS_USE_DMA);
@@ -510,30 +478,20 @@ static bool pci_endpoint_test_write(struct pci_endpoint_test *test,
 		goto err;
 	}
 
-	orig_addr = kzalloc(size + alignment, GFP_KERNEL);
-	if (!orig_addr) {
+	addr = kzalloc(size, GFP_KERNEL);
+	if (!addr) {
 		dev_err(dev, "Failed to allocate address\n");
 		ret = false;
 		goto err;
 	}
 
-	get_random_bytes(orig_addr, size + alignment);
+	get_random_bytes(addr, size);
 
-	orig_phys_addr = dma_map_single(dev, orig_addr, size + alignment,
-					DMA_TO_DEVICE);
-	if (dma_mapping_error(dev, orig_phys_addr)) {
+	phys_addr = dma_map_single(dev, addr, size, DMA_TO_DEVICE);
+	if (dma_mapping_error(dev, phys_addr)) {
 		dev_err(dev, "failed to map source buffer address\n");
 		ret = false;
 		goto err_phys_addr;
-	}
-
-	if (alignment && !IS_ALIGNED(orig_phys_addr, alignment)) {
-		phys_addr =  PTR_ALIGN(orig_phys_addr, alignment);
-		offset = phys_addr - orig_phys_addr;
-		addr = orig_addr + offset;
-	} else {
-		phys_addr = orig_phys_addr;
-		addr = orig_addr;
 	}
 
 	crc32 = crc32_le(~0, addr, size);
@@ -559,11 +517,10 @@ static bool pci_endpoint_test_write(struct pci_endpoint_test *test,
 	if (reg & STATUS_READ_SUCCESS)
 		ret = true;
 
-	dma_unmap_single(dev, orig_phys_addr, size + alignment,
-			 DMA_TO_DEVICE);
+	dma_unmap_single(dev, phys_addr, size, DMA_TO_DEVICE);
 
 err_phys_addr:
-	kfree(orig_addr);
+	kfree(addr);
 
 err:
 	return ret;
@@ -581,10 +538,6 @@ static bool pci_endpoint_test_read(struct pci_endpoint_test *test,
 	dma_addr_t phys_addr;
 	struct pci_dev *pdev = test->pdev;
 	struct device *dev = &pdev->dev;
-	void *orig_addr;
-	dma_addr_t orig_phys_addr;
-	size_t offset;
-	size_t alignment = test->alignment;
 	int irq_type = test->irq_type;
 	u32 crc32;
 	int err;
@@ -596,7 +549,7 @@ static bool pci_endpoint_test_read(struct pci_endpoint_test *test,
 	}
 
 	size = param.size;
-	if (size > SIZE_MAX - alignment)
+	if (size > SIZE_MAX)
 		goto err;
 
 	use_dma = !!(param.flags & PCITEST_FLAGS_USE_DMA);
@@ -608,28 +561,18 @@ static bool pci_endpoint_test_read(struct pci_endpoint_test *test,
 		goto err;
 	}
 
-	orig_addr = kzalloc(size + alignment, GFP_KERNEL);
-	if (!orig_addr) {
+	addr = kzalloc(size, GFP_KERNEL);
+	if (!addr) {
 		dev_err(dev, "Failed to allocate destination address\n");
 		ret = false;
 		goto err;
 	}
 
-	orig_phys_addr = dma_map_single(dev, orig_addr, size + alignment,
-					DMA_FROM_DEVICE);
-	if (dma_mapping_error(dev, orig_phys_addr)) {
+	phys_addr = dma_map_single(dev, addr, size, DMA_FROM_DEVICE);
+	if (dma_mapping_error(dev, phys_addr)) {
 		dev_err(dev, "failed to map source buffer address\n");
 		ret = false;
 		goto err_phys_addr;
-	}
-
-	if (alignment && !IS_ALIGNED(orig_phys_addr, alignment)) {
-		phys_addr = PTR_ALIGN(orig_phys_addr, alignment);
-		offset = phys_addr - orig_phys_addr;
-		addr = orig_addr + offset;
-	} else {
-		phys_addr = orig_phys_addr;
-		addr = orig_addr;
 	}
 
 	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_LOWER_DST_ADDR,
@@ -647,15 +590,14 @@ static bool pci_endpoint_test_read(struct pci_endpoint_test *test,
 
 	wait_for_completion(&test->irq_raised);
 
-	dma_unmap_single(dev, orig_phys_addr, size + alignment,
-			 DMA_FROM_DEVICE);
+	dma_unmap_single(dev, phys_addr, size, DMA_FROM_DEVICE);
 
 	crc32 = crc32_le(~0, addr, size);
 	if (crc32 == pci_endpoint_test_readl(test, PCI_ENDPOINT_TEST_CHECKSUM))
 		ret = true;
 
 err_phys_addr:
-	kfree(orig_addr);
+	kfree(addr);
 err:
 	return ret;
 }
@@ -774,7 +716,6 @@ static int pci_endpoint_test_probe(struct pci_dev *pdev,
 		return -ENOMEM;
 
 	test->test_reg_bar = 0;
-	test->alignment = 0;
 	test->pdev = pdev;
 	test->irq_type = IRQ_TYPE_UNDEFINED;
 
@@ -785,7 +726,6 @@ static int pci_endpoint_test_probe(struct pci_dev *pdev,
 	if (data) {
 		test_reg_bar = data->test_reg_bar;
 		test->test_reg_bar = test_reg_bar;
-		test->alignment = data->alignment;
 		irq_type = data->irq_type;
 	}
 
@@ -933,18 +873,15 @@ static void pci_endpoint_test_remove(struct pci_dev *pdev)
 
 static const struct pci_endpoint_test_data default_data = {
 	.test_reg_bar = BAR_0,
-	.alignment = SZ_4K,
 	.irq_type = IRQ_TYPE_MSI,
 };
 
 static const struct pci_endpoint_test_data am654_data = {
 	.test_reg_bar = BAR_2,
-	.alignment = SZ_64K,
 	.irq_type = IRQ_TYPE_MSI,
 };
 
 static const struct pci_endpoint_test_data j721e_data = {
-	.alignment = 256,
 	.irq_type = IRQ_TYPE_MSI,
 };
 
