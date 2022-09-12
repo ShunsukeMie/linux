@@ -752,11 +752,11 @@ static int epf_virtnet_create_netdev(struct pci_epf *epf)
 	ndev->vlan_features = ndev->features;
 
 	ndev->min_mtu = ETH_MIN_MTU;
-	ndev->max_mtu = ETH_MAX_MTU;
+	ndev->max_mtu = PAGE_SIZE;
 
 	eth_hw_addr_random(ndev);
 
-	ndev->mtu = ETH_MAX_MTU;
+	ndev->mtu = ndev->max_mtu;
 
 	ndev->needed_headroom = sizeof (struct virtio_net_hdr_mrg_rxbuf);
 
