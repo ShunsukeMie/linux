@@ -213,19 +213,14 @@ static int epf_virtnet_spawn_notify_monitor(struct epf_virtnet *vnet)
 	return 0;
 }
 
-static int epf_virtnet_config_monitor(void *data)
+static int _epf_virtnet_config_monitor(struct epf_virtnet *vnet, u32 *txpfn, u32 *rxpfn)
 {
-	struct epf_virtnet *vnet = data;
 	struct virtio_common_config *common_cfg = &vnet->pci_config->common_cfg;
 	const u16 qsel_max = epf_virtnet_get_nvq(vnet);
 	const u16 qsel_default = qsel_max;
 	register u32 sel, pfn;
-	void __iomem *tmp;
-	int ret;
-	struct vring vring;
-	struct kvec *kvec;
-	u32 txpfn = 0;
-	u32 rxpfn = 0;
+	*txpfn = 0;
+	*rxpfn = 0;
 
 	while (true) {
 		sel = ioread16(&common_cfg->q_select);
@@ -252,22 +247,37 @@ static int epf_virtnet_config_monitor(void *data)
 
 		switch (sel) {
 			case 0:
-				txpfn = pfn;
+				*txpfn = pfn;
 				break;
 			case 1:
-				rxpfn = pfn;
+				*rxpfn = pfn;
 				break;
 			default:
 				pr_warn("driver ties to use invalid queue: %d\n", sel);
 		}
 	}
 
-	sched_set_normal(vnet->monitor_config_task, 19);
-
-	if (!txpfn || !rxpfn) {
+	if (!*txpfn || !*rxpfn) {
 		pr_warn("driver should setup both tx/rx queues\n");
 		return -EINVAL;
 	}
+
+	return 0;
+}
+
+static int epf_virtnet_config_monitor(void *data)
+{
+	struct epf_virtnet *vnet = data;
+	u32 txpfn, rxpfn;
+	int ret;
+	struct vring vring;
+	struct kvec *kvec;
+	void __iomem *tmp;
+
+	while(_epf_virtnet_config_monitor(vnet, &txpfn, &rxpfn))
+		;
+
+	sched_set_normal(vnet->monitor_config_task, 19);
 
 	/*
 	 * setup virtqueues
