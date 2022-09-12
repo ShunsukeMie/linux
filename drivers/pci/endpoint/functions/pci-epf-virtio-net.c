@@ -407,7 +407,7 @@ static int epf_virtnet_send_packet(struct epf_virtnet *vnet, void *buf,
 			pr_err("failed the vringh_getesc_iomem\n");
 			return ret;
 		} else if (!ret) {
-			pr_info("buffer full\n");
+			pr_debug("buffer full\n");
 			return -EAGAIN;
 		}
 
