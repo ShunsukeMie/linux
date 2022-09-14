@@ -519,6 +519,7 @@ static void epf_virtnet_tx_handler(struct work_struct *work)
 		container_of(work, struct epf_virtnet, tx_work);
 	struct sk_buff *skb;
 	int res = 0;
+	bool is_send = false;
 
 	while((skb = skb_dequeue(&vnet->txq))) {
 
@@ -532,9 +533,10 @@ static void epf_virtnet_tx_handler(struct work_struct *work)
 		}
 
 		napi_consume_skb(skb, 0);
+		is_send = true;
 	}
 
-	if (!res || res == -EAGAIN)
+	if (is_send)
 		queue_work(vnet->workqueue, &vnet->raise_irq_work);
 }
 
