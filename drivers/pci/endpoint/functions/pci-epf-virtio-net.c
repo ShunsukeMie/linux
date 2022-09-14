@@ -38,7 +38,7 @@ struct epf_virtnet {
 	struct task_struct *monitor_notify_task;
 	void **rx_bufs;
 	size_t rx_bufs_idx, rx_bufs_used_idx;
-	struct workqueue_struct *workqueue;
+	struct workqueue_struct *tx_wq, *irq_wq;
 	struct vringh rx_vrh, tx_vrh;
 	struct vringh_kiov txiov, rxiov;
 	struct vring_used_elem *tx_used_elems, *rx_used_elems;
@@ -175,24 +175,27 @@ static int epf_virtnet_notify_monitor(void *data)
 {
 	struct epf_virtnet *vnet = data;
 	struct virtio_common_config *common_cfg = &vnet->pci_config->common_cfg;
-	u16 queue;
-	int ret;
+	int err;
 
 	while (true) {
-		while ((queue = ioread16(&common_cfg->q_notify)) == 2)
+
+		/* polling q_notify register, but sometimes it missed to read
+		 * the register.  */
+		while (ioread16(&common_cfg->q_notify) == 2)
 			;
 		iowrite16(2, &common_cfg->q_notify);
 
-		while(true) {
-			ret = epf_virtnet_rx_packets(vnet);
-			if (ret < 0) {
-				pr_err("what happend?\n");
-				return -1;
-			}
-
-			if (!ret)
-				break;
+		// check rx packets
+		while((err = epf_virtnet_rx_packets(vnet)) > 0)
+			;
+		if (err < 0) {
+			pr_err("failed to receive packet\n");
+			return -1;
 		}
+
+		// try to tx packet
+		if (skb_queue_len_lockless(&vnet->txq))
+			queue_work(vnet->tx_wq, &vnet->tx_work);
 	}
 
 	return 0;
@@ -519,6 +522,7 @@ static void epf_virtnet_tx_handler(struct work_struct *work)
 		container_of(work, struct epf_virtnet, tx_work);
 	struct sk_buff *skb;
 	int res = 0;
+	bool is_send = false;
 
 	while((skb = skb_dequeue(&vnet->txq))) {
 
@@ -527,15 +531,14 @@ static void epf_virtnet_tx_handler(struct work_struct *work)
 			dev_kfree_skb_any(skb);
 			skb = NULL;
 			continue;
-		} else if(res)  {
-			pr_err("sending packet failed\n");
 		}
 
 		napi_consume_skb(skb, 0);
+		is_send = true;
 	}
 
-	if (!res || res == -EAGAIN)
-		queue_work(vnet->workqueue, &vnet->raise_irq_work);
+	if (is_send)
+		queue_work(vnet->irq_wq, &vnet->raise_irq_work);
 }
 
 static netdev_tx_t local_ndev_start_xmit(struct sk_buff *skb,
@@ -546,7 +549,7 @@ static netdev_tx_t local_ndev_start_xmit(struct sk_buff *skb,
 
 	skb_queue_tail(&vnet->txq, skb);
 
-	queue_work(vnet->workqueue, &vnet->tx_work);
+	queue_work(vnet->tx_wq, &vnet->tx_work);
 
 	return NETDEV_TX_OK;
 }
@@ -683,9 +686,6 @@ static int epf_virtnet_rx_packets(struct epf_virtnet *vnet)
 	if (!buf) {
 		return 0;
 	}
-
-	//     if (vringh_need_notify_iomem(&vnet->rx_vrh) > 0)
-	//             queue_work(vnet->workqueue, &vnet->raise_irq_work);
 
 	len = SKB_DATA_ALIGN(total_len) +
 	      SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
@@ -901,10 +901,15 @@ static int epf_virtnet_probe(struct pci_epf *epf)
 	vnet->epf = epf;
 	epf_set_drvdata(epf, vnet);
 
-	vnet->workqueue = alloc_workqueue("epf-vnet-wq",
+	vnet->tx_wq = alloc_workqueue("epf-vnet-tx-wq",
 			WQ_MEM_RECLAIM | WQ_HIGHPRI, 0);
-	if (!vnet->workqueue) {
+	if (!vnet->tx_wq) {
 		pr_err("failed to create workqueue\n");
+		return -ENOMEM;
+	}
+
+	vnet->irq_wq = alloc_workqueue("epf-vnet-irq-wq", WQ_MEM_RECLAIM | WQ_HIGHPRI, 0);
+	if (!vnet->irq_wq) {
 		return -ENOMEM;
 	}
 
