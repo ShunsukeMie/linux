@@ -194,7 +194,7 @@ static int epf_virtnet_notify_monitor(void *data)
 		}
 
 		// try to tx packet
-		if (skb_queue_len(&vnet->txq))
+		if (skb_queue_len_lockless(&vnet->txq))
 			queue_work(vnet->tx_wq, &vnet->tx_work);
 	}
 
@@ -410,7 +410,7 @@ static int epf_virtnet_send_packet(struct epf_virtnet *vnet, void *buf,
 			pr_err("failed the vringh_getesc_iomem\n");
 			return ret;
 		} else if (!ret) {
-			pr_info("buffer full\n");
+			pr_debug("buffer full\n");
 			return -EAGAIN;
 		}
 
@@ -528,15 +528,9 @@ static void epf_virtnet_tx_handler(struct work_struct *work)
 
 		res = epf_virtnet_send_packet(vnet, skb->data, skb->len);
 		if (res == -EAGAIN) {
-			skb_queue_head(&vnet->txq, skb);
-			break;
-		}
-
-		if (res) {
 			dev_kfree_skb_any(skb);
 			skb = NULL;
-// 			continue;
-			break;
+			continue;
 		}
 
 		napi_consume_skb(skb, 0);
