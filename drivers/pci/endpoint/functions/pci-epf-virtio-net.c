@@ -386,18 +386,55 @@ static int local_ndev_close(struct net_device *dev)
 	return 0;
 }
 
+static int epf_virtnet_epc_xfer(struct epf_virtnet *vnet, phys_addr_t pci, void *buf,
+				size_t size, bool write)
+{
+	void __iomem *epc_mem;
+	phys_addr_t epc_phys;
+	struct pci_epf *epf = vnet->epf;
+	struct pci_epc *epc = epf->epc;
+	u64 aaddr, pcioff;
+	size_t asize;
+	int err;
+
+	err = pci_epc_mem_align(epc, pci, size, &aaddr, &asize);
+	if (err) {
+		pr_err("invalid address\n");
+		return -EIO;
+	}
+	pcioff = pci - aaddr;
+
+	epc_mem = pci_epc_mem_alloc_addr(epc, &epc_phys, asize);
+	if (!epc_mem)
+		return -ENOMEM;
+
+	err = pci_epc_map_addr(epc, epf->func_no, epf->vfunc_no,
+			epc_phys, aaddr, asize);
+	if (err)
+		return err;
+
+	if (write)
+		memcpy_toio(epc_mem + pcioff, buf, size);
+	else
+		memcpy_fromio(buf, epc_mem + pcioff, size);
+
+	pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no, epc_phys);
+
+	pci_epc_mem_free_addr(epc, epc_phys, epc_mem, asize);
+
+	return 0;
+}
+
 static int epf_virtnet_send_packet(struct epf_virtnet *vnet, void *buf,
 				   size_t len)
 {
-	int ret, remain;
+	int err, remain;
 	struct virtio_net_hdr_mrg_rxbuf hdr = {
 		.hdr.flags = 0,
 		.hdr.gso_type = VIRTIO_NET_HDR_GSO_NONE,
 		.num_buffers = 0,
 	};
 	u64 hdr_addr;
-	u32 hdr_desc_len;
-	phys_addr_t epc_phys;
 
 	remain = len;
 	while (remain) {
@@ -405,11 +442,11 @@ static int epf_virtnet_send_packet(struct epf_virtnet *vnet, void *buf,
 		u64 addr;
 		u16 head;
 
-		ret = vringh_getdesc_iomem(&vnet->tx_vrh, NULL, &vnet->txiov, &head, GFP_KERNEL);
-		if (ret < 0 ) {
+		err = vringh_getdesc_iomem(&vnet->tx_vrh, NULL, &vnet->txiov, &head, GFP_KERNEL);
+		if (err < 0 ) {
 			pr_err("failed the vringh_getesc_iomem\n");
-			return ret;
-		} else if (!ret) {
+			return err;
+		} else if (!err) {
 			pr_debug("buffer full\n");
 			return -EAGAIN;
 		}
@@ -417,54 +454,23 @@ static int epf_virtnet_send_packet(struct epf_virtnet *vnet, void *buf,
 		addr = (u64)vnet->txiov.iov[vnet->txiov.i].iov_base;
 		desc_len = vnet->txiov.iov[vnet->txiov.i].iov_len;
 
-		if (hdr.num_buffers == 0) {
+		if (hdr.num_buffers == 0)
 			hdr_addr = addr;
-			hdr_desc_len = desc_len;
+
+		offset = hdr.num_buffers == 0 ? sizeof hdr : 0;
+		copy_len = desc_len - offset;
+		if (copy_len > remain) {
+			copy_len = remain;
 		}
 
-		{
-			struct pci_epf *epf = vnet->epf;
-			struct pci_epc *epc = epf->epc;
+		err = epf_virtnet_epc_xfer(vnet, addr + offset, buf, copy_len, true);
+		if (err)
+			return -EIO;
 
-			u64 aaddr, pcioff;
-			size_t asize;
-			ret = pci_epc_mem_align(epc, addr, desc_len, &aaddr, &asize);
-			if (ret) {
-				pr_err("invalid address\n");
-				return -EIO;
-			}
-			pcioff = addr - aaddr;
+		data_len = copy_len + offset;
 
-			vnet->tx_epc_mem = pci_epc_mem_alloc_addr(epc, &epc_phys, asize);
-			if (!vnet->tx_epc_mem) {
-				pr_err("Failed to allocate pci epc memory\n");
-				return -ENOMEM;
-			}
-
-			ret = pci_epc_map_addr(epc, epf->func_no, epf->vfunc_no,
-					       epc_phys, aaddr, asize);
-			if (ret) {
-				pr_err("failed to map addr\n");
-				return ret;
-			}
-
-			offset = hdr.num_buffers == 0 ? sizeof hdr : 0;
-			copy_len = desc_len - offset;
-			if (copy_len > remain) {
-				copy_len = remain;
-			}
-
-			data_len = copy_len + offset;
-
-			memcpy_toio(vnet->tx_epc_mem + pcioff + offset, buf, copy_len);
-
-			pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no, epc_phys);
-
-			pci_epc_mem_free_addr(epc, epc_phys, vnet->tx_epc_mem, asize);
-
-			buf += copy_len;
-			remain -= copy_len;
-		}
+		buf += copy_len;
+		remain -= copy_len;
 
 		vnet->tx_used_elems[hdr.num_buffers].id = head;
 		vnet->tx_used_elems[hdr.num_buffers].len = data_len;
@@ -472,41 +478,9 @@ static int epf_virtnet_send_packet(struct epf_virtnet *vnet, void *buf,
 		hdr.num_buffers++;
 	}
 
-	// fill hdr
-	{
-		u64 addr = hdr_addr;
-		u32 desc_len = hdr_desc_len;
-		struct pci_epf *epf = vnet->epf;
-		struct pci_epc *epc = epf->epc;
-
-		u64 aaddr, pcioff;
-		size_t asize;
-		ret = pci_epc_mem_align(epc, addr, desc_len, &aaddr, &asize);
-		if (ret) {
-			pr_err("invalid address\n");
-			return -EIO;
-		}
-		pcioff = addr - aaddr;
-
-		vnet->tx_epc_mem = pci_epc_mem_alloc_addr(epc, &epc_phys, asize);
-		if (!vnet->tx_epc_mem) {
-			pr_err("Failed to allocate pci epc memory\n");
-			return -ENOMEM;
-		}
-
-		ret = pci_epc_map_addr(epc, epf->func_no, epf->vfunc_no,
-				epc_phys, aaddr, asize);
-		if (ret) {
-			pr_err("failed to map addr\n");
-			return ret;
-		}
-
-		memcpy_toio(vnet->tx_epc_mem + pcioff, &hdr, sizeof hdr);
-
-		pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no, epc_phys);
-
-		pci_epc_mem_free_addr(epc, epc_phys, vnet->tx_epc_mem, asize);
-	}
+	err = epf_virtnet_epc_xfer(vnet, hdr_addr, &hdr, sizeof hdr, true);
+	if (err)
+		return -EIO;
 
 	if(hdr.num_buffers > 4)
 		pr_err("not enough buffers\n");
@@ -568,7 +542,7 @@ static void *local_ndev_receive(struct epf_virtnet *vnet, size_t *total_size)
 	size_t size = 0;
 	struct vringh_kiov *riov = &vnet->rxiov;
 	u16 head;
-	phys_addr_t epc_phys;
+	int err;
 
 	buf = vnet->rx_bufs[vnet->rx_bufs_idx];
 	vnet->rx_bufs_idx = (vnet->rx_bufs_idx + 1) & EPF_VIRTNET_Q_MASK;
@@ -588,38 +562,9 @@ static void *local_ndev_receive(struct epf_virtnet *vnet, size_t *total_size)
 
 		cur = buf + size;
 
-		{
-			struct pci_epf *epf = vnet->epf;
-			struct pci_epc *epc = epf->epc;
-
-			u64 aaddr, pcioff;
-			size_t asize;
-			ret = pci_epc_mem_align(epc, addr, len, &aaddr, &asize);
-			if (ret) {
-				pr_err("invalid address\n");
-				return NULL;
-			}
-			pcioff = addr - aaddr;
-
-			vnet->rx_epc_mem = pci_epc_mem_alloc_addr(epc, &epc_phys, asize);
-			if (!vnet->rx_epc_mem) {
-				pr_err("Failed to allocate pci epc memory\n");
-				return NULL;
-			}
-
-			ret = pci_epc_map_addr(epc, epf->func_no, epf->vfunc_no,
-					       epc_phys, aaddr, asize);
-			if (ret) {
-				pr_err("failed to map addr\n");
-				return NULL;
-			}
-
-			memcpy_fromio(cur, vnet->rx_epc_mem + pcioff, len);
-
-			pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no, epc_phys);
-
-			pci_epc_mem_free_addr(epc, epc_phys, vnet->rx_epc_mem, asize);
-		}
+		err = epf_virtnet_epc_xfer(vnet, addr, cur, len, false);
+		if (err)
+			return NULL;
 
 		size += len;
 	}
