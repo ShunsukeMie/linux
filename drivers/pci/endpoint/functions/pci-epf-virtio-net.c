@@ -216,54 +216,46 @@ static int epf_virtnet_spawn_notify_monitor(struct epf_virtnet *vnet)
 	return 0;
 }
 
-static int _epf_virtnet_config_monitor(struct epf_virtnet *vnet, u32 *txpfn, u32 *rxpfn)
+static int _epf_virtnet_config_monitor(struct epf_virtnet *vnet, u32 *txpfn,
+				       u32 *rxpfn)
 {
 	struct virtio_common_config *common_cfg = &vnet->pci_config->common_cfg;
-	const u16 qsel_max = epf_virtnet_get_nvq(vnet);
-	const u16 qsel_default = qsel_max;
+	const u16 qsel_default = epf_virtnet_get_nvq(vnet);
 	register u32 sel, pfn;
-	*txpfn = 0;
-	*rxpfn = 0;
+	u32 tx_pfn, rx_pfn;
 
+	tx_pfn = rx_pfn = 0;
 	while (true) {
-		sel = ioread16(&common_cfg->q_select);
-		if (sel == qsel_default) {
-			if (!(ioread8(&common_cfg->dev_status) &
-			      VIRTIO_CONFIG_S_DRIVER_OK))
-				continue;
-
-			iowrite8(0, &common_cfg->dev_status);
-			break;
-		}
-
-		iowrite16(qsel_default, &common_cfg->q_select);
-
 		pfn = ioread32(&common_cfg->q_addr);
-		/* driver changes queue selector to access the other registers */
-		if (pfn == 0) {
-			pr_debug("change the qsel(%d) to read another reg\n", sel);
+		if (pfn == 0)
 			continue;
-		}
 
-		/* reset the queue related registers to detect changes in next loop */
 		iowrite32(0, &common_cfg->q_addr);
 
+		sel = ioread16(&common_cfg->q_select);
+		if (sel == qsel_default)
+			continue;
+
 		switch (sel) {
-			case 0:
-				*txpfn = pfn;
-				break;
-			case 1:
-				*rxpfn = pfn;
-				break;
-			default:
-				pr_warn("driver ties to use invalid queue: %d\n", sel);
+		case 0:
+			tx_pfn = pfn;
+			break;
+		case 1:
+			rx_pfn = pfn;
+			break;
+		default:
+			pr_warn("driver tries to use invalid queue: %d\n", sel);
 		}
+
+		if (tx_pfn && rx_pfn)
+			break;
 	}
 
-	if (!*txpfn || !*rxpfn) {
-		pr_warn("driver should setup both tx/rx queues\n");
-		return -EINVAL;
-	}
+	while (!(ioread8(&common_cfg->dev_status) & VIRTIO_CONFIG_S_DRIVER_OK))
+		;
+
+	*txpfn = tx_pfn;
+	*rxpfn = rx_pfn;
 
 	return 0;
 }
