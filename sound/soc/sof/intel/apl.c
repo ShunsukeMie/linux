@@ -57,6 +57,8 @@ int sof_apl_ops_init(struct snd_sof_dev *sdev)
 		ipc4_data = sdev->private;
 		ipc4_data->manifest_fw_hdr_offset = SOF_MAN4_FW_HDR_OFFSET;
 
+		ipc4_data->mtrace_type = SOF_IPC4_MTRACE_INTEL_CAVS_1_5;
+
 		/* doorbell */
 		sof_apl_ops.irq_thread	= hda_dsp_ipc4_irq_thread;
 
@@ -102,6 +104,8 @@ const struct sof_intel_dsp_desc apl_chip_info = {
 	.quirks = SOF_INTEL_PROCEN_FMT_QUIRK,
 	.check_ipc_irq	= hda_dsp_check_ipc_irq,
 	.cl_init = cl_dsp_init,
+	.power_down_dsp = hda_power_down_dsp,
+	.disable_interrupts = hda_dsp_disable_interrupts,
 	.hw_ip_version = SOF_INTEL_CAVS_1_5_PLUS,
 };
 EXPORT_SYMBOL_NS(apl_chip_info, SND_SOC_SOF_INTEL_HDA_COMMON);
