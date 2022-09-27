@@ -39,7 +39,11 @@
 #include <linux/pm_runtime.h>
 #include <drm/drm_crtc_helper.h>
 #include <drm/drm_damage_helper.h>
+<<<<<<< HEAD
+I am so fed up with drm-next conflicts!!
 #include <drm/drm_drv.h>
+=======
+>>>>>>> drm/drm-next
 #include <drm/drm_edid.h>
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_fb_helper.h>
@@ -498,6 +502,7 @@ bool amdgpu_display_ddc_probe(struct amdgpu_connector *amdgpu_connector,
 static const struct drm_framebuffer_funcs amdgpu_fb_funcs = {
 	.destroy = drm_gem_fb_destroy,
 	.create_handle = drm_gem_fb_create_handle,
+	.dirty = drm_atomic_helper_dirtyfb,
 };
 
 static const struct drm_framebuffer_funcs amdgpu_fb_funcs_atomic = {

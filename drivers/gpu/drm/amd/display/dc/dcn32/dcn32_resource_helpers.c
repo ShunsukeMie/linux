@@ -54,13 +54,24 @@ uint32_t dcn32_helper_calculate_num_ways_for_subvp(struct dc *dc, struct dc_stat
 	uint32_t num_mblks = 0;
 	uint32_t cache_lines_per_plane = 0;
 	uint32_t i = 0, j = 0;
+<<<<<<< HEAD
+I am so fed up with drm-next conflicts!!
 	uint32_t mblk_width = 0;
 	uint32_t mblk_height = 0;
+=======
+	uint16_t mblk_width = 0;
+	uint16_t mblk_height = 0;
+>>>>>>> drm/drm-next
 	uint32_t full_vp_width_blk_aligned = 0;
 	uint32_t full_vp_height_blk_aligned = 0;
 	uint32_t mall_alloc_width_blk_aligned = 0;
 	uint32_t mall_alloc_height_blk_aligned = 0;
+<<<<<<< HEAD
 	uint32_t full_vp_height = 0;
+=======
+	uint16_t full_vp_height = 0;
+	bool subvp_in_use = false;
+>>>>>>> drm/drm-next
 
 	for (i = 0; i < dc->res_pool->pipe_count; i++) {
 		struct pipe_ctx *pipe = &context->res_ctx.pipe_ctx[i];
@@ -69,6 +80,7 @@ uint32_t dcn32_helper_calculate_num_ways_for_subvp(struct dc *dc, struct dc_stat
 		if (pipe->stream && pipe->plane_state && !pipe->top_pipe && !pipe->prev_odm_pipe &&
 				pipe->stream->mall_stream_config.type == SUBVP_PHANTOM) {
 			struct pipe_ctx *main_pipe = NULL;
+<<<<<<< HEAD
 
 			/* Get full viewport height from main pipe (required for MBLK calculation) */
 			for (j = 0; j < dc->res_pool->pipe_count; j++) {
@@ -90,6 +102,30 @@ uint32_t dcn32_helper_calculate_num_ways_for_subvp(struct dc *dc, struct dc_stat
 					pipe->plane_res.scl_data.viewport.width + mblk_width - 1) / mblk_width * mblk_width) +
 					(pipe->plane_res.scl_data.viewport.x / mblk_width * mblk_width);
 
+=======
+
+			subvp_in_use = true;
+			/* Get full viewport height from main pipe (required for MBLK calculation) */
+			for (j = 0; j < dc->res_pool->pipe_count; j++) {
+				main_pipe = &context->res_ctx.pipe_ctx[j];
+				if (main_pipe->stream == pipe->stream->mall_stream_config.paired_stream) {
+					full_vp_height = main_pipe->plane_res.scl_data.viewport.height;
+					break;
+				}
+			}
+
+			bytes_per_pixel = pipe->plane_state->format >= SURFACE_PIXEL_FORMAT_GRPH_ARGB16161616 ? 8 : 4;
+			mblk_width = DCN3_2_MBLK_WIDTH;
+			mblk_height = bytes_per_pixel == 4 ? DCN3_2_MBLK_HEIGHT_4BPE : DCN3_2_MBLK_HEIGHT_8BPE;
+
+			/* full_vp_width_blk_aligned = FLOOR(vp_x_start + full_vp_width + blk_width - 1, blk_width) -
+			 * FLOOR(vp_x_start, blk_width)
+			 */
+			full_vp_width_blk_aligned = ((pipe->plane_res.scl_data.viewport.x +
+					pipe->plane_res.scl_data.viewport.width + mblk_width - 1) / mblk_width * mblk_width) +
+					(pipe->plane_res.scl_data.viewport.x / mblk_width * mblk_width);
+
+>>>>>>> drm/drm-next
 			/* full_vp_height_blk_aligned = FLOOR(vp_y_start + full_vp_height + blk_height - 1, blk_height) -
 			 * FLOOR(vp_y_start, blk_height)
 			 */
@@ -128,6 +164,9 @@ uint32_t dcn32_helper_calculate_num_ways_for_subvp(struct dc *dc, struct dc_stat
 	num_ways = cache_lines_used / lines_per_way;
 	if (cache_lines_used % lines_per_way > 0)
 		num_ways++;
+
+	if (subvp_in_use && dc->debug.force_subvp_num_ways > 0)
+		num_ways = dc->debug.force_subvp_num_ways;
 
 	return num_ways;
 }
