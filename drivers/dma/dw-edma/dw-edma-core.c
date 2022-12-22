@@ -607,14 +607,17 @@ static void dw_edma_done_interrupt(struct dw_edma_chan *chan)
 		switch (chan->request) {
 		case EDMA_REQ_NONE:
 			desc = vd2dw_edma_desc(vd);
-			if (desc->chunks_alloc) {
-				chan->status = EDMA_ST_BUSY;
-				dw_edma_start_transfer(chan);
-			} else {
+			if (!desc->chunks_alloc) {
 				list_del(&vd->node);
 				vchan_cookie_complete(vd);
-				chan->status = EDMA_ST_IDLE;
 			}
+
+			/* Continue to transfer in case of there are rest chunks, or issued
+			 * requests remain.
+			 */
+			chan->status = EDMA_ST_BUSY;
+			if (!dw_edma_start_transfer(chan))
+				chan->status = EDMA_ST_IDLE;
 			break;
 
 		case EDMA_REQ_STOP:
