@@ -459,8 +459,6 @@ void pci_epc_unmap_addr(struct pci_epc *epc, u8 func_no, u8 vfunc_no,
 	mutex_lock(&epc->lock);
 	epc->ops->unmap_addr(epc, func_no, vfunc_no, aligned_phys);
 	mutex_unlock(&epc->lock);
-
-	pci_epc_mem_free_addr(epc, aligned_phys, aligned_virt, size);
 }
 EXPORT_SYMBOL_GPL(pci_epc_unmap_addr);
 
@@ -469,8 +467,8 @@ EXPORT_SYMBOL_GPL(pci_epc_unmap_addr);
  * @epc: the EPC device on which address is allocated
  * @func_no: the physical endpoint function number in the EPC device
  * @vfunc_no: the virtual endpoint function number in the physical function
- * @phys_addr: physical address of the local system
  * @pci_addr: PCI address to which the physical address should be mapped
+ * @phys_addr: physical address of the local system
  * @size: the size of the allocation
  *
  * Invoke to map CPU address with PCI address.
