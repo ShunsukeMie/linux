@@ -323,37 +323,22 @@ static int pci_epf_test_copy(struct pci_epf_test *epf_test)
 	struct pci_epc *epc = epf->epc;
 	enum pci_barno test_reg_bar = epf_test->test_reg_bar;
 	struct pci_epf_test_reg *reg = epf_test->reg[test_reg_bar];
+	size_t size = reg->size;
 
-	src_addr = pci_epc_mem_alloc_addr(epc, &src_phys_addr, reg->size);
-	if (!src_addr) {
-		dev_err(dev, "Failed to allocate source address\n");
+	src_addr = pci_epc_map_addr(epc, epf->func_no, epf->vfunc_no, reg->src_addr,
+			       &src_phys_addr, size);
+	if (IS_ERR(src_addr)) {
+		dev_err(dev, "Failed to map source address\n");
 		reg->status = STATUS_SRC_ADDR_INVALID;
-		ret = -ENOMEM;
 		goto err;
 	}
 
-	ret = pci_epc_map_addr(epc, epf->func_no, epf->vfunc_no, src_phys_addr,
-			       reg->src_addr, reg->size);
-	if (ret) {
-		dev_err(dev, "Failed to map source address\n");
-		reg->status = STATUS_SRC_ADDR_INVALID;
-		goto err_src_addr;
-	}
-
-	dst_addr = pci_epc_mem_alloc_addr(epc, &dst_phys_addr, reg->size);
-	if (!dst_addr) {
-		dev_err(dev, "Failed to allocate destination address\n");
-		reg->status = STATUS_DST_ADDR_INVALID;
-		ret = -ENOMEM;
-		goto err_src_map_addr;
-	}
-
-	ret = pci_epc_map_addr(epc, epf->func_no, epf->vfunc_no, dst_phys_addr,
-			       reg->dst_addr, reg->size);
+	dst_addr = pci_epc_map_addr(epc, epf->func_no, epf->vfunc_no, reg->dst_addr,
+			       &dst_phys_addr, size);
 	if (ret) {
 		dev_err(dev, "Failed to map destination address\n");
 		reg->status = STATUS_DST_ADDR_INVALID;
-		goto err_dst_addr;
+		goto err_src_map_addr;
 	}
 
 	ktime_get_ts64(&start);
@@ -393,16 +378,10 @@ static int pci_epf_test_copy(struct pci_epf_test *epf_test)
 	pci_epf_test_print_rate("COPY", reg->size, &start, &end, use_dma);
 
 err_map_addr:
-	pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no, dst_phys_addr);
-
-err_dst_addr:
-	pci_epc_mem_free_addr(epc, dst_phys_addr, dst_addr, reg->size);
+	pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no, dst_phys_addr, dst_addr, size);
 
 err_src_map_addr:
-	pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no, src_phys_addr);
-
-err_src_addr:
-	pci_epc_mem_free_addr(epc, src_phys_addr, src_addr, reg->size);
+	pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no, src_phys_addr, src_addr, size);
 
 err:
 	return ret;
@@ -410,7 +389,7 @@ err:
 
 static int pci_epf_test_read(struct pci_epf_test *epf_test)
 {
-	int ret;
+	int ret = 0;
 	void __iomem *src_addr;
 	void *buf;
 	u32 crc32;
@@ -424,21 +403,14 @@ static int pci_epf_test_read(struct pci_epf_test *epf_test)
 	struct device *dma_dev = epf->epc->dev.parent;
 	enum pci_barno test_reg_bar = epf_test->test_reg_bar;
 	struct pci_epf_test_reg *reg = epf_test->reg[test_reg_bar];
+	size_t size = reg->size;
 
-	src_addr = pci_epc_mem_alloc_addr(epc, &phys_addr, reg->size);
-	if (!src_addr) {
-		dev_err(dev, "Failed to allocate address\n");
-		reg->status = STATUS_SRC_ADDR_INVALID;
-		ret = -ENOMEM;
-		goto err;
-	}
-
-	ret = pci_epc_map_addr(epc, epf->func_no, epf->vfunc_no, phys_addr,
-			       reg->src_addr, reg->size);
-	if (ret) {
+	src_addr = pci_epc_map_addr(epc, epf->func_no, epf->vfunc_no,
+				    reg->src_addr, &phys_addr, size);
+	if (IS_ERR(src_addr)) {
 		dev_err(dev, "Failed to map address\n");
 		reg->status = STATUS_SRC_ADDR_INVALID;
-		goto err_addr;
+		goto err;
 	}
 
 	buf = kzalloc(reg->size, GFP_KERNEL);
@@ -489,10 +461,7 @@ err_dma_map:
 	kfree(buf);
 
 err_map_addr:
-	pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no, phys_addr);
-
-err_addr:
-	pci_epc_mem_free_addr(epc, phys_addr, src_addr, reg->size);
+	pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no, phys_addr, src_addr, size);
 
 err:
 	return ret;
@@ -500,7 +469,7 @@ err:
 
 static int pci_epf_test_write(struct pci_epf_test *epf_test)
 {
-	int ret;
+	int ret = 0;
 	void __iomem *dst_addr;
 	void *buf;
 	bool use_dma;
@@ -513,21 +482,14 @@ static int pci_epf_test_write(struct pci_epf_test *epf_test)
 	struct device *dma_dev = epf->epc->dev.parent;
 	enum pci_barno test_reg_bar = epf_test->test_reg_bar;
 	struct pci_epf_test_reg *reg = epf_test->reg[test_reg_bar];
+	size_t size = reg->size;
 
-	dst_addr = pci_epc_mem_alloc_addr(epc, &phys_addr, reg->size);
-	if (!dst_addr) {
-		dev_err(dev, "Failed to allocate address\n");
-		reg->status = STATUS_DST_ADDR_INVALID;
-		ret = -ENOMEM;
-		goto err;
-	}
-
-	ret = pci_epc_map_addr(epc, epf->func_no, epf->vfunc_no, phys_addr,
-			       reg->dst_addr, reg->size);
-	if (ret) {
+	dst_addr = pci_epc_map_addr(epc, epf->func_no, epf->vfunc_no,
+				    reg->dst_addr, &phys_addr, size);
+	if (IS_ERR(dst_addr)) {
 		dev_err(dev, "Failed to map address\n");
 		reg->status = STATUS_DST_ADDR_INVALID;
-		goto err_addr;
+		goto err;
 	}
 
 	buf = kzalloc(reg->size, GFP_KERNEL);
@@ -585,10 +547,7 @@ err_dma_map:
 	kfree(buf);
 
 err_map_addr:
-	pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no, phys_addr);
-
-err_addr:
-	pci_epc_mem_free_addr(epc, phys_addr, dst_addr, reg->size);
+	pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no, phys_addr, dst_addr, size);
 
 err:
 	return ret;
