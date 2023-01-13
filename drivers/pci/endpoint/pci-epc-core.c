@@ -430,8 +430,12 @@ EXPORT_SYMBOL_GPL(pci_epc_set_msix);
  * Invoke to unmap the CPU address from PCI address.
  */
 void pci_epc_unmap_addr(struct pci_epc *epc, u8 func_no, u8 vfunc_no,
-			phys_addr_t phys_addr)
+			phys_addr_t phys_addr, void __iomem *virt_addr, size_t size)
 {
+	u64 aligned_phys;
+	void __iomem *aligned_virt;
+	size_t offset;
+
 	if (IS_ERR_OR_NULL(epc) || func_no >= epc->max_functions)
 		return;
 
@@ -441,9 +445,22 @@ void pci_epc_unmap_addr(struct pci_epc *epc, u8 func_no, u8 vfunc_no,
 	if (!epc->ops->unmap_addr)
 		return;
 
+	if (epc->ops->align_mem) {
+		mutex_lock(&epc->lock);
+		aligned_phys = epc->ops->align_mem(epc, phys_addr, &size);
+		mutex_unlock(&epc->lock);
+	} else {
+		aligned_phys = phys_addr;
+	}
+
+	offset = phys_addr - aligned_phys;
+	aligned_virt = virt_addr - offset;
+
 	mutex_lock(&epc->lock);
-	epc->ops->unmap_addr(epc, func_no, vfunc_no, phys_addr);
+	epc->ops->unmap_addr(epc, func_no, vfunc_no, aligned_phys);
 	mutex_unlock(&epc->lock);
+
+	pci_epc_mem_free_addr(epc, aligned_phys, aligned_virt, size);
 }
 EXPORT_SYMBOL_GPL(pci_epc_unmap_addr);
 
@@ -458,26 +475,46 @@ EXPORT_SYMBOL_GPL(pci_epc_unmap_addr);
  *
  * Invoke to map CPU address with PCI address.
  */
-int pci_epc_map_addr(struct pci_epc *epc, u8 func_no, u8 vfunc_no,
-		     phys_addr_t phys_addr, u64 pci_addr, size_t size)
+void __iomem *pci_epc_map_addr(struct pci_epc *epc, u8 func_no, u8 vfunc_no,
+		u64 pci_addr, phys_addr_t *phys_addr, size_t size)
 {
 	int ret;
+	u64 aligned_addr;
+	size_t offset;
+	void __iomem *virt_addr;
 
 	if (IS_ERR_OR_NULL(epc) || func_no >= epc->max_functions)
-		return -EINVAL;
+		return ERR_PTR(-EINVAL);
 
 	if (vfunc_no > 0 && (!epc->max_vfs || vfunc_no > epc->max_vfs[func_no]))
-		return -EINVAL;
+		return ERR_PTR(-EINVAL);
 
 	if (!epc->ops->map_addr)
-		return 0;
+		return ERR_PTR(-ENOTSUPP);
+
+	if (epc->ops->align_mem) {
+		mutex_lock(&epc->lock);
+		aligned_addr = epc->ops->align_mem(epc, pci_addr, &size);
+		mutex_unlock(&epc->lock);
+	} else {
+		aligned_addr = pci_addr;
+	}
+
+	offset = pci_addr - aligned_addr;
+
+	virt_addr = pci_epc_mem_alloc_addr(epc, phys_addr, size);
+	if (!virt_addr)
+		return ERR_PTR(-ENOMEM);
 
 	mutex_lock(&epc->lock);
-	ret = epc->ops->map_addr(epc, func_no, vfunc_no, phys_addr, pci_addr,
-				 size);
+	ret = epc->ops->map_addr(epc, func_no, vfunc_no, *phys_addr, aligned_addr, size);
 	mutex_unlock(&epc->lock);
+	if (ret)
+		return ERR_PTR(ret);
 
-	return ret;
+	*phys_addr += offset;
+
+	return virt_addr + offset;
 }
 EXPORT_SYMBOL_GPL(pci_epc_map_addr);
 
