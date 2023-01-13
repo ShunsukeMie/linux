@@ -84,6 +84,7 @@ struct pci_epc_ops {
 			       phys_addr_t phys_addr, u8 interrupt_num,
 			       u32 entry_size, u32 *msi_data,
 			       u32 *msi_addr_offset);
+	u64	(*align_mem)(struct pci_epc *epc, u64 addr, size_t *size);
 	int	(*start)(struct pci_epc *epc);
 	void	(*stop)(struct pci_epc *epc);
 	const struct pci_epc_features* (*get_features)(struct pci_epc *epc,
@@ -212,11 +213,12 @@ int pci_epc_set_bar(struct pci_epc *epc, u8 func_no, u8 vfunc_no,
 		    struct pci_epf_bar *epf_bar);
 void pci_epc_clear_bar(struct pci_epc *epc, u8 func_no, u8 vfunc_no,
 		       struct pci_epf_bar *epf_bar);
-int pci_epc_map_addr(struct pci_epc *epc, u8 func_no, u8 vfunc_no,
-		     phys_addr_t phys_addr,
-		     u64 pci_addr, size_t size);
+void __iomem *pci_epc_map_addr(struct pci_epc *epc, u8 func_no, u8 vfunc_no,
+			       u64 pci_addr, phys_addr_t *phys_addr,
+			       size_t size);
 void pci_epc_unmap_addr(struct pci_epc *epc, u8 func_no, u8 vfunc_no,
-			phys_addr_t phys_addr);
+			phys_addr_t phys_addr, void __iomem *virt_addr,
+			size_t size);
 int pci_epc_set_msi(struct pci_epc *epc, u8 func_no, u8 vfunc_no,
 		    u8 interrupts);
 int pci_epc_get_msi(struct pci_epc *epc, u8 func_no, u8 vfunc_no);
