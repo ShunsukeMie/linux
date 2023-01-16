@@ -10,6 +10,13 @@
 
 static int epf_vnet_bind(struct pci_epf *epf)
 {
+	int err;
+	struct epf_vnet *vnet = epf_get_drvdata(epf);
+
+	err = epf_vnet_rc_setup(vnet);
+	if (err)
+		return err;
+
 	return 0;
 }
 

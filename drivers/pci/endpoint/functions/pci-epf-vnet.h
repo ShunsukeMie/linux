@@ -11,5 +11,12 @@ struct epf_vnet {
 	struct pci_epf *epf;
 	struct pci_epf_virtio virtio;
 	struct virtio_net_config vnet_cfg;
+
+	struct _rc {
+		void __iomem *cfg_base;
+	} rc;
 };
+
+int epf_vnet_rc_setup(struct epf_vnet *vnet);
+
 #endif // _PCI_EPF_VNET_H
