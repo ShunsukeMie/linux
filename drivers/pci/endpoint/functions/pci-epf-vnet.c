@@ -27,6 +27,26 @@ static const struct pci_epf_device_id epf_vnet_ids[] = {
 	{}
 };
 
+static void epf_vnet_virtio_init(struct epf_vnet *vnet)
+{
+	// Common configurations
+	pci_epf_virtio_init(&vnet->virtio,
+			    BIT(VIRTIO_NET_F_MAC) | BIT(VIRTIO_NET_F_MTU) |
+				    BIT(VIRTIO_NET_F_STATUS)
+				    //
+				    | BIT(VIRTIO_NET_F_GUEST_CSUM) |
+				    BIT(VIRTIO_NET_F_GUEST_TSO4) |
+				    BIT(VIRTIO_NET_F_GUEST_TSO6) |
+				    BIT(VIRTIO_NET_F_GUEST_ECN) |
+				    BIT(VIRTIO_NET_F_GUEST_UFO));
+
+	vnet->vnet_cfg.max_virtqueue_pairs = 1;
+	//TODO enable the control queue
+	vnet->vnet_cfg.status = VIRTIO_NET_S_LINK_UP;
+	//TODO fix the mtu
+	vnet->vnet_cfg.mtu = PAGE_SIZE;
+}
+
 static int epf_vnet_probe(struct pci_epf *epf)
 {
 	struct epf_vnet *vnet;
@@ -36,6 +56,9 @@ static int epf_vnet_probe(struct pci_epf *epf)
 		return -ENOMEM;
 
 	epf_set_drvdata(epf, vnet);
+	vnet->epf = epf;
+
+	epf_vnet_virtio_init(vnet);
 
 	return 0;
 }

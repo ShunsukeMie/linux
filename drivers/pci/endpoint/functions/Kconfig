@@ -41,6 +41,7 @@ config PCI_EPF_VNTB
 config PCI_EPF_VNET
 	tristate "PCI Endpoint virtio-net driver"
 	depends on PCI_ENDPOINT
+	select PCI_ENDPOINT_VIRTIO
 	select VHOST_RING
 	select VHOST_IOMEM
 	help
