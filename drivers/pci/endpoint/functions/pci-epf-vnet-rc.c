@@ -103,7 +103,7 @@ err_free_space:
 static int epf_vnet_rc_negotiate_configs(struct epf_vnet *vnet, u16 *txpfn,
 					 u16 *rxpfn)
 {
-	u16 default_sel = vnet->vnet_cfg.max_virtqueue_pairs * 2;
+	const u16 default_sel = vnet->vnet_cfg.max_virtqueue_pairs * 2;
 	u32 __iomem *queue_pfn = vnet->rc.cfg_base + VIRTIO_PCI_QUEUE_PFN;
 	u16 __iomem *queue_sel = vnet->rc.cfg_base + VIRTIO_PCI_QUEUE_SEL;
 	u8 __iomem *pci_status = vnet->rc.cfg_base + VIRTIO_PCI_STATUS;
@@ -158,9 +158,19 @@ err_out:
 
 static int epf_vnet_rc_monitor_notify(void *data)
 {
-	// 	struct epf_vnet *vnet = data;
+	struct epf_vnet *vnet = data;
 
-	//TODO
+	u16 __iomem *queue_notify = vnet->rc.cfg_base + VIRTIO_PCI_QUEUE_NOTIFY;
+	const u16 notify_default = vnet->vnet_cfg.max_virtqueue_pairs * 2;
+
+	while (true) {
+		while (ioread16(queue_notify) == notify_default)
+			;
+		iowrite16(notify_default, queue_notify);
+
+		queue_work(vnet->rc.tx_wq, &vnet->tx_work);
+	}
+
 	return 0;
 }
 
@@ -183,8 +193,9 @@ static int epf_vnet_rc_device_setup(void *data)
 	struct epf_vnet *vnet = data;
 	struct pci_epf *epf = vnet->epf;
 	u16 txpfn, rxpfn;
+	const size_t vq_size = epf_vnet_get_vq_size();
 	int err;
-	struct pci_epf_vringh *txvrh, *rxvrh;
+	struct kvec *kvec;
 
 	err = epf_vnet_rc_negotiate_configs(vnet, &txpfn, &rxpfn);
 	if (err) {
@@ -194,21 +205,35 @@ static int epf_vnet_rc_device_setup(void *data)
 
 	sched_set_normal(vnet->rc.device_setup_task, 19);
 
-	txvrh = pci_epf_virtio_alloc_vringh(epf, vnet->virtio.features, txpfn,
-					    epf_vnet_get_vq_size(),
-					    PCI_EPF_VQ_LOCATE_REMOTE);
-	if (IS_ERR(txvrh)) {
+	vnet->rc.txvrh = pci_epf_virtio_alloc_vringh(epf, vnet->virtio.features,
+						     txpfn, vq_size,
+						     PCI_EPF_VQ_LOCATE_REMOTE);
+	if (IS_ERR(vnet->rc.txvrh)) {
 		pr_err("Failed to setup virtqueue\n");
-		return PTR_ERR(txvrh);
+		return PTR_ERR(vnet->rc.txvrh);
 	}
 
-	rxvrh = pci_epf_virtio_alloc_vringh(epf, vnet->virtio.features, rxpfn,
-					    epf_vnet_get_vq_size(),
-					    PCI_EPF_VQ_LOCATE_REMOTE);
-	if (IS_ERR(rxvrh)) {
-		pr_err("Failed to setup virtqueue\n");
-		return PTR_ERR(rxvrh);
+	kvec = kmalloc_array(vq_size, sizeof *kvec, GFP_KERNEL);
+	if (!kvec) {
+		err = -ENOMEM;
+		// 		goto;
 	}
+	vringh_kiov_init(&vnet->rc.tx_iov, kvec, vq_size);
+
+	vnet->rc.rxvrh = pci_epf_virtio_alloc_vringh(epf, vnet->virtio.features,
+						     rxpfn, vq_size,
+						     PCI_EPF_VQ_LOCATE_REMOTE);
+	if (IS_ERR(vnet->rc.rxvrh)) {
+		pr_err("Failed to setup virtqueue\n");
+		return PTR_ERR(vnet->rc.rxvrh);
+	}
+
+	kvec = kmalloc_array(vq_size, sizeof *kvec, GFP_KERNEL);
+	if (!kvec) {
+		err = -ENOMEM;
+		// 		goto;
+	}
+	vringh_kiov_init(&vnet->rc.rx_iov, kvec, vq_size);
 
 	err = epf_vnet_rc_spawn_notify_monitor(vnet);
 	if (err) {
@@ -216,7 +241,7 @@ static int epf_vnet_rc_device_setup(void *data)
 		return err;
 	}
 
-	pr_info("success to setup virtqueue");
+	pr_info("success to setup virtqueue: %s:%d\n", __func__, __LINE__);
 	return 0;
 
 	//TODO write error handling
@@ -235,10 +260,25 @@ static int epf_vnet_rc_spawn_device_setup_task(struct epf_vnet *vnet)
 	return 0;
 }
 
+static void epf_vnet_rc_tx_handler(struct work_struct *work)
+{
+	struct epf_vnet *vnet = container_of(work, struct epf_vnet, rc.tx_work);
+	struct vringh *tx_vrh = &vnet->rc.txvrh->vrh;
+	struct vringh *rx_vrh = &vnet->ep.rxvrh->vrh;
+	struct vringh_kiov *tx_iov = &vnet->rc.tx_iov;
+	struct vringh_kiov *rx_iov = &vnet->ep.rx_iov;
+
+	while (epf_vnet_transfer(vnet, tx_vrh, rx_vrh, tx_iov, rx_iov,
+				 DMA_DEV_TO_MEM) > 0)
+		;
+}
+
 int epf_vnet_rc_setup(struct epf_vnet *vnet)
 {
 	int err;
 	struct pci_epf *epf = vnet->epf;
+
+	pr_info("%s:%d\n", __func__, __LINE__);
 
 	err = pci_epc_write_header(epf->epc, epf->func_no, epf->vfunc_no,
 				   &epf_vnet_pci_header);
@@ -253,6 +293,15 @@ int epf_vnet_rc_setup(struct epf_vnet *vnet)
 		return err;
 	}
 
+	vnet->rc.tx_wq =
+		alloc_workqueue("pci-epf-vnet/tx-wq",
+				WQ_MEM_RECLAIM | WQ_HIGHPRI | WQ_UNBOUND, 0);
+	if (!vnet->rc.tx_wq) {
+		pr_err("Failed to allocate workqueue for rc -> ep transmission\n");
+		return -ENOMEM;
+	}
+
+	INIT_WORK(&vnet->rc.tx_work, epf_vnet_rc_tx_handler);
 	//TODO setup workqueues for tx and irq
 
 	return epf_vnet_rc_spawn_device_setup_task(vnet);
