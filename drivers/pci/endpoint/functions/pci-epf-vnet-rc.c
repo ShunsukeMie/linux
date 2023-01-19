@@ -168,7 +168,7 @@ static int epf_vnet_rc_monitor_notify(void *data)
 			;
 		iowrite16(notify_default, queue_notify);
 
-		queue_work(vnet->rc.tx_wq, &vnet->tx_work);
+		queue_work(vnet->rc.tx_wq, &vnet->rc.tx_work);
 	}
 
 	return 0;
