@@ -5,6 +5,7 @@
  */
 #include <linux/module.h>
 #include <linux/pci-epf.h>
+#include <linux/vringh.h>
 
 #include "pci-epf-vnet.h"
 
@@ -14,6 +15,59 @@ module_param(virtio_queue_size, int, S_IRUGO);
 int epf_vnet_get_vq_size(void)
 {
 	return virtio_queue_size;
+}
+
+int epf_vnet_transfer(struct epf_vnet *vnet, enum epf_vnet_tx_dir dir)
+{
+	struct vringh *tx_vrh, *rx_vrh;
+	struct vringh_kiov *tx_iov, *rx_iov;
+	int err;
+	u16 tx_head, rx_head;
+	size_t total_tx_len;
+
+	switch (dir) {
+	case EPF_VNET_TX_DIR_EP_TO_RC:
+		tx_vrh = &vnet->rc.txvrh->vrh;
+		// 			rx_vrh = &vnet->ep.rxvrh->vrh;
+		tx_iov = &vnet->rc.tx_iov;
+		// 			rx_iov = &vnet->ep.rx_iov;
+		break;
+	case EPF_VNET_TX_DIR_RC_TO_EP:
+		// 			tx_vrh = &vnet->ep.txvrh->vrh;
+		rx_vrh = &vnet->rc.rxvrh->vrh;
+		// 			tx_iov = &vnet->ep.tx_iov;
+		rx_iov = &vnet->rc.rx_iov;
+		break;
+	}
+
+	err = vringh_getdesc(tx_vrh, tx_iov, NULL, &tx_head);
+	if (err < 0) {
+		pr_info("Failed to get vring descriptor\n");
+		return err;
+	} else if (!err) {
+		// No data in vring
+		return 0;
+	}
+
+	total_tx_len = vringh_kiov_length(tx_iov);
+
+	err = vringh_getdesc(rx_vrh, NULL, rx_iov, &rx_head);
+	if (err < 0) {
+		pr_info("Failed to get vring descriptor\n");
+		return err;
+	} else if (!err) {
+		// No data in vring
+		return 0;
+	}
+
+	// TODO the rx_iov range should be checked.
+	for (; tx_iov->i < tx_iov->used; tx_iov->i++, rx_iov->i++) {
+	}
+
+	vringh_complete(tx_vrh, tx_head, total_tx_len);
+	vringh_complete(rx_vrh, rx_head, total_tx_len);
+
+	return 1;
 }
 
 static int epf_vnet_bind(struct pci_epf *epf)
