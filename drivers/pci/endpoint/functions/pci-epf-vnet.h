@@ -18,5 +18,6 @@ struct epf_vnet {
 };
 
 int epf_vnet_rc_setup(struct epf_vnet *vnet);
+int epf_vnet_get_vq_size(void);
 
 #endif // _PCI_EPF_VNET_H

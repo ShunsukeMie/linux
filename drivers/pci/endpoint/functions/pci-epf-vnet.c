@@ -8,6 +8,14 @@
 
 #include "pci-epf-vnet.h"
 
+static int virtio_queue_size = 0x100;
+module_param(virtio_queue_size, int, S_IRUGO);
+
+int epf_vnet_get_vq_size(void)
+{
+	return virtio_queue_size;
+}
+
 static int epf_vnet_bind(struct pci_epf *epf)
 {
 	int err;
