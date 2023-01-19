@@ -14,6 +14,8 @@ struct epf_vnet {
 
 	struct _rc {
 		void __iomem *cfg_base;
+		struct task_struct *device_setup_task;
+		struct task_struct *notify_monitor_task;
 	} rc;
 };
 
