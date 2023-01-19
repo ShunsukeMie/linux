@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Functions work for Root complext side using EPF framework
+ * Functions work for Root complext(remote) side using EPF framework
  */
 #include <linux/pci-epf.h>
 #include <linux/pci-epc.h>
