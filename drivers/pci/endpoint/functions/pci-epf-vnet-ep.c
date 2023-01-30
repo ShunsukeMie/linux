@@ -13,6 +13,92 @@ static inline struct epf_vnet *vdev_to_vnet(struct virtio_device *vdev)
 	return container_of(vdev, struct epf_vnet, ep.vdev);
 }
 
+int epf_vnet_ep_announce_linkup(struct epf_vnet *vnet)
+{
+	// The control virtqueue is only used for link up annoucement
+	struct virtio_net_ctrl_hdr hdr;
+	int err;
+	u16 head;
+	size_t len;
+	u64 base;
+	phys_addr_t phys_addr, aaddr;
+	void __iomem *virt_base;
+	struct pci_epf *epf = vnet->epf;
+	struct vringh *vrh = &vnet->ep.ctlvrh->vrh;
+	struct vringh_kiov *iov = &vnet->ep.ctl_iov;
+	size_t asize, offset;
+
+	err = vringh_getdesc(vrh, iov, NULL, &head);
+	if (err < 0) {
+		return err;
+	} else if (!err) {
+		return 0;
+	}
+
+	len = vringh_kiov_length(iov);
+
+	if (iov->i + 1 != iov->used) {
+		pr_err("found multiple entries, but expected is one\n");
+		return -EOPNOTSUPP;
+	}
+
+	base = (u64)iov->iov[iov->i].iov_base;
+	len = iov->iov[iov->i].iov_len;
+
+	err = pci_epc_mem_align(epf->epc, base, len, &aaddr, &asize);
+	if (err)
+		goto err_out;
+
+	offset = base - aaddr;
+
+	virt_base = pci_epc_mem_alloc_addr(epf->epc, &phys_addr, asize);
+	if (!virt_base) {
+		err = -ENOMEM;
+		goto err_out;
+	}
+
+	err = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no, phys_addr,
+			       aaddr, asize);
+	if (err) {
+		goto err_epc_free;
+	}
+
+	memcpy_fromio(&hdr, virt_base, sizeof hdr);
+
+	if (hdr.class != VIRTIO_NET_CTRL_ANNOUNCE) {
+		pr_err("found unknown command on control queue\n");
+		err = -EOPNOTSUPP;
+		goto err_epc_unmap;
+	}
+
+	if (hdr.cmd != VIRTIO_NET_CTRL_ANNOUNCE_ACK) {
+		pr_err("[announce] invalid command found :%d\n", hdr.cmd);
+		err = -EOPNOTSUPP;
+		goto err_epc_unmap;
+	}
+
+	memcpy_toio(virt_base, VIRTIO_NET_OK, sizeof(u8));
+
+	vringh_complete(vrh, head, len);
+
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, phys_addr);
+	pci_epc_mem_free_addr(epf->epc, phys_addr, virt_base, asize);
+
+	return 0;
+
+err_epc_unmap:
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, phys_addr);
+err_epc_free:
+	pci_epc_mem_free_addr(epf->epc, phys_addr, virt_base, asize);
+err_out:
+	return err;
+}
+
+void epf_vnet_ep_raise_config_irq(struct epf_vnet *vnet)
+{
+	virtio_config_changed(&vnet->ep.vdev);
+}
+
 static void epf_vnet_ep_vdev_release(struct device *dev)
 {
 	pr_info("%s:%d\n", __func__, __LINE__);
@@ -117,17 +203,21 @@ static int epf_vnet_ep_vdev_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 		}
 
 		vqs[i] = vq;
-		// 		if (i == 0)
-		// 			vnet->ep.rxvq = vq;
 
-		vring = virtqueue_get_vring(vq);
-		if (i == 0) {
+		switch (i) {
+		case 0: // rx
 			vrh = &vnet->ep.rxvrh->vrh;
 			kiov = &vnet->ep.rx_iov;
-		} else if (i == 1) {
+			break;
+		case 1: // tx
 			vrh = &vnet->ep.txvrh->vrh;
 			kiov = &vnet->ep.tx_iov;
-		} else {
+			break;
+		case 2: // control
+			vrh = &vnet->ep.ctlvrh->vrh;
+			kiov = &vnet->ep.ctl_iov;
+			break;
+		default:
 			BUG_ON("founc unsuspected queue index\n");
 		}
 

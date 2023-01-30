@@ -31,10 +31,13 @@ struct epf_vnet {
 	} rc;
 
 	struct {
-		struct pci_epf_vringh *txvrh, *rxvrh;
-		struct vringh_kiov tx_iov, rx_iov;
+		struct pci_epf_vringh *txvrh, *rxvrh, *ctlvrh;
+		struct vringh_kiov tx_iov, rx_iov, ctl_iov;
 		struct virtio_device vdev;
 	} ep;
+#define EPF_VNET_INIT_COMPLETE_EP BIT(0)
+#define EPF_VNET_INIT_COMPLETE_RC BIT(1)
+	u8 init_complete;
 };
 
 int epf_vnet_rc_setup(struct epf_vnet *vnet);
@@ -44,5 +47,8 @@ int epf_vnet_get_vq_size(void);
 int epf_vnet_transfer(struct epf_vnet *vnet, struct vringh *tx_vrh, struct vringh *rx_vrh,
 		struct vringh_kiov *tx_iov, struct vringh_kiov *rx_iov,
 		enum dma_transfer_direction dir);
+void epf_vnet_init_complete(struct epf_vnet *vnet, u8 from);
+int epf_vnet_ep_announce_linkup(struct epf_vnet *vnet);
+void epf_vnet_ep_raise_config_irq(struct epf_vnet *vnet);
 
 #endif // _PCI_EPF_VNET_H

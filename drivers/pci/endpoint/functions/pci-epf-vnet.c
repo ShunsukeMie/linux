@@ -19,6 +19,29 @@ int epf_vnet_get_vq_size(void)
 	return virtio_queue_size;
 }
 
+void epf_vnet_init_complete(struct epf_vnet *vnet, u8 from)
+{
+	int err;
+
+	vnet->init_complete |= from;
+
+	//TODO change to use kernel utililty functions
+	if ((vnet->init_complete & EPF_VNET_INIT_COMPLETE_EP) &&
+	    (vnet->init_complete & EPF_VNET_INIT_COMPLETE_RC)) {
+
+		err = epf_vnet_ep_announce_linkup(vnet);
+		if (err) {
+			pr_err("failed to announce linkup to ep driver\n");
+			return;
+		}
+		//TODO annouce for rc
+
+		epf_vnet_ep_raise_config_irq(vnet);
+		//TODO irq for rc
+		return;
+	}
+}
+
 struct epf_dma_filter_param {
 	struct device *dev;
 	u32 dma_mask;
@@ -243,17 +266,16 @@ static void epf_vnet_virtio_init(struct epf_vnet *vnet)
 	// Common configurations
 	pci_epf_virtio_init(&vnet->virtio,
 			    BIT(VIRTIO_NET_F_MAC) | BIT(VIRTIO_NET_F_MTU) |
-				    BIT(VIRTIO_NET_F_STATUS)
-				    //
-				    | BIT(VIRTIO_NET_F_GUEST_CSUM) |
+				    BIT(VIRTIO_NET_F_STATUS) |
+				    BIT(VIRTIO_NET_F_GUEST_CSUM) |
 				    BIT(VIRTIO_NET_F_GUEST_TSO4) |
 				    BIT(VIRTIO_NET_F_GUEST_TSO6) |
 				    BIT(VIRTIO_NET_F_GUEST_ECN) |
-				    BIT(VIRTIO_NET_F_GUEST_UFO));
+				    BIT(VIRTIO_NET_F_GUEST_UFO) |
+				    BIT(VIRTIO_NET_F_CTRL_VQ));
 
 	vnet->vnet_cfg.max_virtqueue_pairs = 1;
-	//TODO enable the control queue
-	vnet->vnet_cfg.status = VIRTIO_NET_S_LINK_UP;
+	vnet->vnet_cfg.status = 0;
 	//TODO fix the mtu
 	vnet->vnet_cfg.mtu = PAGE_SIZE;
 }
