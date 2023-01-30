@@ -16,17 +16,13 @@ static inline struct epf_vnet *vdev_to_vnet(struct virtio_device *vdev)
 int epf_vnet_ep_announce_linkup(struct epf_vnet *vnet)
 {
 	// The control virtqueue is only used for link up annoucement
-	struct virtio_net_ctrl_hdr hdr;
+	struct virtio_net_ctrl_hdr *hdr;
 	int err;
 	u16 head;
 	size_t len;
-	u64 base;
-	phys_addr_t phys_addr, aaddr;
-	void __iomem *virt_base;
-	struct pci_epf *epf = vnet->epf;
-	struct vringh *vrh = &vnet->ep.ctlvrh->vrh;
-	struct vringh_kiov *iov = &vnet->ep.ctl_iov;
-	size_t asize, offset;
+	void *buf;
+	struct vringh *vrh = &vnet->rc.ctlvrh->vrh;
+	struct vringh_kiov *iov = &vnet->rc.ctl_iov;
 
 	err = vringh_getdesc(vrh, iov, NULL, &head);
 	if (err < 0) {
@@ -42,56 +38,25 @@ int epf_vnet_ep_announce_linkup(struct epf_vnet *vnet)
 		return -EOPNOTSUPP;
 	}
 
-	base = (u64)iov->iov[iov->i].iov_base;
+	buf = phys_to_virt((unsigned long)iov->iov[iov->i].iov_base);
 	len = iov->iov[iov->i].iov_len;
 
-	err = pci_epc_mem_align(epf->epc, base, len, &aaddr, &asize);
-	if (err)
-		goto err_out;
-
-	offset = base - aaddr;
-
-	virt_base = pci_epc_mem_alloc_addr(epf->epc, &phys_addr, asize);
-	if (!virt_base) {
-		err = -ENOMEM;
-		goto err_out;
-	}
-
-	err = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no, phys_addr,
-			       aaddr, asize);
-	if (err) {
-		goto err_epc_free;
-	}
-
-	memcpy_fromio(&hdr, virt_base, sizeof hdr);
-
-	if (hdr.class != VIRTIO_NET_CTRL_ANNOUNCE) {
+	hdr = buf;
+	if (hdr->class != VIRTIO_NET_CTRL_ANNOUNCE) {
 		pr_err("found unknown command on control queue\n");
-		err = -EOPNOTSUPP;
-		goto err_epc_unmap;
+		return -EOPNOTSUPP;
 	}
 
-	if (hdr.cmd != VIRTIO_NET_CTRL_ANNOUNCE_ACK) {
-		pr_err("[announce] invalid command found :%d\n", hdr.cmd);
-		err = -EOPNOTSUPP;
-		goto err_epc_unmap;
+	if (hdr->cmd != VIRTIO_NET_CTRL_ANNOUNCE_ACK) {
+		pr_err("[announce] invalid command found :%d\n", hdr->cmd);
+		return -EOPNOTSUPP;
 	}
 
-	memcpy_toio(virt_base, VIRTIO_NET_OK, sizeof(u8));
+	iowrite8(VIRTIO_NET_OK, buf + sizeof hdr);
 
 	vringh_complete(vrh, head, len);
 
-	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, phys_addr);
-	pci_epc_mem_free_addr(epf->epc, phys_addr, virt_base, asize);
-
 	return 0;
-
-err_epc_unmap:
-	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, phys_addr);
-err_epc_free:
-	pci_epc_mem_free_addr(epf->epc, phys_addr, virt_base, asize);
-err_out:
-	return err;
 }
 
 void epf_vnet_ep_raise_config_irq(struct epf_vnet *vnet)
@@ -122,6 +87,7 @@ static void epf_vnet_ep_vdev_get_config(struct virtio_device *vdev,
 					unsigned int offset, void *buf,
 					unsigned len)
 {
+	// TODO: deassert a device configuration interrupt flag on ISR.
 	pr_info("%s:%d\n", __func__, __LINE__);
 	//TODO return network configuration that includes mac address.
 }
