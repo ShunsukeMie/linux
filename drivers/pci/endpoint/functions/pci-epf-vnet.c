@@ -28,13 +28,12 @@ void epf_vnet_init_complete(struct epf_vnet *vnet, u8 from)
 	//TODO change to use kernel utililty functions
 	if ((vnet->init_complete & EPF_VNET_INIT_COMPLETE_EP) &&
 	    (vnet->init_complete & EPF_VNET_INIT_COMPLETE_RC)) {
-
 		err = epf_vnet_ep_announce_linkup(vnet);
 		if (err) {
 			pr_err("failed to announce linkup to ep driver\n");
 			return;
 		}
-		err = epf_vnet_rc_raise_config_irq(vnet);
+		err = epf_vnet_rc_announce_linkup(vnet);
 		if (err) {
 			pr_err("failed to announce linkup to rc driver\n");
 			return;
