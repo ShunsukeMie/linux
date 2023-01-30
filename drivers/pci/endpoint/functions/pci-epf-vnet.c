@@ -198,17 +198,17 @@ int epf_vnet_transfer(struct epf_vnet *vnet, struct vringh *tx_vrh,
 	cb_param->rx_head = rx_head;
 	cb_param->total_len = total_tx_len;
 
-	switch(dir) {
-		case DMA_MEM_TO_DEV:
-			liov = tx_iov;
-			riov = rx_iov;
-			break;
-		case DMA_DEV_TO_MEM:
-			liov = rx_iov;
-			riov = tx_iov;
-			break;
-		default:
-			return -EINVAL;
+	switch (dir) {
+	case DMA_MEM_TO_DEV:
+		liov = tx_iov;
+		riov = rx_iov;
+		break;
+	case DMA_DEV_TO_MEM:
+		liov = rx_iov;
+		riov = tx_iov;
+		break;
+	default:
+		return -EINVAL;
 	}
 
 	// TODO the rx_iov range should be checked.
