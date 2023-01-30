@@ -217,6 +217,10 @@ static int epf_vnet_bind(struct pci_epf *epf)
 	if (err)
 		return err;
 
+	err = epf_vnet_ep_setup(vnet);
+	if (err)
+		return err;
+
 	return 0;
 }
 

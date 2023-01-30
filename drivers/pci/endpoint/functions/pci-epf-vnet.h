@@ -6,6 +6,7 @@
 #include <linux/pci-epf-virtio.h>
 #include <linux/virtio_net.h>
 #include <linux/dmaengine.h>
+#include <linux/virtio.h>
 
 struct epf_vnet {
 	//TODO Should this variable be placed here?
@@ -23,6 +24,8 @@ struct epf_vnet {
 		struct task_struct *notify_monitor_task;
 		struct workqueue_struct *tx_wq;
 		struct work_struct tx_work;
+		struct workqueue_struct *irq_wq;
+		struct work_struct raise_irq_work;
 		struct pci_epf_vringh *txvrh, *rxvrh;
 		struct vringh_kiov tx_iov, rx_iov;
 	} rc;
@@ -30,10 +33,13 @@ struct epf_vnet {
 	struct {
 		struct pci_epf_vringh *txvrh, *rxvrh;
 		struct vringh_kiov tx_iov, rx_iov;
+		struct virtio_device vdev;
 	} ep;
 };
 
 int epf_vnet_rc_setup(struct epf_vnet *vnet);
+int epf_vnet_ep_setup(struct epf_vnet *vnet);
+
 int epf_vnet_get_vq_size(void);
 int epf_vnet_transfer(struct epf_vnet *vnet, struct vringh *tx_vrh, struct vringh *rx_vrh,
 		struct vringh_kiov *tx_iov, struct vringh_kiov *rx_iov,
