@@ -13,6 +13,100 @@
 
 #define VIRTIO_NET_LEGACY_CFG_BAR BAR_0
 
+int epf_vnet_rc_announce_linkup(struct epf_vnet *vnet)
+{
+	// The control virtqueue is only used for link up annoucement
+	struct virtio_net_ctrl_hdr hdr;
+	int err;
+	u16 head;
+	size_t len;
+	u64 base;
+	phys_addr_t phys_addr, aaddr;
+	void __iomem *virt_base;
+	struct pci_epf *epf = vnet->epf;
+	struct vringh *vrh = &vnet->rc.ctlvrh->vrh;
+	struct vringh_kiov *iov = &vnet->rc.ctl_iov;
+	size_t asize, offset;
+
+	err = vringh_getdesc(vrh, iov, NULL, &head);
+	if (err < 0) {
+		return err;
+	} else if (!err) {
+		return 0;
+	}
+
+	len = vringh_kiov_length(iov);
+
+	if (iov->i + 1 != iov->used) {
+		pr_err("found multiple entries, but expected is one\n");
+		return -EOPNOTSUPP;
+	}
+
+	base = (u64)iov->iov[iov->i].iov_base;
+	len = iov->iov[iov->i].iov_len;
+
+	err = pci_epc_mem_align(epf->epc, base, len, &aaddr, &asize);
+	if (err)
+		goto err_out;
+
+	offset = base - aaddr;
+
+	virt_base = pci_epc_mem_alloc_addr(epf->epc, &phys_addr, asize);
+	if (!virt_base) {
+		err = -ENOMEM;
+		goto err_out;
+	}
+
+	err = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no, phys_addr,
+			       aaddr, asize);
+	if (err) {
+		goto err_epc_free;
+	}
+
+	memcpy_fromio(&hdr, virt_base, sizeof hdr);
+
+	if (hdr.class != VIRTIO_NET_CTRL_ANNOUNCE) {
+		pr_err("found unknown command on control queue\n");
+		err = -EOPNOTSUPP;
+		goto err_epc_unmap;
+	}
+
+	if (hdr.cmd != VIRTIO_NET_CTRL_ANNOUNCE_ACK) {
+		pr_err("[announce] invalid command found :%d\n", hdr.cmd);
+		err = -EOPNOTSUPP;
+		goto err_epc_unmap;
+	}
+
+	memcpy_toio(virt_base, VIRTIO_NET_OK, sizeof(u8));
+
+	vringh_complete(vrh, head, len);
+
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, phys_addr);
+	pci_epc_mem_free_addr(epf->epc, phys_addr, virt_base, asize);
+
+	return 0;
+
+err_epc_unmap:
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, phys_addr);
+err_epc_free:
+	pci_epc_mem_free_addr(epf->epc, phys_addr, virt_base, asize);
+err_out:
+	return err;
+}
+
+void epf_vnet_rc_raise_config_irq(struct epf_vnet *vnet)
+{
+	void __iomem *cfg_base = vnet->rc.cfg_base;
+
+	/* Add a configuration change flag to isr. The flag is deasserted at tx
+	 * handler. */
+	iowrite16(VIRTIO_PCI_ISR_QUEUE | VIRTIO_PCI_ISR_CONFIG,
+		  cfg_base + VIRTIO_PCI_ISR);
+
+	// interrupt
+	queue_work(vnet->rc.irq_wq, &vnet->rc.raise_irq_work);
+}
+
 static struct pci_epf_header epf_vnet_pci_header = {
 	.vendorid = PCI_VENDOR_ID_REDHAT_QUMRANET,
 	.deviceid = VIRTIO_TRANS_ID_NET,
@@ -101,18 +195,18 @@ err_free_space:
 }
 
 static int epf_vnet_rc_negotiate_configs(struct epf_vnet *vnet, u16 *txpfn,
-					 u16 *rxpfn)
+					 u16 *rxpfn, u16 *ctlpfn)
 {
 	const u16 default_sel = vnet->vnet_cfg.max_virtqueue_pairs * 2;
 	u32 __iomem *queue_pfn = vnet->rc.cfg_base + VIRTIO_PCI_QUEUE_PFN;
 	u16 __iomem *queue_sel = vnet->rc.cfg_base + VIRTIO_PCI_QUEUE_SEL;
 	u8 __iomem *pci_status = vnet->rc.cfg_base + VIRTIO_PCI_STATUS;
-	u16 _txpfn, _rxpfn;
+	u16 _txpfn, _rxpfn, _ctlpfn;
 	u32 pfn;
 	u16 sel;
 	int err;
 
-	_txpfn = _rxpfn = 0;
+	_txpfn = _rxpfn = _ctlpfn = 0;
 
 	while (true) {
 		pfn = ioread32(queue_pfn);
@@ -132,6 +226,9 @@ static int epf_vnet_rc_negotiate_configs(struct epf_vnet *vnet, u16 *txpfn,
 		case 1:
 			_txpfn = pfn;
 			break;
+		case 2:
+			_ctlpfn = pfn;
+			break;
 		default:
 			pr_err("Driver attpmt to use invalid queue (%d)\n",
 			       sel);
@@ -140,7 +237,7 @@ static int epf_vnet_rc_negotiate_configs(struct epf_vnet *vnet, u16 *txpfn,
 			goto err_out;
 		}
 
-		if (_rxpfn && _txpfn)
+		if (_rxpfn && _txpfn && _ctlpfn)
 			break;
 	}
 
@@ -149,6 +246,7 @@ static int epf_vnet_rc_negotiate_configs(struct epf_vnet *vnet, u16 *txpfn,
 
 	*rxpfn = _rxpfn;
 	*txpfn = _txpfn;
+	*ctlpfn = _ctlpfn;
 
 	return 0;
 
@@ -192,12 +290,12 @@ static int epf_vnet_rc_device_setup(void *data)
 {
 	struct epf_vnet *vnet = data;
 	struct pci_epf *epf = vnet->epf;
-	u16 txpfn, rxpfn;
+	u16 txpfn, rxpfn, ctlpfn;
 	const size_t vq_size = epf_vnet_get_vq_size();
 	int err;
 	struct kvec *kvec;
 
-	err = epf_vnet_rc_negotiate_configs(vnet, &txpfn, &rxpfn);
+	err = epf_vnet_rc_negotiate_configs(vnet, &txpfn, &rxpfn, &ctlpfn);
 	if (err) {
 		pr_err("Failed to negatiate configs with driver\n");
 		return err;
@@ -235,6 +333,21 @@ static int epf_vnet_rc_device_setup(void *data)
 	}
 	vringh_kiov_init(&vnet->rc.rx_iov, kvec, vq_size);
 
+	vnet->rc.ctlvrh =
+		pci_epf_virtio_alloc_vringh(epf, vnet->virtio.features, ctlpfn,
+					    vq_size, PCI_EPF_VQ_LOCATE_REMOTE);
+	if (IS_ERR(vnet->rc.ctlvrh)) {
+		pr_err("failed to setup virtqueue\n");
+		return PTR_ERR(vnet->rc.ctlvrh);
+	}
+
+	kvec = kmalloc_array(vq_size, sizeof *kvec, GFP_KERNEL);
+	if (!kvec) {
+		err = -ENOMEM;
+		// 		goto;
+	}
+	vringh_kiov_init(&vnet->rc.ctl_iov, kvec, vq_size);
+
 	err = epf_vnet_rc_spawn_notify_monitor(vnet);
 	if (err) {
 		pr_err("Failed to create notify monitor thread\n");
@@ -267,10 +380,19 @@ static void epf_vnet_rc_tx_handler(struct work_struct *work)
 	struct vringh *rx_vrh = &vnet->ep.rxvrh->vrh;
 	struct vringh_kiov *tx_iov = &vnet->rc.tx_iov;
 	struct vringh_kiov *rx_iov = &vnet->ep.rx_iov;
+	u16 isr;
+	void __iomem *cfg_base = vnet->rc.cfg_base;
 
 	while (epf_vnet_transfer(vnet, tx_vrh, rx_vrh, tx_iov, rx_iov,
 				 DMA_DEV_TO_MEM) > 0)
 		;
+
+	// deassert config changed flag
+	isr = ioread16(cfg_base + VIRTIO_PCI_ISR);
+	if (unlikely(isr & VIRTIO_PCI_ISR_CONFIG)) {
+		isr &= ~VIRTIO_PCI_ISR_CONFIG;
+		iowrite16(isr, cfg_base + VIRTIO_PCI_ISR);
+	}
 }
 
 static void epf_vnet_rc_raise_irq_handler(struct work_struct *work)

@@ -34,10 +34,14 @@ void epf_vnet_init_complete(struct epf_vnet *vnet, u8 from)
 			pr_err("failed to announce linkup to ep driver\n");
 			return;
 		}
-		//TODO annouce for rc
+		err = epf_vnet_rc_raise_config_irq(vnet);
+		if (err) {
+			pr_err("failed to announce linkup to rc driver\n");
+			return;
+		}
 
 		epf_vnet_ep_raise_config_irq(vnet);
-		//TODO irq for rc
+		epf_vnet_rc_raise_config_irq(vnet);
 		return;
 	}
 }

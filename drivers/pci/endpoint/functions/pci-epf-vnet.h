@@ -26,8 +26,8 @@ struct epf_vnet {
 		struct work_struct tx_work;
 		struct workqueue_struct *irq_wq;
 		struct work_struct raise_irq_work;
-		struct pci_epf_vringh *txvrh, *rxvrh;
-		struct vringh_kiov tx_iov, rx_iov;
+		struct pci_epf_vringh *txvrh, *rxvrh, *ctlvrh;
+		struct vringh_kiov tx_iov, rx_iov, ctl_iov;
 	} rc;
 
 	struct {
@@ -52,5 +52,7 @@ int epf_vnet_transfer(struct epf_vnet *vnet, struct vringh *tx_vrh,
 void epf_vnet_init_complete(struct epf_vnet *vnet, u8 from);
 int epf_vnet_ep_announce_linkup(struct epf_vnet *vnet);
 void epf_vnet_ep_raise_config_irq(struct epf_vnet *vnet);
+int epf_vnet_rc_announce_linkup(struct epf_vnet *vnet);
+void epf_vnet_rc_raise_config_irq(struct epf_vnet *vnet);
 
 #endif // _PCI_EPF_VNET_H
