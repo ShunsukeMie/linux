@@ -275,10 +275,12 @@ static void epf_vnet_rc_tx_handler(struct work_struct *work)
 
 static void epf_vnet_rc_raise_irq_handler(struct work_struct *work)
 {
-	struct epf_vnet *vnet = container_of(work, struct epf_vnet, rc.raise_irq_work);
+	struct epf_vnet *vnet =
+		container_of(work, struct epf_vnet, rc.raise_irq_work);
 	struct pci_epf *epf = vnet->epf;
 
-	pci_epc_raise_irq(epf->epc, epf->func_no, epf->vfunc_no, PCI_EPC_IRQ_LEGACY, 0);
+	pci_epc_raise_irq(epf->epc, epf->func_no, epf->vfunc_no,
+			  PCI_EPC_IRQ_LEGACY, 0);
 }
 
 int epf_vnet_rc_setup(struct epf_vnet *vnet)
@@ -312,8 +314,9 @@ int epf_vnet_rc_setup(struct epf_vnet *vnet)
 	INIT_WORK(&vnet->rc.tx_work, epf_vnet_rc_tx_handler);
 	//TODO setup workqueues for tx and irq
 
-	vnet->rc.irq_wq = alloc_workqueue(
-			"pci-epf-vnet/irq-wq", WQ_MEM_RECLAIM | WQ_HIGHPRI | WQ_UNBOUND, 0);
+	vnet->rc.irq_wq =
+		alloc_workqueue("pci-epf-vnet/irq-wq",
+				WQ_MEM_RECLAIM | WQ_HIGHPRI | WQ_UNBOUND, 0);
 	if (!vnet->rc.irq_wq)
 		return -ENOMEM;
 
