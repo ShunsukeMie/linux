@@ -24,8 +24,8 @@ int epf_vnet_rc_announce_linkup(struct epf_vnet *vnet)
 	phys_addr_t phys_addr, aaddr;
 	void __iomem *virt_base;
 	struct pci_epf *epf = vnet->epf;
-	struct vringh *vrh = &vnet->rc.ctlvrh->vrh;
-	struct vringh_kiov *iov = &vnet->rc.ctl_iov;
+	struct vringh *vrh = &vnet->ep.ctlvrh->vrh;
+	struct vringh_kiov *iov = &vnet->ep.ctl_iov;
 	size_t asize, offset;
 
 	err = vringh_getdesc(vrh, iov, NULL, &head);
