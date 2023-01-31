@@ -236,7 +236,6 @@ static int epf_vnet_ep_vdev_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 		vqs[i] = vq;
 		vring = virtqueue_get_vring(vq);
 
-		pr_info("%s:%d %d\n", __func__, __LINE__, i);
 		switch (i) {
 		case 0: // rx
 			vrh = &vnet->ep.rxvrh;
@@ -253,7 +252,6 @@ static int epf_vnet_ep_vdev_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 		default:
 			BUG_ON("found unsuspected queue index\n");
 		}
-		pr_info("%s:%d %d %px\n", __func__, __LINE__, i, vring);
 
 		// XXX: a argument named weak_barrier of vringh_init_kern should be
 		// probably true. Please check it.
@@ -264,16 +262,13 @@ static int epf_vnet_ep_vdev_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 			pr_err("failed to init vringh for vring %d\n", i);
 			goto err_del_vqs;
 		}
-		pr_info("%s:%d %d\n", __func__, __LINE__, i);
 
 		kvec = kmalloc_array(vq_size, sizeof *kvec, GFP_KERNEL);
 		if (!kvec) {
 			err = -ENOMEM;
 			goto err_del_vqs;
 		}
-		pr_info("%s:%d %d\n", __func__, __LINE__, i);
 		vringh_kiov_init(kiov, kvec, vq_size);
-		pr_info("%s:%d %d\n", __func__, __LINE__, i);
 	}
 
 	epf_vnet_init_complete(vnet, EPF_VNET_INIT_COMPLETE_EP);
