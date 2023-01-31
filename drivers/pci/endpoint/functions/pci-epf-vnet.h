@@ -51,8 +51,6 @@ int epf_vnet_transfer(struct epf_vnet *vnet, struct vringh *tx_vrh,
 
 void epf_vnet_init_complete(struct epf_vnet *vnet, u8 from);
 int epf_vnet_ep_announce_linkup(struct epf_vnet *vnet);
-void epf_vnet_ep_raise_config_irq(struct epf_vnet *vnet);
 int epf_vnet_rc_announce_linkup(struct epf_vnet *vnet);
-void epf_vnet_rc_raise_config_irq(struct epf_vnet *vnet);
 
 #endif // _PCI_EPF_VNET_H

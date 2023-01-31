@@ -39,8 +39,6 @@ void epf_vnet_init_complete(struct epf_vnet *vnet, u8 from)
 			return;
 		}
 
-		epf_vnet_ep_raise_config_irq(vnet);
-		epf_vnet_rc_raise_config_irq(vnet);
 		return;
 	}
 }
