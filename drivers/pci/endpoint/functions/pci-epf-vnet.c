@@ -270,7 +270,7 @@ static void epf_vnet_virtio_init(struct epf_vnet *vnet)
 {
 	// Common configurations
 	pci_epf_virtio_init(&vnet->virtio,
-			    | BIT(VIRTIO_NET_F_MTU) | BIT(VIRTIO_NET_F_STATUS) |
+			    BIT(VIRTIO_NET_F_MTU) | BIT(VIRTIO_NET_F_STATUS) |
 				    BIT(VIRTIO_NET_F_GUEST_CSUM) |
 				    BIT(VIRTIO_NET_F_GUEST_TSO4) |
 				    BIT(VIRTIO_NET_F_GUEST_TSO6) |
