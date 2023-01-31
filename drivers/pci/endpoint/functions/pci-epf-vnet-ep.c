@@ -4,6 +4,7 @@
  */
 #include <linux/pci-epc.h>
 #include <linux/virtio_pci.h>
+#include <linux/virtio_net.h>
 #include <linux/virtio_ring.h>
 
 #include "pci-epf-vnet.h"
@@ -13,55 +14,87 @@ static inline struct epf_vnet *vdev_to_vnet(struct virtio_device *vdev)
 	return container_of(vdev, struct epf_vnet, ep.vdev);
 }
 
+static void epf_vnet_ep_set_status(struct epf_vnet *vnet, u16 status)
+{
+	vnet->ep.net_config_status |= status;
+}
+
+static void epf_vnet_ep_clear_status(struct epf_vnet *vnet, u16 status)
+{
+	vnet->ep.net_config_status &= ~status;
+}
+
+static void epf_vnet_ep_raise_config_irq(struct epf_vnet *vnet)
+{
+	virtio_config_changed(&vnet->ep.vdev);
+}
+
 int epf_vnet_ep_announce_linkup(struct epf_vnet *vnet)
 {
-	// The control virtqueue is only used for link up annoucement
-	struct virtio_net_ctrl_hdr *hdr;
+	epf_vnet_ep_set_status(vnet,
+			       VIRTIO_NET_S_LINK_UP | VIRTIO_NET_S_ANNOUNCE);
+	epf_vnet_ep_raise_config_irq(vnet);
+
+	return 0;
+}
+
+static int epf_vnet_ep_process_ctrlq_entry(struct epf_vnet *vnet)
+{
 	int err;
 	u16 head;
+	struct virtio_net_ctrl_hdr *hdr;
 	size_t len;
-	void *buf;
-	struct vringh *vrh = &vnet->rc.ctlvrh->vrh;
-	struct vringh_kiov *iov = &vnet->rc.ctl_iov;
 
-	err = vringh_getdesc(vrh, iov, NULL, &head);
+	struct vringh *vrh = &vnet->ep.ctlvrh;
+	struct vringh_kiov *wiov = &vnet->ep.ctl_iov;
+	struct vringh_kiov riov;
+
+	vringh_kiov_init(&riov,
+			 kmalloc_array(epf_vnet_get_vq_size(),
+				       sizeof(struct kvec), GFP_KERNEL),
+			 epf_vnet_get_vq_size());
+
+	err = vringh_getdesc(vrh, &riov, wiov, &head);
 	if (err < 0) {
 		return err;
 	} else if (!err) {
 		return 0;
 	}
 
-	len = vringh_kiov_length(iov);
+	// Should be vringh_kiov_length(iov) == iov->iov[iov->i].iov_len ?
+	// If it is, we can check and use the command simply.
 
-	if (iov->i + 1 != iov->used) {
-		pr_err("found multiple entries, but expected is one\n");
-		return -EOPNOTSUPP;
+	len = vringh_kiov_length(&riov);
+	// 	len = vringh_kiov_length(iov);
+	if (len < sizeof(*hdr)) {
+		pr_err("Invalid command: length is shoter than header: %ld\n",
+		       len);
+		goto done;
+		return 0;
 	}
 
-	buf = phys_to_virt((unsigned long)iov->iov[iov->i].iov_base);
-	len = iov->iov[iov->i].iov_len;
+	hdr = phys_to_virt((unsigned long)riov.iov[riov.i].iov_base);
 
-	hdr = buf;
-	if (hdr->class != VIRTIO_NET_CTRL_ANNOUNCE) {
-		pr_err("found unknown command on control queue\n");
-		return -EOPNOTSUPP;
+	switch (hdr->class) {
+	case VIRTIO_NET_CTRL_ANNOUNCE:
+		if (hdr->cmd != VIRTIO_NET_CTRL_ANNOUNCE_ACK) {
+			pr_err("Found invalid command: announce: %d\n",
+			       hdr->cmd);
+			goto done;
+		}
+		epf_vnet_ep_clear_status(vnet, VIRTIO_NET_S_ANNOUNCE);
+
+		iowrite8(VIRTIO_NET_OK,
+			 phys_to_virt(
+				 (unsigned long)wiov->iov[wiov->i].iov_base));
+		break;
+	default:
+		pr_err("Found not supported class: %d\n", hdr->class);
 	}
 
-	if (hdr->cmd != VIRTIO_NET_CTRL_ANNOUNCE_ACK) {
-		pr_err("[announce] invalid command found :%d\n", hdr->cmd);
-		return -EOPNOTSUPP;
-	}
-
-	iowrite8(VIRTIO_NET_OK, buf + sizeof hdr);
-
+done:
 	vringh_complete(vrh, head, len);
-
 	return 0;
-}
-
-void epf_vnet_ep_raise_config_irq(struct epf_vnet *vnet)
-{
-	virtio_config_changed(&vnet->ep.vdev);
 }
 
 static void epf_vnet_ep_vdev_release(struct device *dev)
@@ -87,9 +120,33 @@ static void epf_vnet_ep_vdev_get_config(struct virtio_device *vdev,
 					unsigned int offset, void *buf,
 					unsigned len)
 {
-	// TODO: deassert a device configuration interrupt flag on ISR.
-	pr_info("%s:%d\n", __func__, __LINE__);
-	//TODO return network configuration that includes mac address.
+	struct epf_vnet *vnet = vdev_to_vnet(vdev);
+	unsigned copy_len;
+	const unsigned mac_len = sizeof vnet->vnet_cfg.mac;
+	const unsigned status_len = sizeof vnet->vnet_cfg.status;
+
+	switch (offset) {
+	case offsetof(struct virtio_net_config, mac):
+		copy_len = len >= mac_len ? mac_len : len;
+		// this EP function doesn't provide a VIRTIO_NET_F_MAC feature, so just
+		// clear the buffer.
+		memset(buf, 0x00, copy_len);
+		len -= copy_len;
+		buf += copy_len;
+		fallthrough;
+	case offsetof(struct virtio_net_config, status):
+		copy_len = len >= status_len ? status_len : len;
+		memcpy(buf, &vnet->ep.net_config_status, copy_len);
+		len -= copy_len;
+		buf += copy_len;
+		fallthrough;
+	default:
+		if (offset > sizeof(vnet->vnet_cfg)) {
+			memset(buf, 0x00, len);
+			break;
+		}
+		memcpy(buf, (void *)&vnet->vnet_cfg + offset, len);
+	}
 }
 
 static void epf_vnet_ep_vdev_set_config(struct virtio_device *vdev,
@@ -118,18 +175,25 @@ static void epf_vnet_ep_vdev_reset(struct virtio_device *vdev)
 static bool epf_vnet_ep_vdev_vq_notify(struct virtqueue *vq)
 {
 	struct epf_vnet *vnet = vdev_to_vnet(vq->vdev);
-	struct vringh *tx_vrh = &vnet->ep.txvrh->vrh;
+	struct vringh *tx_vrh = &vnet->ep.txvrh;
 	struct vringh *rx_vrh = &vnet->rc.rxvrh->vrh;
 	struct vringh_kiov *tx_iov = &vnet->ep.tx_iov;
 	struct vringh_kiov *rx_iov = &vnet->rc.rx_iov;
 
-	// 	if (unlikely(!vnet->rc_init_done))
-	// 		return true;
-
-	if (vq->index == 1) {
+	/* Support only one queue pair */
+	switch (vq->index) {
+	case 0: // rx queue
+		break;
+	case 1: // tx queue
 		while (epf_vnet_transfer(vnet, tx_vrh, rx_vrh, tx_iov, rx_iov,
 					 DMA_MEM_TO_DEV) > 0)
 			;
+		break;
+	case 2: // control queue
+		epf_vnet_ep_process_ctrlq_entry(vnet);
+		break;
+	default:
+		return false;
 	}
 
 	return true;
@@ -145,6 +209,7 @@ static int epf_vnet_ep_vdev_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 	int err;
 	int qidx = 0;
 	struct epf_vnet *vnet = vdev_to_vnet(vdev);
+	const size_t vq_size = epf_vnet_get_vq_size();
 
 	for (i = 0; i < nvqs; i++) {
 		struct virtqueue *vq;
@@ -158,7 +223,7 @@ static int epf_vnet_ep_vdev_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 			continue;
 		}
 
-		vq = vring_create_virtqueue(qidx++, epf_vnet_get_vq_size(),
+		vq = vring_create_virtqueue(qidx++, vq_size,
 					    VIRTIO_PCI_VRING_ALIGN, vdev, true,
 					    false, ctx ? ctx[i] : false,
 					    epf_vnet_ep_vdev_vq_notify,
@@ -169,42 +234,49 @@ static int epf_vnet_ep_vdev_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 		}
 
 		vqs[i] = vq;
+		vring = virtqueue_get_vring(vq);
 
+		pr_info("%s:%d %d\n", __func__, __LINE__, i);
 		switch (i) {
 		case 0: // rx
-			vrh = &vnet->ep.rxvrh->vrh;
+			vrh = &vnet->ep.rxvrh;
 			kiov = &vnet->ep.rx_iov;
 			break;
 		case 1: // tx
-			vrh = &vnet->ep.txvrh->vrh;
+			vrh = &vnet->ep.txvrh;
 			kiov = &vnet->ep.tx_iov;
 			break;
 		case 2: // control
-			vrh = &vnet->ep.ctlvrh->vrh;
+			vrh = &vnet->ep.ctlvrh;
 			kiov = &vnet->ep.ctl_iov;
 			break;
 		default:
-			BUG_ON("founc unsuspected queue index\n");
+			BUG_ON("found unsuspected queue index\n");
 		}
+		pr_info("%s:%d %d %px\n", __func__, __LINE__, i, vring);
 
-		err = vringh_init_kern(vrh, vnet->virtio.features,
-				       epf_vnet_get_vq_size(), false,
-				       GFP_KERNEL, vring->desc, vring->avail,
-				       vring->used);
+		// XXX: a argument named weak_barrier of vringh_init_kern should be
+		// probably true. Please check it.
+		err = vringh_init_kern(vrh, vnet->virtio.features, vq_size,
+				       false, GFP_KERNEL, vring->desc,
+				       vring->avail, vring->used);
 		if (err) {
 			pr_err("failed to init vringh for vring %d\n", i);
 			goto err_del_vqs;
 		}
+		pr_info("%s:%d %d\n", __func__, __LINE__, i);
 
-		kvec = kmalloc_array(epf_vnet_get_vq_size(), sizeof *kvec,
-				     GFP_KERNEL);
+		kvec = kmalloc_array(vq_size, sizeof *kvec, GFP_KERNEL);
 		if (!kvec) {
 			err = -ENOMEM;
 			goto err_del_vqs;
 		}
-		vringh_kiov_init(kiov, kvec, epf_vnet_get_vq_size());
+		pr_info("%s:%d %d\n", __func__, __LINE__, i);
+		vringh_kiov_init(kiov, kvec, vq_size);
+		pr_info("%s:%d %d\n", __func__, __LINE__, i);
 	}
 
+	epf_vnet_init_complete(vnet, EPF_VNET_INIT_COMPLETE_EP);
 	return 0;
 
 err_del_vqs:
