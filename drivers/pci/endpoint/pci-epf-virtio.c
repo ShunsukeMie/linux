@@ -54,9 +54,9 @@ void _epf_virtio_unmap_vq(struct pci_epf *epf, void __iomem *vq_virt,
 			      vring_size(size, VIRTIO_PCI_VRING_ALIGN));
 }
 
-struct pci_epf_vringh *
-pci_epf_virtio_alloc_vringh(struct pci_epf *epf, u64 features, u16 pfn,
-			    size_t size, enum pci_epf_vq_locate location)
+struct pci_epf_vringh *pci_epf_virtio_alloc_vringh(struct pci_epf *epf,
+						   u64 features, u16 pfn,
+						   size_t size)
 {
 	int err;
 	struct vring vring;
@@ -76,22 +76,10 @@ pci_epf_virtio_alloc_vringh(struct pci_epf *epf, u64 features, u16 pfn,
 
 	vring_init(&vring, size, evrh->virt, VIRTIO_PCI_VRING_ALIGN);
 
-	switch (location) {
-	case PCI_EPF_VQ_LOCATE_LOCAL:
-		err = vringh_init_kern(&evrh->vrh, features, size, false,
-				       GFP_KERNEL, vring.desc, vring.avail,
-				       vring.used);
-		if (err)
-			goto err_free_epf_vq;
-		break;
-	case PCI_EPF_VQ_LOCATE_REMOTE:
-		err = vringh_init_iomem(&evrh->vrh, features, size, false,
-					GFP_KERNEL, vring.desc, vring.avail,
-					vring.used);
-		if (err)
-			goto err_free_epf_vq;
-		break;
-	}
+	err = vringh_init_iomem(&evrh->vrh, features, size, false, GFP_KERNEL,
+				vring.desc, vring.avail, vring.used);
+	if (err)
+		goto err_free_epf_vq;
 
 	return evrh;
 

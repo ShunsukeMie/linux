@@ -18,11 +18,6 @@ struct pci_epf_virtio {
 	u32 features;
 };
 
-enum pci_epf_vq_locate {
-	PCI_EPF_VQ_LOCATE_LOCAL,
-	PCI_EPF_VQ_LOCATE_REMOTE,
-};
-
 struct pci_epf_vringh {
 	struct vringh vrh;
 	void __iomem *virt;
@@ -34,7 +29,7 @@ void pci_epf_virtio_init(struct pci_epf_virtio *virtio, u32 features);
 
 struct pci_epf_vringh *
 pci_epf_virtio_alloc_vringh(struct pci_epf *epf, u64 features, u16 pfn,
-			    size_t size, enum pci_epf_vq_locate location);
+			    size_t size);
 void pci_epf_virtio_free_vringh(struct pci_epf *epf,
 				struct pci_epf_vringh *evrh);
 
