@@ -304,8 +304,7 @@ static int epf_vnet_rc_device_setup(void *data)
 	sched_set_normal(vnet->rc.device_setup_task, 19);
 
 	vnet->rc.txvrh = pci_epf_virtio_alloc_vringh(epf, vnet->virtio.features,
-						     txpfn, vq_size,
-						     PCI_EPF_VQ_LOCATE_REMOTE);
+						     txpfn, vq_size);
 	if (IS_ERR(vnet->rc.txvrh)) {
 		pr_err("Failed to setup virtqueue\n");
 		return PTR_ERR(vnet->rc.txvrh);
@@ -319,8 +318,7 @@ static int epf_vnet_rc_device_setup(void *data)
 	vringh_kiov_init(&vnet->rc.tx_iov, kvec, vq_size);
 
 	vnet->rc.rxvrh = pci_epf_virtio_alloc_vringh(epf, vnet->virtio.features,
-						     rxpfn, vq_size,
-						     PCI_EPF_VQ_LOCATE_REMOTE);
+						     rxpfn, vq_size);
 	if (IS_ERR(vnet->rc.rxvrh)) {
 		pr_err("Failed to setup virtqueue\n");
 		return PTR_ERR(vnet->rc.rxvrh);
@@ -333,9 +331,8 @@ static int epf_vnet_rc_device_setup(void *data)
 	}
 	vringh_kiov_init(&vnet->rc.rx_iov, kvec, vq_size);
 
-	vnet->rc.ctlvrh =
-		pci_epf_virtio_alloc_vringh(epf, vnet->virtio.features, ctlpfn,
-					    vq_size, PCI_EPF_VQ_LOCATE_REMOTE);
+	vnet->rc.ctlvrh = pci_epf_virtio_alloc_vringh(
+		epf, vnet->virtio.features, ctlpfn, vq_size);
 	if (IS_ERR(vnet->rc.ctlvrh)) {
 		pr_err("failed to setup virtqueue\n");
 		return PTR_ERR(vnet->rc.ctlvrh);
