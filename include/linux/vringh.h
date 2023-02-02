@@ -302,4 +302,12 @@ int vringh_init_iotlb(struct vringh *vrh, u64 features,
 
 #endif /* CONFIG_VHOST_IOTLB */
 
+#if IS_REACHABLE(CONFIG_VHOST_IOMEM)
+
+int vringh_init_iomem(struct vringh *vrh, u64 features, unsigned int num,
+		      bool weak_barriers, gfp_t gfp, struct vring_desc *desc,
+		      struct vring_avail *avail, struct vring_used *used);
+
+#endif /* CONFIG_VHOST_IOMEM */
+
 #endif /* _LINUX_VRINGH_H */

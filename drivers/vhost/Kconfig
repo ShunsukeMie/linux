@@ -6,6 +6,12 @@ config VHOST_IOTLB
 	  This option is selected by any driver which needs to support
 	  an IOMMU in software.
 
+config VHOST_IOMEM
+	tristate
+	select VHOST_RING
+	help
+	  Generic IOMEM implementation for vhost and vringh.
+
 config VHOST_RING
 	tristate
 	select VHOST_IOTLB

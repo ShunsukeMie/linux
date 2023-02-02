@@ -18,6 +18,9 @@
 #include <linux/highmem.h>
 #include <linux/vhost_iotlb.h>
 #endif
+#if IS_REACHABLE(CONFIG_VHOST_IOMEM)
+#include <linux/io.h>
+#endif
 #include <uapi/linux/virtio_config.h>
 
 static __printf(1,2) __cold void vringh_bad(const char *fmt, ...)
@@ -1181,6 +1184,79 @@ void vringh_set_iotlb(struct vringh *vrh, struct vhost_iotlb *iotlb,
 	vrh->iotlb_lock = iotlb_lock;
 }
 EXPORT_SYMBOL(vringh_set_iotlb);
+
+#endif
+
+#if IS_REACHABLE(CONFIG_VHOST_IOMEM)
+
+/* io-memory space access helpers. */
+static int getu16_iomem(const struct vringh *vrh, u16 *val, const __virtio16 *p)
+{
+	*val = vringh16_to_cpu(vrh, ioread16(p));
+	return 0;
+}
+
+static int putu16_iomem(const struct vringh *vrh, __virtio16 *p, u16 val)
+{
+	iowrite16(cpu_to_vringh16(vrh, val), p);
+	return 0;
+}
+
+static int copydesc_iomem(const struct vringh *vrh, void *dst, const void *src,
+			  size_t len)
+{
+	memcpy_fromio(dst, src, len);
+	return 0;
+}
+
+static int putused_iomem(const struct vringh *vrh, struct vring_used_elem *dst,
+			 const struct vring_used_elem *src, unsigned int num)
+{
+	memcpy_toio(dst, src, num * sizeof(*dst));
+	return 0;
+}
+
+static int xfer_from_iomem(const struct vringh *vrh, void *src, void *dst,
+			   size_t len)
+{
+	memcpy_fromio(dst, src, len);
+	return 0;
+}
+
+static int xfer_to_iomem(const struct vringh *vrh, void *dst, void *src,
+			 size_t len)
+{
+	memcpy_toio(dst, src, len);
+	return 0;
+}
+
+static struct vringh_ops iomem_vringh_ops = {
+	.getu16 = getu16_iomem,
+	.putu16 = putu16_iomem,
+	.xfer_from = xfer_from_iomem,
+	.xfer_to = xfer_to_iomem,
+	.putused = putused_iomem,
+	.copydesc = copydesc_iomem,
+	.range_check = no_range_check,
+	.getrange = NULL,
+};
+
+int vringh_init_iomem(struct vringh *vrh, u64 features, unsigned int num,
+		      bool weak_barriers, gfp_t gfp, struct vring_desc *desc,
+		      struct vring_avail *avail, struct vring_used *used)
+{
+	int err;
+
+	err = __vringh_init(vrh, features, num, weak_barriers, gfp, desc, avail,
+			    used);
+	if (err)
+		return err;
+
+	memcpy(&vrh->ops, &iomem_vringh_ops, sizeof(iomem_vringh_ops));
+
+	return 0;
+}
+EXPORT_SYMBOL(vringh_init_iomem);
 
 #endif
 
