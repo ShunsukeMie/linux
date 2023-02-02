@@ -21,6 +21,36 @@
 #endif
 #include <asm/barrier.h>
 
+struct vringh;
+struct vringh_range;
+
+/**
+ * struct vringh_ops - ops for accessing a vring and checking to access range.
+ * @getu16: read u16 value from pointer
+ * @putu16: write u16 value to pointer
+ * @xfer_from: copy memory range from specified address to local virtual address
+ * @xfer_tio: copy memory range from local virtual address to specified address
+ * @putused: update vring used descriptor
+ * @copydesc: copy desiptor from target to local virtual address
+ * @range_check: check if the region is accessible
+ * @getrange: return a range that vring can access
+ */
+struct vringh_ops {
+	int (*getu16)(const struct vringh *vrh, u16 *val, const __virtio16 *p);
+	int (*putu16)(const struct vringh *vrh, __virtio16 *p, u16 val);
+	int (*xfer_from)(const struct vringh *vrh, void *src, void *dst,
+			 size_t len);
+	int (*xfer_to)(const struct vringh *vrh, void *dst, void *src,
+		       size_t len);
+	int (*putused)(const struct vringh *vrh, struct vring_used_elem *dst,
+		       const struct vring_used_elem *src, unsigned int num);
+	int (*copydesc)(const struct vringh *vrh, void *dst, const void *src,
+			size_t len);
+	bool (*range_check)(struct vringh *vrh, u64 addr, size_t *len,
+			    struct vringh_range *range);
+	bool (*getrange)(struct vringh *vrh, u64 addr, struct vringh_range *r);
+};
+
 /* virtio_ring with information needed for host access. */
 struct vringh {
 	/* Everything is little endian */
@@ -52,6 +82,10 @@ struct vringh {
 
 	/* The function to call to notify the guest about added buffers */
 	void (*notify)(struct vringh *);
+
+	struct vringh_ops ops;
+
+	gfp_t desc_gfp;
 };
 
 /**
@@ -111,7 +145,8 @@ int vringh_init_user(struct vringh *vrh, u64 features,
 		     unsigned int num, bool weak_barriers,
 		     vring_desc_t __user *desc,
 		     vring_avail_t __user *avail,
-		     vring_used_t __user *used);
+		     vring_used_t __user *used,
+			 bool (*getrange)(struct vringh *vrh, u64 addr, struct vringh_range *r));
 
 static inline void vringh_iov_init(struct vringh_iov *iov,
 				   struct iovec *iovec, unsigned num)
@@ -139,38 +174,36 @@ static inline void vringh_iov_cleanup(struct vringh_iov *iov)
 }
 
 /* Convert a descriptor into iovecs. */
-int vringh_getdesc_user(struct vringh *vrh,
-			struct vringh_iov *riov,
-			struct vringh_iov *wiov,
-			bool (*getrange)(struct vringh *vrh,
-					 u64 addr, struct vringh_range *r),
+int vringh_getdesc(struct vringh *vrh,
+			struct vringh_kiov *riov,
+			struct vringh_kiov *wiov,
 			u16 *head);
 
 /* Copy bytes from readable vsg, consuming it (and incrementing wiov->i). */
-ssize_t vringh_iov_pull_user(struct vringh_iov *riov, void *dst, size_t len);
+ssize_t vringh_iov_pull(struct vringh *vrh, struct vringh_kiov *riov, void *dst, size_t len);
 
 /* Copy bytes into writable vsg, consuming it (and incrementing wiov->i). */
-ssize_t vringh_iov_push_user(struct vringh_iov *wiov,
+ssize_t vringh_iov_push(struct vringh *vrh, struct vringh_kiov *wiov,
 			     const void *src, size_t len);
 
 /* Mark a descriptor as used. */
-int vringh_complete_user(struct vringh *vrh, u16 head, u32 len);
-int vringh_complete_multi_user(struct vringh *vrh,
+int vringh_complete(struct vringh *vrh, u16 head, u32 len);
+int vringh_complete_multi(struct vringh *vrh,
 			       const struct vring_used_elem used[],
 			       unsigned num_used);
 
 /* Pretend we've never seen descriptor (for easy error handling). */
-void vringh_abandon_user(struct vringh *vrh, unsigned int num);
+void vringh_abandon(struct vringh *vrh, unsigned int num);
 
 /* Do we need to fire the eventfd to notify the other side? */
-int vringh_need_notify_user(struct vringh *vrh);
+int vringh_need_notify(struct vringh *vrh);
 
-bool vringh_notify_enable_user(struct vringh *vrh);
-void vringh_notify_disable_user(struct vringh *vrh);
+bool vringh_notify_enable(struct vringh *vrh);
+void vringh_notify_disable(struct vringh *vrh);
 
 /* Helpers for kernelspace vrings. */
 int vringh_init_kern(struct vringh *vrh, u64 features,
-		     unsigned int num, bool weak_barriers,
+		     unsigned int num, bool weak_barriers, gfp_t gfp,
 		     struct vring_desc *desc,
 		     struct vring_avail *avail,
 		     struct vring_used *used);
@@ -212,23 +245,6 @@ static inline size_t vringh_kiov_length(struct vringh_kiov *kiov)
 }
 
 void vringh_kiov_advance(struct vringh_kiov *kiov, size_t len);
-
-int vringh_getdesc_kern(struct vringh *vrh,
-			struct vringh_kiov *riov,
-			struct vringh_kiov *wiov,
-			u16 *head,
-			gfp_t gfp);
-
-ssize_t vringh_iov_pull_kern(struct vringh_kiov *riov, void *dst, size_t len);
-ssize_t vringh_iov_push_kern(struct vringh_kiov *wiov,
-			     const void *src, size_t len);
-void vringh_abandon_kern(struct vringh *vrh, unsigned int num);
-int vringh_complete_kern(struct vringh *vrh, u16 head, u32 len);
-
-bool vringh_notify_enable_kern(struct vringh *vrh);
-void vringh_notify_disable_kern(struct vringh *vrh);
-
-int vringh_need_notify_kern(struct vringh *vrh);
 
 /* Notify the guest about buffers added to the used ring */
 static inline void vringh_notify(struct vringh *vrh)
@@ -279,32 +295,10 @@ void vringh_set_iotlb(struct vringh *vrh, struct vhost_iotlb *iotlb,
 		      spinlock_t *iotlb_lock);
 
 int vringh_init_iotlb(struct vringh *vrh, u64 features,
-		      unsigned int num, bool weak_barriers,
+		      unsigned int num, bool weak_barriers, gfp_t gfp,
 		      struct vring_desc *desc,
 		      struct vring_avail *avail,
 		      struct vring_used *used);
-
-int vringh_getdesc_iotlb(struct vringh *vrh,
-			 struct vringh_kiov *riov,
-			 struct vringh_kiov *wiov,
-			 u16 *head,
-			 gfp_t gfp);
-
-ssize_t vringh_iov_pull_iotlb(struct vringh *vrh,
-			      struct vringh_kiov *riov,
-			      void *dst, size_t len);
-ssize_t vringh_iov_push_iotlb(struct vringh *vrh,
-			      struct vringh_kiov *wiov,
-			      const void *src, size_t len);
-
-void vringh_abandon_iotlb(struct vringh *vrh, unsigned int num);
-
-int vringh_complete_iotlb(struct vringh *vrh, u16 head, u32 len);
-
-bool vringh_notify_enable_iotlb(struct vringh *vrh);
-void vringh_notify_disable_iotlb(struct vringh *vrh);
-
-int vringh_need_notify_iotlb(struct vringh *vrh);
 
 #endif /* CONFIG_VHOST_IOTLB */
 
