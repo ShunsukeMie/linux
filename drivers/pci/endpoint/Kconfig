@@ -28,6 +28,13 @@ config PCI_ENDPOINT_CONFIGFS
 	   configure the endpoint function and used to bind the
 	   function with a endpoint controller.
 
+config PCI_ENDPOINT_VIRTIO
+	tristate
+	depends on PCI_ENDPOINT
+	select VHOST_IOMEM
+	help
+	  TODO update this comment
+
 source "drivers/pci/endpoint/functions/Kconfig"
 
 endmenu
