@@ -525,16 +525,12 @@ int epf_vnet_rc_setup(struct epf_vnet *vnet)
 
 	err = pci_epc_write_header(epf->epc, epf->func_no, epf->vfunc_no,
 				   &epf_vnet_pci_header);
-	if (err) {
-		pr_err("Failed to setup pci header\n");
+	if (err)
 		return err;
-	}
 
 	err = epf_vnet_setup_bar(vnet);
-	if (err) {
-		pr_err("Failed to setup PCI BAR\n");
+	if (err)
 		return err;
-	}
 
 	vnet->rc.tx_wq =
 		alloc_workqueue("pci-epf-vnet/tx-wq",
