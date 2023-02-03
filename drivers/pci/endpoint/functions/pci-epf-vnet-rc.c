@@ -528,17 +528,19 @@ int epf_vnet_rc_setup(struct epf_vnet *vnet)
 				WQ_MEM_RECLAIM | WQ_HIGHPRI | WQ_UNBOUND, 0);
 	if (!vnet->rc.tx_wq) {
 		pr_err("Failed to allocate workqueue for rc -> ep transmission\n");
-		return -ENOMEM;
+		err = -ENOMEM;
+		goto err_cleanup_bar;
 	}
 
 	INIT_WORK(&vnet->rc.tx_work, epf_vnet_rc_tx_handler);
-	//TODO setup workqueues for tx and irq
 
 	vnet->rc.irq_wq =
 		alloc_workqueue("pci-epf-vnet/irq-wq",
 				WQ_MEM_RECLAIM | WQ_HIGHPRI | WQ_UNBOUND, 0);
-	if (!vnet->rc.irq_wq)
-		return -ENOMEM;
+	if (!vnet->rc.irq_wq) {
+		err = -ENOMEM;
+		goto err_destory_tx_wq;
+	}
 
 	INIT_WORK(&vnet->rc.raise_irq_work, epf_vnet_rc_raise_irq_handler);
 
@@ -547,10 +549,26 @@ int epf_vnet_rc_setup(struct epf_vnet *vnet)
 				WQ_MEM_RECLAIM | WQ_HIGHPRI | WQ_UNBOUND, 0);
 	if (!vnet->rc.ctl_wq) {
 		pr_err("Failed to allocate work queue for control queue processing\n");
-		return -ENOMEM;
+		err = -ENOMEM;
+		goto err_destory_irq_wq;
 	}
 
 	INIT_WORK(&vnet->rc.ctl_work, epf_vnet_rc_process_ctrlq_entry);
 
-	return epf_vnet_rc_spawn_device_setup_task(vnet);
+	err = epf_vnet_rc_spawn_device_setup_task(vnet);
+	if (err)
+		goto err_destory_ctl_wq;
+
+	return 0;
+
+err_cleanup_bar:
+	epf_vnet_cleanup_bar(vnet);
+err_destory_tx_wq:
+	destroy_workqueue(vnet->rc.tx_wq);
+err_destory_irq_wq:
+	destroy_workqueue(vnet->rc.irq_wq);
+err_destory_ctl_wq:
+	destroy_workqueue(vnet->rc.ctl_wq);
+
+	return err;
 }
