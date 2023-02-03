@@ -156,6 +156,20 @@ static void epf_vnet_dma_callback(void *p)
 	kfree(param);
 }
 
+/**
+ * epf_vnet_transfer() - transfer data between tx vring to rx vring using edma
+ * @vnet: epf virtio net device to do dma
+ * @tx_vrh: vringh related to source tx vring
+ * @rx_vrh: vringh related to target rx vring
+ * @tx_iov: buffer to use tx
+ * @rx_iov: buffer to use rx
+ * @dir: a direction of DMA. local to remote or local from remote
+ *
+ * This function returns 0, 1 or error number. The 0 indicates there is not
+ * data to send. The 1 indicates a request to DMA is succeeded. Other error
+ * numbers shows error, however, ENOSPC means there is no buffer on target
+ * vring, so should retry to call later.
+ */
 int epf_vnet_transfer(struct epf_vnet *vnet, struct vringh *tx_vrh,
 		      struct vringh *rx_vrh, struct vringh_kiov *tx_iov,
 		      struct vringh_kiov *rx_iov,
@@ -175,16 +189,19 @@ int epf_vnet_transfer(struct epf_vnet *vnet, struct vringh *tx_vrh,
 
 	err = vringh_getdesc(rx_vrh, NULL, rx_iov, &rx_head);
 	if (err < 0) {
-		pr_debug("Failed to get vring descriptor\n");
-		return err;
+		goto err_tx_complete;
 	} else if (!err) {
-		// No data in vring
-		return 0;
+		/* There is not space on destination vring to transmit data, so rollback
+		 * tx vringh */
+		vringh_abandon(tx_vrh, tx_head);
+		return -ENOSPC;
 	}
 
 	cb_param = kmalloc(sizeof *cb_param, GFP_KERNEL);
-	if (!cb_param)
-		return -ENOMEM;
+	if (!cb_param) {
+		err = -ENOMEM;
+		goto err_rx_complete;
+	}
 
 	cb_param->tx_vrh = tx_vrh;
 	cb_param->rx_vrh = rx_vrh;
@@ -205,7 +222,8 @@ int epf_vnet_transfer(struct epf_vnet *vnet, struct vringh *tx_vrh,
 		cb_param->vq = vnet->ep.rxvq;
 		break;
 	default:
-		return -EINVAL;
+		err = -EINVAL;
+		goto err_free_param;
 	}
 
 	for (; tx_iov->i < tx_iov->used; tx_iov->i++, rx_iov->i++) {
@@ -220,11 +238,22 @@ int epf_vnet_transfer(struct epf_vnet *vnet, struct vringh *tx_vrh,
 		if (tx_iov->i + 1 == tx_iov->used)
 			callback = epf_vnet_dma_callback;
 
-		epf_vnet_dma_single(vnet, rbase, lbase, len, callback, cb_param,
-				    dir);
+		err = epf_vnet_dma_single(vnet, rbase, lbase, len, callback,
+					  cb_param, dir);
+		if (err)
+			goto err_free_param;
 	}
 
 	return 1;
+
+err_free_param:
+	kfree(cb_param);
+err_rx_complete:
+	vringh_complete(rx_vrh, rx_head, vringh_kiov_length(rx_iov));
+err_tx_complete:
+	vringh_complete(tx_vrh, tx_head, total_tx_len);
+
+	return err;
 }
 
 static int epf_vnet_bind(struct pci_epf *epf)
@@ -233,10 +262,8 @@ static int epf_vnet_bind(struct pci_epf *epf)
 	struct epf_vnet *vnet = epf_get_drvdata(epf);
 
 	err = epf_vnet_init_edma(vnet, epf->epc->dev.parent);
-	if (err) {
-		pr_info("Cannot find PCIe Embedded DMA controller.\n");
+	if (err)
 		return err;
-	}
 
 	err = epf_vnet_rc_setup(vnet);
 	if (err)
@@ -279,9 +306,14 @@ static void epf_vnet_virtio_init(struct epf_vnet *vnet)
 {
 	vnet->virtio_features =
 		BIT(VIRTIO_NET_F_MTU) | BIT(VIRTIO_NET_F_STATUS) |
+		/* Following features are to skip any of checking and offloading, Like a
+		 * transmission between virtual machines on same system. Details are on
+		 * section 5.1.5 in virtio specification. */
 		BIT(VIRTIO_NET_F_GUEST_CSUM) | BIT(VIRTIO_NET_F_GUEST_TSO4) |
 		BIT(VIRTIO_NET_F_GUEST_TSO6) | BIT(VIRTIO_NET_F_GUEST_ECN) |
-		BIT(VIRTIO_NET_F_GUEST_UFO) | BIT(VIRTIO_NET_F_CTRL_VQ);
+		BIT(VIRTIO_NET_F_GUEST_UFO) |
+		// The control queue is just used for linkup announcement.
+		BIT(VIRTIO_NET_F_CTRL_VQ);
 
 	vnet->vnet_cfg.max_virtqueue_pairs = 1;
 	vnet->vnet_cfg.status = 0;
