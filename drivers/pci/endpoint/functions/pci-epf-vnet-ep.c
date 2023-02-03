@@ -87,11 +87,6 @@ done:
 	return err;
 }
 
-static void epf_vnet_ep_vdev_release(struct device *dev)
-{
-	pr_info("%s:%d\n", __func__, __LINE__);
-}
-
 static u64 epf_vnet_ep_vdev_get_features(struct virtio_device *vdev)
 {
 	struct epf_vnet *vnet = vdev_to_vnet(vdev);
@@ -317,7 +312,6 @@ int epf_vnet_ep_setup(struct epf_vnet *vnet)
 	struct virtio_device *vdev = &vnet->ep.vdev;
 
 	vdev->dev.parent = vnet->epf->epc->dev.parent;
-	vdev->dev.release = epf_vnet_ep_vdev_release;
 	vdev->config = &epf_vnet_ep_vdev_config_ops;
 	vdev->id.vendor = PCI_VENDOR_ID_REDHAT_QUMRANET;
 	vdev->id.device = VIRTIO_ID_NET;
