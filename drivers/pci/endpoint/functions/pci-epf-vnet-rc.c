@@ -335,9 +335,7 @@ static int epf_vnet_rc_device_setup(void *data)
 		return err;
 	}
 
-	return 0;
-
-	//TODO write error handling
+	kthread_exit(0);
 }
 
 static int epf_vnet_rc_spawn_device_setup_task(struct epf_vnet *vnet)
