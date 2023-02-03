@@ -197,24 +197,6 @@ static bool epf_vnet_ep_vdev_vq_notify(struct virtqueue *vq)
 	return true;
 }
 
-static int epf_vnet_ep_init_kiov(struct vringh_kiov *kiov, const size_t vq_size)
-{
-	struct kvec *kvec;
-
-	kvec = kmalloc_array(vq_size, sizeof *kvec, GFP_KERNEL);
-	if (!kvec)
-		return -ENOMEM;
-
-	vringh_kiov_init(kiov, kvec, vq_size);
-
-	return 0;
-}
-
-static void epf_vnet_ep_deinit_kiov(struct vringh_kiov *kiov)
-{
-	kfree(kiov->iov);
-}
-
 static int epf_vnet_ep_vdev_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 				     struct virtqueue *vqs[],
 				     vq_callback_t *callback[],
@@ -276,26 +258,26 @@ static int epf_vnet_ep_vdev_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 		}
 	}
 
-	err = epf_vnet_ep_init_kiov(&vnet->ep.tx_iov, vq_size);
+	err = epf_vnet_init_kiov(&vnet->ep.tx_iov, vq_size);
 	if (err)
 		goto err_free_kiov;
-	err = epf_vnet_ep_init_kiov(&vnet->ep.rx_iov, vq_size);
+	err = epf_vnet_init_kiov(&vnet->ep.rx_iov, vq_size);
 	if (err)
 		goto err_free_kiov;
-	err = epf_vnet_ep_init_kiov(&vnet->ep.ctl_riov, vq_size);
+	err = epf_vnet_init_kiov(&vnet->ep.ctl_riov, vq_size);
 	if (err)
 		goto err_free_kiov;
-	err = epf_vnet_ep_init_kiov(&vnet->ep.ctl_wiov, vq_size);
+	err = epf_vnet_init_kiov(&vnet->ep.ctl_wiov, vq_size);
 	if (err)
 		goto err_free_kiov;
 
 	return 0;
 
 err_free_kiov:
-	epf_vnet_ep_deinit_kiov(&vnet->ep.tx_iov);
-	epf_vnet_ep_deinit_kiov(&vnet->ep.rx_iov);
-	epf_vnet_ep_deinit_kiov(&vnet->ep.ctl_riov);
-	epf_vnet_ep_deinit_kiov(&vnet->ep.ctl_wiov);
+	epf_vnet_deinit_kiov(&vnet->ep.tx_iov);
+	epf_vnet_deinit_kiov(&vnet->ep.rx_iov);
+	epf_vnet_deinit_kiov(&vnet->ep.ctl_riov);
+	epf_vnet_deinit_kiov(&vnet->ep.ctl_wiov);
 
 err_del_vqs:
 	for (; i >= 0; i--) {
@@ -318,10 +300,10 @@ static void epf_vnet_ep_vdev_del_vqs(struct virtio_device *vdev)
 	list_for_each_entry_safe(vq, n, &vdev->vqs, list)
 		vring_del_virtqueue(vq);
 
-	epf_vnet_ep_deinit_kiov(&vnet->ep.tx_iov);
-	epf_vnet_ep_deinit_kiov(&vnet->ep.rx_iov);
-	epf_vnet_ep_deinit_kiov(&vnet->ep.ctl_riov);
-	epf_vnet_ep_deinit_kiov(&vnet->ep.ctl_wiov);
+	epf_vnet_deinit_kiov(&vnet->ep.tx_iov);
+	epf_vnet_deinit_kiov(&vnet->ep.rx_iov);
+	epf_vnet_deinit_kiov(&vnet->ep.ctl_riov);
+	epf_vnet_deinit_kiov(&vnet->ep.ctl_wiov);
 }
 
 static const struct virtio_config_ops epf_vnet_ep_vdev_config_ops = {

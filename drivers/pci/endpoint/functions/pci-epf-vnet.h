@@ -47,6 +47,8 @@ int epf_vnet_ep_setup(struct epf_vnet *vnet);
 void epf_vnet_ep_cleanup(struct epf_vnet *vnet);
 
 int epf_vnet_get_vq_size(void);
+int epf_vnet_init_kiov(struct vringh_kiov *kiov, const size_t vq_size);
+void epf_vnet_deinit_kiov(struct vringh_kiov *kiov);
 int epf_vnet_transfer(struct epf_vnet *vnet, struct vringh *tx_vrh,
 		      struct vringh *rx_vrh, struct vringh_kiov *tx_iov,
 		      struct vringh_kiov *rx_iov,

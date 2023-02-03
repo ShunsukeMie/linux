@@ -19,6 +19,24 @@ int epf_vnet_get_vq_size(void)
 	return virtio_queue_size;
 }
 
+int epf_vnet_init_kiov(struct vringh_kiov *kiov, const size_t vq_size)
+{
+	struct kvec *kvec;
+
+	kvec = kmalloc_array(vq_size, sizeof *kvec, GFP_KERNEL);
+	if (!kvec)
+		return -ENOMEM;
+
+	vringh_kiov_init(kiov, kvec, vq_size);
+
+	return 0;
+}
+
+void epf_vnet_ep_deinit_kiov(struct vringh_kiov *kiov)
+{
+	kfree(kiov->iov);
+}
+
 void epf_vnet_init_complete(struct epf_vnet *vnet, u8 from)
 {
 	vnet->init_complete |= from;
