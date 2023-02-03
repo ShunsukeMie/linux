@@ -434,42 +434,37 @@ static void epf_vnet_rc_epc_munmap(struct pci_epf *epf,
 	kfree(meminfo);
 }
 
-static void epf_vnet_rc_process_ctrlq_entry(struct work_struct *work)
+static int epf_vnet_rc_process_ctrlq_entry(struct epf_vnet *vnet)
 {
-	struct epf_vnet *vnet =
-		container_of(work, struct epf_vnet, rc.ctl_work);
+	struct vringh_kiov *riov = &vnet->rc.ctl_riov;
+	struct vringh_kiov *wiov = &vnet->rc.ctl_wiov;
+	struct vringh *vrh = &vnet->rc.ctlvrh->vrh;
+	struct pci_epf *epf = vnet->epf;
+	struct epf_vnet_rc_meminfo *rmem, *wmem;
+	struct virtio_net_ctrl_hdr *hdr;
 	int err;
 	u16 head;
 	size_t total_len;
-	struct virtio_net_ctrl_hdr *hdr;
-	struct pci_epf *epf = vnet->epf;
-	struct vringh *vrh = &vnet->rc.ctlvrh->vrh;
-	struct vringh_kiov *riov = &vnet->rc.ctl_riov;
-	struct vringh_kiov *wiov = &vnet->rc.ctl_wiov;
 	u8 class, cmd;
-	struct epf_vnet_rc_meminfo *rmem, *wmem;
 
 	err = vringh_getdesc(vrh, riov, wiov, &head);
-	if (err < 0) {
-		pr_err("%s failed to get vq content: %d\n", __func__, err);
-		return;
-	} else if (!err) {
-		// no entry
-		return;
-	}
+	if (err <= 0)
+		return err;
 
 	total_len = vringh_kiov_length(riov);
 
 	rmem = epf_vnet_rc_epc_mmap(epf, (u64)riov->iov[riov->i].iov_base,
 				    riov->iov[riov->i].iov_len);
 	if (!rmem) {
-		//TODO
+		err = -ENOMEM;
+		goto err_abandon_descs;
 	}
 
 	wmem = epf_vnet_rc_epc_mmap(epf, (u64)wiov->iov[wiov->i].iov_base,
 				    wiov->iov[wiov->i].iov_len);
 	if (!wmem) {
-		//TODO
+		err = -ENOMEM;
+		goto err_epc_unmap_rmem;
 	}
 
 	hdr = rmem->addr;
@@ -479,7 +474,7 @@ static void epf_vnet_rc_process_ctrlq_entry(struct work_struct *work)
 	case VIRTIO_NET_CTRL_ANNOUNCE:
 		if (cmd != VIRTIO_NET_CTRL_ANNOUNCE_ACK) {
 			pr_err("Found invalid command: announce: %d\n", cmd);
-			goto out_munmap;
+			break;
 		}
 		epf_vnet_rc_clear_config16(
 			vnet,
@@ -496,11 +491,27 @@ static void epf_vnet_rc_process_ctrlq_entry(struct work_struct *work)
 		break;
 	}
 
-out_munmap:
 	epf_vnet_rc_epc_munmap(epf, rmem);
 	epf_vnet_rc_epc_munmap(epf, wmem);
-
 	vringh_complete(vrh, head, total_len);
+
+	return 1;
+
+err_epc_unmap_rmem:
+	epf_vnet_rc_epc_munmap(epf, rmem);
+err_abandon_descs:
+	vringh_abandon(vrh, head);
+
+	return err;
+}
+
+static void epf_vnet_rc_process_ctrlq_entries(struct work_struct *work)
+{
+	struct epf_vnet *vnet =
+		container_of(work, struct epf_vnet, rc.ctl_work);
+
+	while (epf_vnet_rc_process_ctrlq_entry(vnet) > 0)
+		;
 }
 
 void epf_vnet_rc_notify(struct epf_vnet *vnet)
@@ -562,7 +573,7 @@ int epf_vnet_rc_setup(struct epf_vnet *vnet)
 		goto err_destory_irq_wq;
 	}
 
-	INIT_WORK(&vnet->rc.ctl_work, epf_vnet_rc_process_ctrlq_entry);
+	INIT_WORK(&vnet->rc.ctl_work, epf_vnet_rc_process_ctrlq_entries);
 
 	err = epf_vnet_rc_spawn_device_setup_task(vnet);
 	if (err)
