@@ -38,12 +38,12 @@ void epf_vnet_ep_announce_linkup(struct epf_vnet *vnet)
 
 static int epf_vnet_ep_process_ctrlq_entry(struct epf_vnet *vnet)
 {
+	struct vringh *vrh = &vnet->ep.ctlvrh;
+	struct virtio_net_ctrl_hdr *hdr;
 	int err;
 	u16 head;
-	struct virtio_net_ctrl_hdr *hdr;
 	size_t len;
 
-	struct vringh *vrh = &vnet->ep.ctlvrh;
 	struct vringh_kiov *wiov = &vnet->ep.ctl_iov;
 	struct vringh_kiov riov;
 
@@ -76,8 +76,7 @@ static int epf_vnet_ep_process_ctrlq_entry(struct epf_vnet *vnet)
 	switch (hdr->class) {
 	case VIRTIO_NET_CTRL_ANNOUNCE:
 		if (hdr->cmd != VIRTIO_NET_CTRL_ANNOUNCE_ACK) {
-			pr_err("Found invalid command: announce: %d\n",
-			       hdr->cmd);
+			pr_debug("Invalid command: announce: %d\n", hdr->cmd);
 			goto done;
 		}
 		epf_vnet_ep_clear_status(vnet, VIRTIO_NET_S_ANNOUNCE);
@@ -87,12 +86,13 @@ static int epf_vnet_ep_process_ctrlq_entry(struct epf_vnet *vnet)
 				 (unsigned long)wiov->iov[wiov->i].iov_base));
 		break;
 	default:
-		pr_err("Found not supported class: %d\n", hdr->class);
+		pr_debug("Found not supported class: %d\n", hdr->class);
+		err = -EIO;
 	}
 
 done:
 	vringh_complete(vrh, head, len);
-	return 0;
+	return err;
 }
 
 static void epf_vnet_ep_vdev_release(struct device *dev)
@@ -207,11 +207,11 @@ static int epf_vnet_ep_vdev_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 {
 	int i;
 	int err;
-	int qidx = 0;
+	int qidx;
 	struct epf_vnet *vnet = vdev_to_vnet(vdev);
 	const size_t vq_size = epf_vnet_get_vq_size();
 
-	for (i = 0; i < nvqs; i++) {
+	for (qidx = 0, i = 0; i < nvqs; i++) {
 		struct virtqueue *vq;
 		struct vring *vring;
 		struct vringh *vrh;
@@ -275,6 +275,7 @@ static int epf_vnet_ep_vdev_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 	}
 
 	epf_vnet_init_complete(vnet, EPF_VNET_INIT_COMPLETE_EP);
+
 	return 0;
 
 err_del_vqs:
