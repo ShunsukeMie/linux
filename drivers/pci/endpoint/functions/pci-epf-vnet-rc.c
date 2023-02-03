@@ -226,6 +226,9 @@ static int epf_vnet_rc_negotiate_configs(struct epf_vnet *vnet, u32 *txpfn,
 		}
 	}
 
+	if (!*rxpfn || !*txpfn || !*ctlpfn)
+		return -EIO;
+
 	return 0;
 }
 
