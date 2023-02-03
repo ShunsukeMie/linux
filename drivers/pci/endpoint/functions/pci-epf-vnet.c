@@ -81,6 +81,12 @@ static int epf_vnet_init_edma(struct epf_vnet *vnet, struct device *dma_dev)
 	return 0;
 }
 
+static void epf_vnet_deinit_edma(struct epf_vnet *vnet)
+{
+	dma_release_channel(vnet->lr_dma_chan);
+	dma_release_channel(vnet->rl_dma_chan);
+}
+
 static int epf_vnet_dma_single(struct epf_vnet *vnet, phys_addr_t pci,
 			       dma_addr_t dma, size_t len,
 			       void (*callback)(void *), void *param,
@@ -241,13 +247,18 @@ static int epf_vnet_bind(struct pci_epf *epf)
 
 	err = epf_vnet_rc_setup(vnet);
 	if (err)
-		return err;
+		goto err_free_edma;
 
 	err = epf_vnet_ep_setup(vnet);
 	if (err)
 		return err;
 
 	return 0;
+
+err_free_edma:
+	epf_vnet_deinit_edma(vnet);
+
+	return err;
 }
 
 static void epf_vnet_unbind(struct pci_epf *epf)
