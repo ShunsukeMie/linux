@@ -109,15 +109,15 @@ static void epf_vnet_ep_vdev_get_config(struct virtio_device *vdev,
 					unsigned len)
 {
 	struct epf_vnet *vnet = vdev_to_vnet(vdev);
-	unsigned copy_len;
 	const unsigned mac_len = sizeof vnet->vnet_cfg.mac;
 	const unsigned status_len = sizeof vnet->vnet_cfg.status;
+	unsigned copy_len;
 
 	switch (offset) {
 	case offsetof(struct virtio_net_config, mac):
+		/* This PCIe EP function doesn't provide a VIRTIO_NET_F_MAC feature, so just
+		 * clear the buffer. */
 		copy_len = len >= mac_len ? mac_len : len;
-		// this EP function doesn't provide a VIRTIO_NET_F_MAC feature, so just
-		// clear the buffer.
 		memset(buf, 0x00, copy_len);
 		len -= copy_len;
 		buf += copy_len;
