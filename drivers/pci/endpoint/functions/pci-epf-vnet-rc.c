@@ -194,8 +194,8 @@ static int epf_vnet_rc_negotiate_configs(struct epf_vnet *vnet, u32 *txpfn,
 
 	*rxpfn = *txpfn = *ctlpfn = 0;
 
-	/* To avoid to read pfn and selector for virtqueue wrote from host,
-	 * we need to implement fast polling with saving.
+	/* To avoid to miss a getting the pfn and selector for virtqueue wrote by
+	 * host driver, we need to implement fast polling with saving.
 	 *
 	 * This implementation suspects that the host driver writes pfn only once
 	 * for each queues */
@@ -246,6 +246,9 @@ static int epf_vnet_rc_monitor_notify(void *data)
 
 	epf_vnet_init_complete(vnet, EPF_VNET_INIT_COMPLETE_RC);
 
+	/* Poll to detect a change of the queue_notify register. Sometimes this
+	 * polling misses the change, so try to check each virtqueues
+	 * everytime. */
 	while (true) {
 		while (ioread16(queue_notify) == notify_default)
 			;
@@ -266,6 +269,7 @@ static int epf_vnet_rc_spawn_notify_monitor(struct epf_vnet *vnet)
 	if (IS_ERR(vnet->rc.notify_monitor_task))
 		return PTR_ERR(vnet->rc.notify_monitor_task);
 
+	/* Change the thread priority to high for polling. */
 	sched_set_fifo(vnet->rc.notify_monitor_task);
 	wake_up_process(vnet->rc.notify_monitor_task);
 
@@ -283,16 +287,17 @@ static int epf_vnet_rc_device_setup(void *data)
 
 	err = epf_vnet_rc_negotiate_configs(vnet, &txpfn, &rxpfn, &ctlpfn);
 	if (err) {
-		pr_err("Failed to negatiate configs with driver\n");
+		pr_debug("Failed to negatiate configs with driver\n");
 		return err;
 	}
 
+	/* Polling phase is finished. This thread backs to normal priority. */
 	sched_set_normal(vnet->rc.device_setup_task, 19);
 
 	vnet->rc.txvrh = pci_epf_virtio_alloc_vringh(epf, vnet->virtio_features,
 						     txpfn, vq_size);
 	if (IS_ERR(vnet->rc.txvrh)) {
-		pr_err("Failed to setup virtqueue\n");
+		pr_debug("Failed to setup virtqueue for tx\n");
 		return PTR_ERR(vnet->rc.txvrh);
 	}
 
@@ -354,6 +359,7 @@ static int epf_vnet_rc_spawn_device_setup_task(struct epf_vnet *vnet)
 	if (IS_ERR(vnet->rc.device_setup_task))
 		return PTR_ERR(vnet->rc.device_setup_task);
 
+	/* Change the thread priority to high for the polling. */
 	sched_set_fifo(vnet->rc.device_setup_task);
 	wake_up_process(vnet->rc.device_setup_task);
 
@@ -389,6 +395,7 @@ struct epf_vnet_rc_meminfo {
 	size_t len;
 };
 
+/* Util function to access PCIe host side memory from local CPU.  */
 static struct epf_vnet_rc_meminfo *
 epf_vnet_rc_epc_mmap(struct pci_epf *epf, phys_addr_t pci_addr, size_t len)
 {
@@ -400,7 +407,7 @@ epf_vnet_rc_epc_mmap(struct pci_epf *epf, phys_addr_t pci_addr, size_t len)
 
 	err = pci_epc_mem_align(epf->epc, pci_addr, len, &aaddr, &asize);
 	if (err) {
-		pr_info("error at EPC memory: %d\n", err);
+		pr_debug("Failed to get EPC align: %d\n", err);
 		return NULL;
 	}
 
@@ -408,7 +415,7 @@ epf_vnet_rc_epc_mmap(struct pci_epf *epf, phys_addr_t pci_addr, size_t len)
 
 	virt_addr = pci_epc_mem_alloc_addr(epf->epc, &phys_addr, asize);
 	if (!virt_addr) {
-		pr_err("Failed to allocate epc memory\n");
+		pr_debug("Failed to allocate epc memory\n");
 		return NULL;
 	}
 
@@ -556,7 +563,8 @@ int epf_vnet_rc_setup(struct epf_vnet *vnet)
 		alloc_workqueue("pci-epf-vnet/tx-wq",
 				WQ_MEM_RECLAIM | WQ_HIGHPRI | WQ_UNBOUND, 0);
 	if (!vnet->rc.tx_wq) {
-		pr_err("Failed to allocate workqueue for rc -> ep transmission\n");
+		pr_debug(
+			"Failed to allocate workqueue for rc -> ep transmission\n");
 		err = -ENOMEM;
 		goto err_cleanup_bar;
 	}
@@ -567,6 +575,7 @@ int epf_vnet_rc_setup(struct epf_vnet *vnet)
 		alloc_workqueue("pci-epf-vnet/irq-wq",
 				WQ_MEM_RECLAIM | WQ_HIGHPRI | WQ_UNBOUND, 0);
 	if (!vnet->rc.irq_wq) {
+		pr_debug("Failed to allocate workqueue for irq\n");
 		err = -ENOMEM;
 		goto err_destory_tx_wq;
 	}
