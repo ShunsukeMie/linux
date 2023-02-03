@@ -14,6 +14,7 @@
 
 static int virtio_queue_size = 0x100;
 module_param(virtio_queue_size, int, S_IRUGO);
+MODULE_PARM_DESC(virtio_queue_size, "A length of virtqueue");
 
 int epf_vnet_get_vq_size(void)
 {
