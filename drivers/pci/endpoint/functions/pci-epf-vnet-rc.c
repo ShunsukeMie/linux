@@ -15,7 +15,7 @@
 /* Returns an out side of the valid queue index. */
 static inline u16 epf_vnet_rc_get_default_queue_index(struct epf_vnet *vnet)
 {
-	// number of queue pairs and control queue
+	/* number of queue pairs and control queue */
 	return vnet->vnet_cfg.max_virtqueue_pairs * 2 + 1;
 }
 
@@ -74,7 +74,7 @@ void epf_vnet_rc_announce_linkup(struct epf_vnet *vnet)
  * For the PCIe host, this driver shows legacy virtio-net device. Because,
  * virtio structure pci capabilities is mandatory for modern virtio device,
  * but there is no PCIe EP hardware that can be configured with any pci
- * capabilities and Linux PCIe EP framework doesn't support it.  */
+ * capabilities and Linux PCIe EP framework doesn't support it. */
 static struct pci_epf_header epf_vnet_pci_header = {
 	.vendorid = PCI_VENDOR_ID_REDHAT_QUMRANET,
 	.deviceid = VIRTIO_TRANS_ID_NET,
@@ -130,19 +130,19 @@ static int epf_vnet_setup_bar(struct epf_vnet *vnet)
 
 	features = pci_epc_get_features(epf->epc, epf->func_no, epf->vfunc_no);
 	if (!features) {
-		pr_err("Failed to get PCI EPC features\n");
+		pr_debug("Failed to get PCI EPC features\n");
 		return -EOPNOTSUPP;
 	}
 
 	if (features->reserved_bar & BIT(VIRTIO_NET_LEGACY_CFG_BAR)) {
-		pr_err("Cannot use the PCI BAR for legacy virtio pci\n");
+		pr_debug("Cannot use the PCI BAR for legacy virtio pci\n");
 		return -EOPNOTSUPP;
 	}
 
 	if (features->bar_fixed_size[VIRTIO_NET_LEGACY_CFG_BAR]) {
 		if (cfg_bar_size >
 		    features->bar_fixed_size[VIRTIO_NET_LEGACY_CFG_BAR]) {
-			pr_err("PCI BAR size is not enough\n");
+			pr_debug("PCI BAR size is not enough\n");
 			return -ENOMEM;
 		}
 	}
@@ -154,7 +154,7 @@ static int epf_vnet_setup_bar(struct epf_vnet *vnet)
 						features->align,
 						PRIMARY_INTERFACE);
 	if (!vnet->rc.cfg_base) {
-		pr_err("Failed to allocate virtio-net config memory\n");
+		pr_debug("Failed to allocate virtio-net config memory\n");
 		return -ENOMEM;
 	}
 
@@ -163,7 +163,7 @@ static int epf_vnet_setup_bar(struct epf_vnet *vnet)
 	err = pci_epc_set_bar(epf->epc, epf->func_no, epf->vfunc_no,
 			      config_bar);
 	if (err) {
-		pr_err("Failed to set PCI BAR");
+		pr_debug("Failed to set PCI BAR");
 		goto err_free_space;
 	}
 
