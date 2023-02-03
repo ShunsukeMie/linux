@@ -141,7 +141,7 @@ static void epf_vnet_ep_vdev_set_config(struct virtio_device *vdev,
 					unsigned int offset, const void *buf,
 					unsigned len)
 {
-	pr_info("%s:%d\n", __func__, __LINE__);
+	/* Do nothing, because all of virtio net config space is readonly. */
 }
 
 static u8 epf_vnet_ep_vdev_get_status(struct virtio_device *vdev)
@@ -159,7 +159,7 @@ static void epf_vnet_ep_vdev_set_status(struct virtio_device *vdev, u8 status)
 
 static void epf_vnet_ep_vdev_reset(struct virtio_device *vdev)
 {
-	pr_info("%s:%d\n", __func__, __LINE__);
+	pr_debug("doesn't support yet");
 }
 
 static bool epf_vnet_ep_vdev_vq_notify(struct virtqueue *vq)
