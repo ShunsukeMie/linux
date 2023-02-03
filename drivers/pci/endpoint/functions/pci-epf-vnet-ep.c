@@ -39,39 +39,33 @@ void epf_vnet_ep_announce_linkup(struct epf_vnet *vnet)
 static int epf_vnet_ep_process_ctrlq_entry(struct epf_vnet *vnet)
 {
 	struct vringh *vrh = &vnet->ep.ctlvrh;
+	struct vringh_kiov *wiov = &vnet->ep.ctl_riov;
+	struct vringh_kiov *riov = &vnet->ep.ctl_wiov;
 	struct virtio_net_ctrl_hdr *hdr;
+	virtio_net_ctrl_ack *ack;
 	int err;
 	u16 head;
 	size_t len;
 
-	struct vringh_kiov *wiov = &vnet->ep.ctl_iov;
-	struct vringh_kiov riov;
-
-	vringh_kiov_init(&riov,
-			 kmalloc_array(epf_vnet_get_vq_size(),
-				       sizeof(struct kvec), GFP_KERNEL),
-			 epf_vnet_get_vq_size());
-
-	err = vringh_getdesc(vrh, &riov, wiov, &head);
-	if (err < 0) {
-		return err;
-	} else if (!err) {
-		return 0;
-	}
-
-	// Should be vringh_kiov_length(iov) == iov->iov[iov->i].iov_len ?
-	// If it is, we can check and use the command simply.
-
-	len = vringh_kiov_length(&riov);
-	// 	len = vringh_kiov_length(iov);
-	if (len < sizeof(*hdr)) {
-		pr_err("Invalid command: length is shoter than header: %ld\n",
-		       len);
+	err = vringh_getdesc(vrh, riov, wiov, &head);
+	if (err <= 0)
 		goto done;
-		return 0;
+
+	len = vringh_kiov_length(riov);
+	if (len < sizeof(*hdr)) {
+		pr_debug("Command is too short: %ld\n", len);
+		err = -EIO;
+		goto done;
 	}
 
-	hdr = phys_to_virt((unsigned long)riov.iov[riov.i].iov_base);
+	if (vringh_kiov_length(wiov) < sizeof *ack) {
+		pr_debug("Space for ack is not enough\n");
+		err = -EIO;
+		goto done;
+	}
+
+	hdr = phys_to_virt((unsigned long)riov->iov[riov->i].iov_base);
+	ack = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
 
 	switch (hdr->class) {
 	case VIRTIO_NET_CTRL_ANNOUNCE:
@@ -79,11 +73,9 @@ static int epf_vnet_ep_process_ctrlq_entry(struct epf_vnet *vnet)
 			pr_debug("Invalid command: announce: %d\n", hdr->cmd);
 			goto done;
 		}
-		epf_vnet_ep_clear_status(vnet, VIRTIO_NET_S_ANNOUNCE);
 
-		iowrite8(VIRTIO_NET_OK,
-			 phys_to_virt(
-				 (unsigned long)wiov->iov[wiov->i].iov_base));
+		epf_vnet_ep_clear_status(vnet, VIRTIO_NET_S_ANNOUNCE);
+		*ack = VIRTIO_NET_OK;
 		break;
 	default:
 		pr_debug("Found not supported class: %d\n", hdr->class);
@@ -199,6 +191,20 @@ static bool epf_vnet_ep_vdev_vq_notify(struct virtqueue *vq)
 	return true;
 }
 
+static int epf_vnet_ep_setup_kiov(struct vringh_kiov *kiov,
+				  const size_t vq_size)
+{
+	struct kvec *kvec;
+
+	kvec = kmalloc_array(vq_size, sizeof *kvec, GFP_KERNEL);
+	if (!kvec)
+		return -ENOMEM;
+
+	vringh_kiov_init(kiov, kvec, vq_size);
+
+	return 0;
+}
+
 static int epf_vnet_ep_vdev_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 				     struct virtqueue *vqs[],
 				     vq_callback_t *callback[],
@@ -215,8 +221,6 @@ static int epf_vnet_ep_vdev_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 		struct virtqueue *vq;
 		struct vring *vring;
 		struct vringh *vrh;
-		struct vringh_kiov *kiov;
-		struct kvec *kvec;
 
 		if (!names[i]) {
 			vqs[i] = NULL;
@@ -239,40 +243,33 @@ static int epf_vnet_ep_vdev_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 		switch (i) {
 		case 0: // rx
 			vrh = &vnet->ep.rxvrh;
-			kiov = &vnet->ep.rx_iov;
 			vnet->ep.rxvq = vq;
 			break;
 		case 1: // tx
 			vrh = &vnet->ep.txvrh;
-			kiov = &vnet->ep.tx_iov;
 			vnet->ep.txvq = vq;
 			break;
 		case 2: // control
 			vrh = &vnet->ep.ctlvrh;
-			kiov = &vnet->ep.ctl_iov;
 			vnet->ep.ctlvq = vq;
 			break;
 		default:
 			BUG_ON("found unsuspected queue index\n");
 		}
 
-		// XXX: a argument named weak_barrier of vringh_init_kern should be
-		// probably true. Please check it.
 		err = vringh_init_kern(vrh, vnet->virtio_features, vq_size,
-				       false, GFP_KERNEL, vring->desc,
+				       true, GFP_KERNEL, vring->desc,
 				       vring->avail, vring->used);
 		if (err) {
 			pr_err("failed to init vringh for vring %d\n", i);
 			goto err_del_vqs;
 		}
-
-		kvec = kmalloc_array(vq_size, sizeof *kvec, GFP_KERNEL);
-		if (!kvec) {
-			err = -ENOMEM;
-			goto err_del_vqs;
-		}
-		vringh_kiov_init(kiov, kvec, vq_size);
 	}
+
+	epf_vnet_ep_setup_kiov(&vnet->ep.tx_iov, vq_size);
+	epf_vnet_ep_setup_kiov(&vnet->ep.rx_iov, vq_size);
+	epf_vnet_ep_setup_kiov(&vnet->ep.ctl_riov, vq_size);
+	epf_vnet_ep_setup_kiov(&vnet->ep.ctl_wiov, vq_size);
 
 	epf_vnet_init_complete(vnet, EPF_VNET_INIT_COMPLETE_EP);
 
