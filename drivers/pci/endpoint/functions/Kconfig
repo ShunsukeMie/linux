@@ -37,3 +37,26 @@ config PCI_EPF_VNTB
 	  between PCI Root Port and PCIe Endpoint.
 
 	  If in doubt, say "N" to disable Endpoint NTB driver.
+
+config PCI_EPF_VIRTIO
+	tristate
+	help
+	  This is a util functions to impelment virtio device.
+
+menuconfig PCI_EPF_VNET
+	tristate "PCI Endpoint virtio-net driver"
+	depends on PCI_ENDPOINT
+	select VHOST_RING
+	select VHOST_IOMEM
+	select PCI_EPF_VIRTIO
+	help
+	  PCIe Endpoint virtio-net function implementation. This module enables to
+	  show the virtio-net as pci device to PCIe Host side, and, another
+	  virtio-net device show to local machine. Those devices can communicate
+	  each other.
+
+config PCI_EPF_VNET_ROCE
+	tristate "Support RoCE feature"
+	depends on PCI_EPF_VNET
+	help
+	  This configuration enables to RDMA feature to PCI Endpoint virtio-net driver.
