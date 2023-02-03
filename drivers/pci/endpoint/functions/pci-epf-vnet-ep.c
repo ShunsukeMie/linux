@@ -146,13 +146,15 @@ static void epf_vnet_ep_vdev_set_config(struct virtio_device *vdev,
 
 static u8 epf_vnet_ep_vdev_get_status(struct virtio_device *vdev)
 {
-	pr_info("%s:%d\n", __func__, __LINE__);
 	return 0;
 }
 
 static void epf_vnet_ep_vdev_set_status(struct virtio_device *vdev, u8 status)
 {
-	pr_info("%s:%d %x\n", __func__, __LINE__, status);
+	struct epf_vnet *vnet = vdev_to_vnet(vdev);
+
+	if (status & VIRTIO_CONFIG_S_DRIVER_OK)
+		epf_vnet_init_complete(vnet, EPF_VNET_INIT_COMPLETE_EP);
 }
 
 static void epf_vnet_ep_vdev_reset(struct virtio_device *vdev)
@@ -269,8 +271,6 @@ static int epf_vnet_ep_vdev_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 	epf_vnet_ep_setup_kiov(&vnet->ep.rx_iov, vq_size);
 	epf_vnet_ep_setup_kiov(&vnet->ep.ctl_riov, vq_size);
 	epf_vnet_ep_setup_kiov(&vnet->ep.ctl_wiov, vq_size);
-
-	epf_vnet_init_complete(vnet, EPF_VNET_INIT_COMPLETE_EP);
 
 	return 0;
 
