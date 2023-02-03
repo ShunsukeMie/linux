@@ -14,7 +14,7 @@ struct epf_vnet {
 	struct virtio_net_config vnet_cfg;
 	u64 virtio_features;
 
-	// dma channels, local to remote(lr) and remote to local(rl)
+	// dma channels for local to remote(lr) and remote to local(rl)
 	struct dma_chan *lr_dma_chan, *rl_dma_chan;
 	bool use_dma;
 

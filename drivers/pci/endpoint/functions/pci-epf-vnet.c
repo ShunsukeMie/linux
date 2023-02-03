@@ -53,8 +53,9 @@ static bool epf_virtnet_dma_filter(struct dma_chan *chan, void *param)
 
 static int epf_vnet_init_edma(struct epf_vnet *vnet, struct device *dma_dev)
 {
-	dma_cap_mask_t mask;
 	struct epf_dma_filter_param param;
+	dma_cap_mask_t mask;
+	int err;
 
 	dma_cap_zero(mask);
 	dma_cap_set(DMA_SLAVE, mask);
@@ -63,22 +64,25 @@ static int epf_vnet_init_edma(struct epf_vnet *vnet, struct device *dma_dev)
 	param.dma_mask = BIT(DMA_MEM_TO_DEV);
 	vnet->lr_dma_chan =
 		dma_request_channel(mask, epf_virtnet_dma_filter, &param);
-	if (!vnet->lr_dma_chan) {
-		pr_info("failed to request dma channel\n");
+	if (!vnet->lr_dma_chan)
 		return -EOPNOTSUPP;
-	}
 
 	param.dma_mask = BIT(DMA_DEV_TO_MEM);
 	vnet->rl_dma_chan =
 		dma_request_channel(mask, epf_virtnet_dma_filter, &param);
 	if (!vnet->rl_dma_chan) {
-		pr_info("failed to request dma channel\n");
-		return -EOPNOTSUPP;
+		err = -EOPNOTSUPP;
+		goto err_release_channel;
 	}
 
 	vnet->use_dma = true;
 
 	return 0;
+
+err_release_channel:
+	dma_release_channel(vnet->lr_dma_chan);
+
+	return err;
 }
 
 static void epf_vnet_deinit_edma(struct epf_vnet *vnet)
