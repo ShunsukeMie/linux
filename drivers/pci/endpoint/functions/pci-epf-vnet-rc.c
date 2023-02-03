@@ -107,8 +107,7 @@ static void epf_vnet_rc_setup_configs(struct epf_vnet *vnet,
 	epf_vnet_rc_set_config32(vnet, VIRTIO_PCI_HOST_FEATURES,
 				 vnet->virtio_features);
 
-	epf_vnet_rc_set_config16(vnet, VIRTIO_PCI_ISR_QUEUE,
-				 VIRTIO_PCI_ISR_QUEUE);
+	epf_vnet_rc_set_config16(vnet, VIRTIO_PCI_ISR, VIRTIO_PCI_ISR_QUEUE);
 	epf_vnet_rc_set_config16(vnet, VIRTIO_PCI_QUEUE_NOTIFY, default_qindex);
 	epf_vnet_rc_set_config16(vnet, VIRTIO_PCI_QUEUE_SEL, default_qindex);
 	epf_vnet_rc_set_config16(vnet, VIRTIO_PCI_QUEUE_NUM,
