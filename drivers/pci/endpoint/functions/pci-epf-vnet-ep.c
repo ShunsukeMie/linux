@@ -319,18 +319,6 @@ static void epf_vnet_ep_vdev_del_vqs(struct virtio_device *vdev)
 	epf_vnet_ep_deinit_kiov(&vnet->ep.ctl_wiov);
 }
 
-static const char *epf_vnet_ep_vdev_bus_name(struct virtio_device *vdev)
-{
-	//TODO
-	pr_info("%s:%d\n", __func__, __LINE__);
-	return "dummy bus name";
-}
-
-static void epf_vnet_ep_vdev_sync_cbs(struct virtio_device *vdev)
-{
-	pr_info("%s:%d\n", __func__, __LINE__);
-}
-
 static const struct virtio_config_ops epf_vnet_ep_vdev_config_ops = {
 	.get_features = epf_vnet_ep_vdev_get_features,
 	.finalize_features = epf_vnet_ep_vdev_finalize_features,
@@ -341,8 +329,6 @@ static const struct virtio_config_ops epf_vnet_ep_vdev_config_ops = {
 	.reset = epf_vnet_ep_vdev_reset,
 	.find_vqs = epf_vnet_ep_vdev_find_vqs,
 	.del_vqs = epf_vnet_ep_vdev_del_vqs,
-	.bus_name = epf_vnet_ep_vdev_bus_name,
-	.synchronize_cbs = epf_vnet_ep_vdev_sync_cbs,
 };
 
 int epf_vnet_ep_setup(struct epf_vnet *vnet)
