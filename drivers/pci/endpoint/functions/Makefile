@@ -6,3 +6,7 @@
 obj-$(CONFIG_PCI_EPF_TEST)		+= pci-epf-test.o
 obj-$(CONFIG_PCI_EPF_NTB)		+= pci-epf-ntb.o
 obj-$(CONFIG_PCI_EPF_VNTB) 		+= pci-epf-vntb.o
+obj-$(CONFIG_PCI_EPF_VCON)		+= epf-vcon.o
+epf-vcon-objs := pci-epf-vcon.o pci-epf-virtio.o
+
+

@@ -37,3 +37,11 @@ config PCI_EPF_VNTB
 	  between PCI Root Port and PCIe Endpoint.
 
 	  If in doubt, say "N" to disable Endpoint NTB driver.
+
+config PCI_EPF_VCON
+	tristate "PCI Endpoint virito-console driver"
+	depends on PCI_ENDPOINT
+	select VHOST_IOMEM
+	select VHOST_RING
+	help
+	  this is a help text.
