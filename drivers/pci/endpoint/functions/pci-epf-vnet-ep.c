@@ -307,7 +307,16 @@ err_del_vqs:
 
 static void epf_vnet_ep_vdev_del_vqs(struct virtio_device *vdev)
 {
-	pr_info("%s:%d\n", __func__, __LINE__);
+	struct virtqueue *vq, *n;
+	struct epf_vnet *vnet = vdev_to_vnet(vdev);
+
+	list_for_each_entry_safe(vq, n, &vdev->vqs, list)
+		vring_del_virtqueue(vq);
+
+	epf_vnet_ep_deinit_kiov(&vnet->ep.tx_iov);
+	epf_vnet_ep_deinit_kiov(&vnet->ep.rx_iov);
+	epf_vnet_ep_deinit_kiov(&vnet->ep.ctl_riov);
+	epf_vnet_ep_deinit_kiov(&vnet->ep.ctl_wiov);
 }
 
 static const char *epf_vnet_ep_vdev_bus_name(struct virtio_device *vdev)
