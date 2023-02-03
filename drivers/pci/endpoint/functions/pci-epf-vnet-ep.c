@@ -192,8 +192,7 @@ static bool epf_vnet_ep_vdev_vq_notify(struct virtqueue *vq)
 	return true;
 }
 
-static int epf_vnet_ep_setup_kiov(struct vringh_kiov *kiov,
-				  const size_t vq_size)
+static int epf_vnet_ep_init_kiov(struct vringh_kiov *kiov, const size_t vq_size)
 {
 	struct kvec *kvec;
 
@@ -206,17 +205,22 @@ static int epf_vnet_ep_setup_kiov(struct vringh_kiov *kiov,
 	return 0;
 }
 
+static void epf_vnet_ep_deinit_kiov(struct vringh_kiov *kiov)
+{
+	kfree(kiov->iov);
+}
+
 static int epf_vnet_ep_vdev_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 				     struct virtqueue *vqs[],
 				     vq_callback_t *callback[],
 				     const char *const names[], const bool *ctx,
 				     struct irq_affinity *desc)
 {
+	struct epf_vnet *vnet = vdev_to_vnet(vdev);
+	const size_t vq_size = epf_vnet_get_vq_size();
 	int i;
 	int err;
 	int qidx;
-	struct epf_vnet *vnet = vdev_to_vnet(vdev);
-	const size_t vq_size = epf_vnet_get_vq_size();
 
 	for (qidx = 0, i = 0; i < nvqs; i++) {
 		struct virtqueue *vq;
@@ -267,15 +271,37 @@ static int epf_vnet_ep_vdev_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 		}
 	}
 
-	epf_vnet_ep_setup_kiov(&vnet->ep.tx_iov, vq_size);
-	epf_vnet_ep_setup_kiov(&vnet->ep.rx_iov, vq_size);
-	epf_vnet_ep_setup_kiov(&vnet->ep.ctl_riov, vq_size);
-	epf_vnet_ep_setup_kiov(&vnet->ep.ctl_wiov, vq_size);
+	err = epf_vnet_ep_init_kiov(&vnet->ep.tx_iov, vq_size);
+	if (err)
+		goto err_free_kiov;
+	err = epf_vnet_ep_init_kiov(&vnet->ep.rx_iov, vq_size);
+	if (err)
+		goto err_free_kiov;
+	err = epf_vnet_ep_init_kiov(&vnet->ep.ctl_riov, vq_size);
+	if (err)
+		goto err_free_kiov;
+	err = epf_vnet_ep_init_kiov(&vnet->ep.ctl_wiov, vq_size);
+	if (err)
+		goto err_free_kiov;
 
 	return 0;
 
+err_free_kiov:
+	epf_vnet_ep_deinit_kiov(&vnet->ep.tx_iov);
+	epf_vnet_ep_deinit_kiov(&vnet->ep.rx_iov);
+	epf_vnet_ep_deinit_kiov(&vnet->ep.ctl_riov);
+	epf_vnet_ep_deinit_kiov(&vnet->ep.ctl_wiov);
+
 err_del_vqs:
-	//TODO delete created virtqueues
+	for (; i >= 0; i--) {
+		if (!names[i])
+			continue;
+
+		if (!vqs[i])
+			continue;
+
+		vring_del_virtqueue(vqs[i]);
+	}
 	return err;
 }
 
