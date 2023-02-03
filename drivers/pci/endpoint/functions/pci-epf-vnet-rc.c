@@ -513,6 +513,11 @@ out_munmap:
 	vringh_complete(vrh, head, total_len);
 }
 
+void epf_vnet_rc_notify(struct epf_vnet *vnet)
+{
+	queue_work(vnet->rc.irq_wq, &vnet->rc.raise_irq_work);
+}
+
 void epf_vnet_rc_cleanup(struct epf_vnet *vnet)
 {
 	epf_vnet_cleanup_bar(vnet);

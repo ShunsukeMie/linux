@@ -6,7 +6,6 @@
 #include <linux/pci-epf.h>
 #include <linux/pci-epc.h>
 #include <linux/vringh.h>
-#include <linux/virtio_ring.h>
 #include <linux/dmaengine.h>
 
 #include "pci-epf-vnet.h"
@@ -112,10 +111,8 @@ static int epf_vnet_dma_single(struct epf_vnet *vnet, phys_addr_t pci,
 	}
 
 	err = dmaengine_slave_config(chan, &sconf);
-	if (unlikely(err)) {
-		pr_err("failed to setup");
+	if (unlikely(err))
 		return err;
-	}
 
 	if (callback)
 		flags = DMA_PREP_INTERRUPT | DMA_PREP_FENCE;
@@ -129,10 +126,8 @@ static int epf_vnet_dma_single(struct epf_vnet *vnet, phys_addr_t pci,
 
 	cookie = dmaengine_submit(desc);
 	err = dma_submit_error(cookie);
-	if (unlikely(err)) {
-		pr_err("failed to submit dma\n");
+	if (unlikely(err))
 		return err;
-	}
 
 	dma_async_issue_pending(chan);
 
@@ -155,9 +150,8 @@ static void epf_vnet_dma_callback(void *p)
 	vringh_complete(param->tx_vrh, param->tx_head, param->total_len);
 	vringh_complete(param->rx_vrh, param->rx_head, param->total_len);
 
-	//TODO check the register if the irq is required.
-	queue_work(vnet->rc.irq_wq, &vnet->rc.raise_irq_work);
-	vring_interrupt(0, param->vq);
+	epf_vnet_rc_notify(vnet);
+	epf_vnet_ep_notify(vnet, param->vq);
 
 	kfree(param);
 }
@@ -174,13 +168,8 @@ int epf_vnet_transfer(struct epf_vnet *vnet, struct vringh *tx_vrh,
 	struct vringh_kiov *liov, *riov;
 
 	err = vringh_getdesc(tx_vrh, tx_iov, NULL, &tx_head);
-	if (err < 0) {
-		pr_info("Failed to get vring descriptor\n");
+	if (err <= 0)
 		return err;
-	} else if (!err) {
-		// No data in vring
-		return 0;
-	}
 
 	total_tx_len = vringh_kiov_length(tx_iov);
 

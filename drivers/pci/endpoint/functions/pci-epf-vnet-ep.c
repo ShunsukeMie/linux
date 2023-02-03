@@ -36,6 +36,11 @@ void epf_vnet_ep_announce_linkup(struct epf_vnet *vnet)
 	epf_vnet_ep_raise_config_irq(vnet);
 }
 
+void epf_vnet_ep_notify(struct epf_vnet *vnet, struct virtqueue *vq)
+{
+	vring_interrupt(0, vq);
+}
+
 static int epf_vnet_ep_process_ctrlq_entry(struct epf_vnet *vnet)
 {
 	struct vringh *vrh = &vnet->ep.ctlvrh;

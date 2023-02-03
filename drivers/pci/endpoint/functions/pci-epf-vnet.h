@@ -51,6 +51,8 @@ int epf_vnet_transfer(struct epf_vnet *vnet, struct vringh *tx_vrh,
 		      struct vringh *rx_vrh, struct vringh_kiov *tx_iov,
 		      struct vringh_kiov *rx_iov,
 		      enum dma_transfer_direction dir);
+void epf_vnet_rc_notify(struct epf_vnet *vnet);
+void epf_vnet_ep_notify(struct epf_vnet *vnet, struct virtqueue *vq);
 
 void epf_vnet_init_complete(struct epf_vnet *vnet, u8 from);
 void epf_vnet_ep_announce_linkup(struct epf_vnet *vnet);
