@@ -257,6 +257,8 @@ static int epf_vnet_bind(struct pci_epf *epf)
 
 err_free_edma:
 	epf_vnet_deinit_edma(vnet);
+err_cleanup_rc:
+	epf_vnet_rc_cleanup(vnet);
 
 	return err;
 }

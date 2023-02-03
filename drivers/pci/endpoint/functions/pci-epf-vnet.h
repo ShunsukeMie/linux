@@ -42,6 +42,7 @@ struct epf_vnet {
 };
 
 int epf_vnet_rc_setup(struct epf_vnet *vnet);
+void epf_vnet_rc_cleanup(struct epf_vnet *vnet);
 int epf_vnet_ep_setup(struct epf_vnet *vnet);
 
 int epf_vnet_get_vq_size(void);

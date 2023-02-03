@@ -119,6 +119,16 @@ static void epf_vnet_rc_setup_configs(struct epf_vnet *vnet,
 				  &vnet->vnet_cfg, sizeof vnet->vnet_cfg);
 }
 
+static void epf_vnet_cleanup_bar(struct epf_vnet *vnet)
+{
+	struct pci_epf *epf = vnet->epf;
+
+	pci_epc_clear_bar(epf->epc, epf->func_no, epf->vfunc_no,
+			  &epf->bar[VIRTIO_NET_LEGACY_CFG_BAR]);
+	pci_epf_free_space(epf, vnet->rc.cfg_base, VIRTIO_NET_LEGACY_CFG_BAR,
+			   PRIMARY_INTERFACE);
+}
+
 static int epf_vnet_setup_bar(struct epf_vnet *vnet)
 {
 	int err;
@@ -501,6 +511,17 @@ out_munmap:
 	epf_vnet_rc_epc_munmap(epf, wmem);
 
 	vringh_complete(vrh, head, total_len);
+}
+
+void epf_vnet_rc_cleanup(struct epf_vnet *vnet)
+{
+
+	epf_vnet_cleanup_bar(vnet);
+	destroy_workqueue(vnet->rc.tx_wq);
+	destroy_workqueue(vnet->rc.irq_wq);
+	destroy_workqueue(vnet->rc.ctl_wq);
+
+	kthread_stop(vnet->rc.device_setup_task);
 }
 
 int epf_vnet_rc_setup(struct epf_vnet *vnet)
