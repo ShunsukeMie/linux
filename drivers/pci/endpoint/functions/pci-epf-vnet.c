@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * PCI Endpoint function driver to impliment virtio-net device.
- *
  */
 #include <linux/module.h>
 #include <linux/pci-epf.h>
