@@ -31,7 +31,7 @@ struct epf_vnet {
 	struct {
 		struct virtqueue *rxvq, *txvq, *ctlvq;
 		struct vringh txvrh, rxvrh, ctlvrh;
-		struct vringh_kiov tx_iov, rx_iov, ctl_iov;
+		struct vringh_kiov tx_iov, rx_iov, ctl_riov, ctl_wiov;
 		struct virtio_device vdev;
 		u16 net_config_status;
 	} ep;
