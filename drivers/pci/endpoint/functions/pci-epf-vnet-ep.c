@@ -96,7 +96,11 @@ static u64 epf_vnet_ep_vdev_get_features(struct virtio_device *vdev)
 
 static int epf_vnet_ep_vdev_finalize_features(struct virtio_device *vdev)
 {
-	pr_info("%s:%d\n", __func__, __LINE__);
+	struct epf_vnet *vnet = vdev_to_vnet(vdev);
+
+	if (vdev->features != vnet->virtio_features)
+		return -EINVAL;
+
 	return 0;
 }
 
