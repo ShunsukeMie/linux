@@ -32,7 +32,7 @@ int epf_vnet_init_kiov(struct vringh_kiov *kiov, const size_t vq_size)
 	return 0;
 }
 
-void epf_vnet_ep_deinit_kiov(struct vringh_kiov *kiov)
+void epf_vnet_deinit_kiov(struct vringh_kiov *kiov)
 {
 	kfree(kiov->iov);
 }
