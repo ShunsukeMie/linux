@@ -13,7 +13,8 @@
 #define VIRTIO_NET_LEGACY_CFG_BAR BAR_0
 
 /* Returns an out side of the valid queue index. */
-static inline u16 epf_vnet_rc_get_default_queue_index(struct epf_vnet *vnet)
+static inline u16 epf_vnet_rc_get_number_of_queues(struct epf_vnet *vnet)
+
 {
 	/* number of queue pairs and control queue */
 	return vnet->vnet_cfg.max_virtqueue_pairs * 2 + 1;
@@ -88,7 +89,7 @@ static struct pci_epf_header epf_vnet_pci_header = {
 static void epf_vnet_rc_setup_configs(struct epf_vnet *vnet,
 				      void __iomem *cfg_base)
 {
-	u16 default_qindex = epf_vnet_rc_get_default_queue_index(vnet);
+	u16 default_qindex = epf_vnet_rc_get_number_of_queues(vnet);
 
 	epf_vnet_rc_set_config32(vnet, VIRTIO_PCI_HOST_FEATURES,
 				 vnet->virtio_features);
@@ -175,25 +176,30 @@ err_free_space:
 	return err;
 }
 
-struct pfn_sel {
-	u32 pfn;
-	u16 sel;
-};
-
 static int epf_vnet_rc_negotiate_configs(struct epf_vnet *vnet, u32 *txpfn,
 					 u32 *rxpfn, u32 *ctlpfn)
 {
-	const u16 default_sel = epf_vnet_rc_get_default_queue_index(vnet);
+	const u16 nqueues = epf_vnet_rc_get_number_of_queues(vnet);
+	const u16 default_sel = nqueues;
 	u32 __iomem *queue_pfn = vnet->rc.cfg_base + VIRTIO_PCI_QUEUE_PFN;
 	u16 __iomem *queue_sel = vnet->rc.cfg_base + VIRTIO_PCI_QUEUE_SEL;
 	u8 __iomem *pci_status = vnet->rc.cfg_base + VIRTIO_PCI_STATUS;
 	u32 pfn;
 	u16 sel;
-
-	struct pfn_sel tmp[3];
+	struct {
+		u32 pfn;
+		u16 sel;
+	} tmp[3] = {};
 	int tmp_index = 0;
 
-	while (tmp_index < 3) {
+	*rxpfn = *txpfn = *ctlpfn = 0;
+
+	/* To avoid to read pfn and selector for virtqueue wrote from host,
+	 * we need to implement fast polling with saving.
+	 *
+	 * This implementation suspects that the host driver writes pfn only once
+	 * for each queues */
+	while (tmp_index < nqueues) {
 		pfn = ioread32(queue_pfn);
 		if (pfn == 0)
 			continue;
@@ -212,7 +218,7 @@ static int epf_vnet_rc_negotiate_configs(struct epf_vnet *vnet, u32 *txpfn,
 	while (!((ioread8(pci_status) & VIRTIO_CONFIG_S_DRIVER_OK)))
 		;
 
-	for (int i = 0; i < 3; ++i) {
+	for (int i = 0; i < nqueues; ++i) {
 		switch (tmp[i].sel) {
 		case 0:
 			*rxpfn = tmp[i].pfn;
@@ -236,7 +242,7 @@ static int epf_vnet_rc_monitor_notify(void *data)
 {
 	struct epf_vnet *vnet = data;
 	u16 __iomem *queue_notify = vnet->rc.cfg_base + VIRTIO_PCI_QUEUE_NOTIFY;
-	const u16 notify_default = epf_vnet_rc_get_default_queue_index(vnet);
+	const u16 notify_default = epf_vnet_rc_get_number_of_queues(vnet);
 
 	epf_vnet_init_complete(vnet, EPF_VNET_INIT_COMPLETE_RC);
 
