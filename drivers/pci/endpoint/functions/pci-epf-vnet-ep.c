@@ -185,7 +185,7 @@ static bool epf_vnet_ep_vdev_vq_notify(struct virtqueue *vq)
 						rx_iov, DMA_MEM_TO_DEV)) > 0)
 			;
 		if (err < 0)
-			pr_err("tx failed: %d\n", err);
+			pr_debug("Failed to transmit: EP -> Host: %d\n", err);
 		break;
 	case 2: // control queue
 		epf_vnet_ep_process_ctrlq_entry(vnet);
