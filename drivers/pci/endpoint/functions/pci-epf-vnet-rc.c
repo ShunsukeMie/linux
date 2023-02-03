@@ -301,55 +301,62 @@ static int epf_vnet_rc_device_setup(void *data)
 		return PTR_ERR(vnet->rc.txvrh);
 	}
 
-	kvec = kmalloc_array(vq_size, sizeof *kvec, GFP_KERNEL);
-	if (!kvec) {
-		err = -ENOMEM;
-		// 		goto;
-	}
-	vringh_kiov_init(&vnet->rc.tx_iov, kvec, vq_size);
+	err = epf_vnet_init_kiov(&vnet->rc.tx_iov, vq_size);
+	if (err)
+		goto err_free_epf_tx_vringh;
 
 	vnet->rc.rxvrh = pci_epf_virtio_alloc_vringh(epf, vnet->virtio_features,
 						     rxpfn, vq_size);
 	if (IS_ERR(vnet->rc.rxvrh)) {
-		pr_err("Failed to setup virtqueue\n");
-		return PTR_ERR(vnet->rc.rxvrh);
+		pr_debug("Failed to setup virtqueue for rx\n");
+		err = PTR_ERR(vnet->rc.rxvrh);
+		goto err_deinit_tx_kiov;
 	}
 
-	kvec = kmalloc_array(vq_size, sizeof *kvec, GFP_KERNEL);
-	if (!kvec) {
-		err = -ENOMEM;
-		// 		goto;
-	}
-	vringh_kiov_init(&vnet->rc.rx_iov, kvec, vq_size);
+	err = epf_vnet_init_kiov(&vnet->rc.rx_iov, vq_size);
+	if (err)
+		goto err_free_epf_rx_vringh;
 
 	vnet->rc.ctlvrh = pci_epf_virtio_alloc_vringh(
 		epf, vnet->virtio_features, ctlpfn, vq_size);
 	if (IS_ERR(vnet->rc.ctlvrh)) {
 		pr_err("failed to setup virtqueue\n");
-		return PTR_ERR(vnet->rc.ctlvrh);
+		err = PTR_ERR(vnet->rc.ctlvrh);
+		goto err_deinig_rx_kiov;
 	}
 
-	kvec = kmalloc_array(vq_size, sizeof *kvec, GFP_KERNEL);
-	if (!kvec) {
-		err = -ENOMEM;
-		// 		goto;
-	}
-	vringh_kiov_init(&vnet->rc.ctl_riov, kvec, vq_size);
+	err = epf_vnet_init_kiov(&vnet->rc.ctl_riov, vq_size);
+	if (err)
+		goto err_free_epf_ctl_vringh;
 
-	kvec = kmalloc_array(vq_size, sizeof *kvec, GFP_KERNEL);
-	if (!kvec) {
-		err = -ENOMEM;
-		// 		goto;
-	}
-	vringh_kiov_init(&vnet->rc.ctl_wiov, kvec, vq_size);
+	err = epf_vnet_init_kiov(&vnet->rc.ctl_wiov, vq_size);
+	if (err)
+		goto err_deinit_ctl_riov :
 
-	err = epf_vnet_rc_spawn_notify_monitor(vnet);
+			err = epf_vnet_rc_spawn_notify_monitor(vnet);
 	if (err) {
-		pr_err("Failed to create notify monitor thread\n");
-		return err;
+		pr_debug("Failed to create notify monitor thread\n");
+		goto err_deinit_ctl_wiov;
 	}
 
-	kthread_exit(0);
+	return 0;
+
+err_deinit_ctl_wiov:
+	epf_vnet_deinit_kiov(&vnet->rc.ctl_wiov);
+err_deinit_ctl_riov:
+	epf_vnet_deinit_kiov(&vnet->rc.ctl_riov);
+err_free_epf_ctl_vringh:
+	pci_epf_virtio_free_vringh(epf, &vnet->rc.ctlvrh);
+err_deinit_rx_kiov:
+	epf_vnet_deinit_kiov(&vnet->rc.rx_iov);
+err_free_epf_rx_vringh:
+	pci_epf_virtio_free_vringh(epf, &vnet->rc.rxvrh);
+err_deinit_tx_kiov:
+	epf_vnet_deinit_kiov(&vnet->rc.tx_iov);
+err_free_epf_tx_vringh:
+	pci_epf_virtio_free_vringh(epf, &vnet->rc.txvrh);
+
+	return err;
 }
 
 static int epf_vnet_rc_spawn_device_setup_task(struct epf_vnet *vnet)
@@ -422,13 +429,13 @@ epf_vnet_rc_epc_mmap(struct pci_epf *epf, phys_addr_t pci_addr, size_t len)
 	err = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no, phys_addr,
 			       aaddr, asize);
 	if (err) {
-		pr_err("Failed to map epc memory\n");
-		// 		goto free_epc_mem;
+		pr_debug("Failed to map epc memory\n");
+		goto err_epc_free_addr;
 	}
 
 	meminfo = kmalloc(sizeof *meminfo, GFP_KERNEL);
 	if (!meminfo)
-		return NULL;
+		goto err_epc_unmap_addr;
 
 	meminfo->virt = virt_addr;
 	meminfo->phys = phys_addr;
@@ -437,7 +444,14 @@ epf_vnet_rc_epc_mmap(struct pci_epf *epf, phys_addr_t pci_addr, size_t len)
 
 	return meminfo;
 
-	//TODO error handling
+err_epc_unmap_addr:
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no,
+			   meminfo->phys);
+err_epc_free_addr:
+	pci_epc_mem_free_addr(epf->epc, meminfo->phys, meminfo->virt,
+			      meminfo->len);
+
+	return NULL;
 }
 
 static void epf_vnet_rc_epc_munmap(struct pci_epf *epf,
