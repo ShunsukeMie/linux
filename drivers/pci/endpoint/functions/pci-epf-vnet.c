@@ -32,8 +32,6 @@ void epf_vnet_init_complete(struct epf_vnet *vnet, u8 from)
 
 	epf_vnet_ep_announce_linkup(vnet);
 	epf_vnet_rc_announce_linkup(vnet);
-
-	return;
 }
 
 struct epf_dma_filter_param {
@@ -268,7 +266,6 @@ static const struct pci_epf_device_id epf_vnet_ids[] = {
 
 static void epf_vnet_virtio_init(struct epf_vnet *vnet)
 {
-	// Common configurations
 	vnet->virtio_features =
 		BIT(VIRTIO_NET_F_MTU) | BIT(VIRTIO_NET_F_STATUS) |
 		BIT(VIRTIO_NET_F_GUEST_CSUM) | BIT(VIRTIO_NET_F_GUEST_TSO4) |
