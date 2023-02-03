@@ -251,7 +251,7 @@ static int epf_vnet_bind(struct pci_epf *epf)
 
 	err = epf_vnet_ep_setup(vnet);
 	if (err)
-		return err;
+		goto err_cleanup_rc;
 
 	return 0;
 
