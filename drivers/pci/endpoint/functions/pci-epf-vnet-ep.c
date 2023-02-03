@@ -331,6 +331,11 @@ static const struct virtio_config_ops epf_vnet_ep_vdev_config_ops = {
 	.del_vqs = epf_vnet_ep_vdev_del_vqs,
 };
 
+void epf_vnet_ep_cleanup(struct epf_vnet *vnet)
+{
+	unregister_virtio_device(&vnet->ep.vdev);
+}
+
 int epf_vnet_ep_setup(struct epf_vnet *vnet)
 {
 	int err;

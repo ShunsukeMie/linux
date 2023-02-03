@@ -515,7 +515,6 @@ out_munmap:
 
 void epf_vnet_rc_cleanup(struct epf_vnet *vnet)
 {
-
 	epf_vnet_cleanup_bar(vnet);
 	destroy_workqueue(vnet->rc.tx_wq);
 	destroy_workqueue(vnet->rc.irq_wq);

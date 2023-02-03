@@ -265,6 +265,11 @@ err_cleanup_rc:
 
 static void epf_vnet_unbind(struct pci_epf *epf)
 {
+	struct epf_vnet *vnet = epf_get_drvdata(epf);
+
+	epf_vnet_deinit_edma(vnet);
+	epf_vnet_rc_cleanup(vnet);
+	epf_vnet_ep_cleanup(vnet);
 }
 
 static struct pci_epf_ops epf_vnet_ops = {
