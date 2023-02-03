@@ -283,7 +283,6 @@ static int epf_vnet_rc_device_setup(void *data)
 	u32 txpfn, rxpfn, ctlpfn;
 	const size_t vq_size = epf_vnet_get_vq_size();
 	int err;
-	struct kvec *kvec;
 
 	err = epf_vnet_rc_negotiate_configs(vnet, &txpfn, &rxpfn, &ctlpfn);
 	if (err) {
@@ -322,7 +321,7 @@ static int epf_vnet_rc_device_setup(void *data)
 	if (IS_ERR(vnet->rc.ctlvrh)) {
 		pr_err("failed to setup virtqueue\n");
 		err = PTR_ERR(vnet->rc.ctlvrh);
-		goto err_deinig_rx_kiov;
+		goto err_deinit_rx_kiov;
 	}
 
 	err = epf_vnet_init_kiov(&vnet->rc.ctl_riov, vq_size);
@@ -331,9 +330,9 @@ static int epf_vnet_rc_device_setup(void *data)
 
 	err = epf_vnet_init_kiov(&vnet->rc.ctl_wiov, vq_size);
 	if (err)
-		goto err_deinit_ctl_riov :
+		goto err_deinit_ctl_riov;
 
-			err = epf_vnet_rc_spawn_notify_monitor(vnet);
+	err = epf_vnet_rc_spawn_notify_monitor(vnet);
 	if (err) {
 		pr_debug("Failed to create notify monitor thread\n");
 		goto err_deinit_ctl_wiov;
@@ -346,15 +345,15 @@ err_deinit_ctl_wiov:
 err_deinit_ctl_riov:
 	epf_vnet_deinit_kiov(&vnet->rc.ctl_riov);
 err_free_epf_ctl_vringh:
-	pci_epf_virtio_free_vringh(epf, &vnet->rc.ctlvrh);
+	pci_epf_virtio_free_vringh(epf, vnet->rc.ctlvrh);
 err_deinit_rx_kiov:
 	epf_vnet_deinit_kiov(&vnet->rc.rx_iov);
 err_free_epf_rx_vringh:
-	pci_epf_virtio_free_vringh(epf, &vnet->rc.rxvrh);
+	pci_epf_virtio_free_vringh(epf, vnet->rc.rxvrh);
 err_deinit_tx_kiov:
 	epf_vnet_deinit_kiov(&vnet->rc.tx_iov);
 err_free_epf_tx_vringh:
-	pci_epf_virtio_free_vringh(epf, &vnet->rc.txvrh);
+	pci_epf_virtio_free_vringh(epf, vnet->rc.txvrh);
 
 	return err;
 }
