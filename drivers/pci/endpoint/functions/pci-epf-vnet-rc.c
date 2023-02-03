@@ -12,10 +12,10 @@
 
 #define VIRTIO_NET_LEGACY_CFG_BAR BAR_0
 
+/* Returns an out side of the valid queue index. */
 static inline u16 epf_vnet_rc_get_default_queue_index(struct epf_vnet *vnet)
 {
-	// end of queue is used for control queue (2N)
-	// TODO rewrite the comment to be useful.
+	// number of queue pairs and control queue
 	return vnet->vnet_cfg.max_virtqueue_pairs * 2 + 1;
 }
 
@@ -32,13 +32,6 @@ static void epf_vnet_rc_set_config8(struct epf_vnet *vnet, size_t offset,
 	void __iomem *base = vnet->rc.cfg_base + offset;
 	iowrite8(ioread8(base) | config, base);
 }
-
-// static void epf_vnet_rc_clear_config8(struct epf_vnet *vnet, size_t offset,
-// 				      u8 config)
-// {
-// 	void __iomem *base = vnet->rc.cfg_base + offset;
-// 	iowrite8(ioread8(base) & ~config, base);
-// }
 
 static void epf_vnet_rc_set_config16(struct epf_vnet *vnet, size_t offset,
 				     u16 config)
@@ -61,20 +54,9 @@ static void epf_vnet_rc_set_config32(struct epf_vnet *vnet, size_t offset,
 	iowrite32(ioread32(base) | config, base);
 }
 
-// static void epf_vnet_rc_clear_config32(struct epf_vnet *vnet, size_t offset,
-// 				       u32 config)
-// {
-// 	void __iomem *base = vnet->rc.cfg_base + offset;
-// 	iowrite32(ioread32(base) & ~config, base);
-// }
-
 static void epf_vnet_rc_raise_config_irq(struct epf_vnet *vnet)
 {
-	/* Add a configuration change flag to isr. The flag is deasserted at tx
-	 * handler. */
 	epf_vnet_rc_set_config16(vnet, VIRTIO_PCI_ISR, VIRTIO_PCI_ISR_CONFIG);
-
-	// interrupt
 	queue_work(vnet->rc.irq_wq, &vnet->rc.raise_irq_work);
 }
 
@@ -85,10 +67,14 @@ void epf_vnet_rc_announce_linkup(struct epf_vnet *vnet)
 					 offsetof(struct virtio_net_config,
 						  status),
 				 VIRTIO_NET_S_LINK_UP | VIRTIO_NET_S_ANNOUNCE);
-	;
 	epf_vnet_rc_raise_config_irq(vnet);
 }
 
+/*
+ * For the PCIe host, this driver shows legacy virtio-net device. Because,
+ * virtio structure pci capabilities is mandatory for modern virtio device,
+ * but there is no PCIe EP hardware that can be configured with any pci
+ * capabilities and Linux PCIe EP framework doesn't support it.  */
 static struct pci_epf_header epf_vnet_pci_header = {
 	.vendorid = PCI_VENDOR_ID_REDHAT_QUMRANET,
 	.deviceid = VIRTIO_TRANS_ID_NET,
@@ -108,12 +94,16 @@ static void epf_vnet_rc_setup_configs(struct epf_vnet *vnet,
 				 vnet->virtio_features);
 
 	epf_vnet_rc_set_config16(vnet, VIRTIO_PCI_ISR, VIRTIO_PCI_ISR_QUEUE);
+	/* Initialize the queue notify and selector to outside of the appropriate
+	 * virtqueue index. It is used to detect change with polling. There is no
+	 * other ways to detect host side driver updateing those values */
 	epf_vnet_rc_set_config16(vnet, VIRTIO_PCI_QUEUE_NOTIFY, default_qindex);
 	epf_vnet_rc_set_config16(vnet, VIRTIO_PCI_QUEUE_SEL, default_qindex);
-	epf_vnet_rc_set_config16(vnet, VIRTIO_PCI_QUEUE_NUM,
-				 epf_vnet_get_vq_size());
+	/* This pfn is also set to 0 for the polling as well */
 	epf_vnet_rc_set_config16(vnet, VIRTIO_PCI_QUEUE_PFN, 0);
 
+	epf_vnet_rc_set_config16(vnet, VIRTIO_PCI_QUEUE_NUM,
+				 epf_vnet_get_vq_size());
 	epf_vnet_rc_set_config8(vnet, VIRTIO_PCI_STATUS, 0);
 	epf_vnet_rc_memcpy_config(vnet, VIRTIO_PCI_CONFIG_OFF(false),
 				  &vnet->vnet_cfg, sizeof vnet->vnet_cfg);
