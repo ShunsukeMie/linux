@@ -406,7 +406,7 @@ static void epf_vnet_rc_raise_irq_handler(struct work_struct *work)
 }
 
 struct epf_vnet_rc_meminfo {
-	void __iomem *addr, *virt;
+	void __iomem *virt;
 	phys_addr_t phys;
 	size_t len;
 };
@@ -415,29 +415,13 @@ struct epf_vnet_rc_meminfo {
 static struct epf_vnet_rc_meminfo *
 epf_vnet_rc_epc_mmap(struct pci_epf *epf, phys_addr_t pci_addr, size_t len)
 {
-	int err;
-	phys_addr_t aaddr, phys_addr;
-	size_t asize, offset;
+	phys_addr_t phys_addr;
 	void __iomem *virt_addr;
 	struct epf_vnet_rc_meminfo *meminfo;
 
-	err = pci_epc_mem_align(epf->epc, pci_addr, len, &aaddr, &asize);
-	if (err) {
-		pr_debug("Failed to get EPC align: %d\n", err);
-		return NULL;
-	}
-
-	offset = pci_addr - aaddr;
-
-	virt_addr = pci_epc_mem_alloc_addr(epf->epc, &phys_addr, asize);
-	if (!virt_addr) {
-		pr_debug("Failed to allocate epc memory\n");
-		return NULL;
-	}
-
-	err = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no, phys_addr,
-			       aaddr, asize);
-	if (err) {
+	virt_addr = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no, pci_addr, &phys_addr,
+			       len);
+	if (IS_ERR(virt_addr)) {
 		pr_debug("Failed to map epc memory\n");
 		goto err_epc_free_addr;
 	}
@@ -449,13 +433,12 @@ epf_vnet_rc_epc_mmap(struct pci_epf *epf, phys_addr_t pci_addr, size_t len)
 	meminfo->virt = virt_addr;
 	meminfo->phys = phys_addr;
 	meminfo->len = len;
-	meminfo->addr = virt_addr + offset;
 
 	return meminfo;
 
 err_epc_unmap_addr:
 	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no,
-			   meminfo->phys);
+			   meminfo->phys, meminfo->virt, meminfo->len);
 err_epc_free_addr:
 	pci_epc_mem_free_addr(epf->epc, meminfo->phys, meminfo->virt,
 			      meminfo->len);
@@ -467,7 +450,7 @@ static void epf_vnet_rc_epc_munmap(struct pci_epf *epf,
 				   struct epf_vnet_rc_meminfo *meminfo)
 {
 	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no,
-			   meminfo->phys);
+			   meminfo->phys, meminfo->virt, meminfo->len);
 	pci_epc_mem_free_addr(epf->epc, meminfo->phys, meminfo->virt,
 			      meminfo->len);
 	kfree(meminfo);
@@ -506,7 +489,7 @@ static int epf_vnet_rc_process_ctrlq_entry(struct epf_vnet *vnet)
 		goto err_epc_unmap_rmem;
 	}
 
-	hdr = rmem->addr;
+	hdr = rmem->virt;
 	class = ioread8(&hdr->class);
 	cmd = ioread8(&hdr->cmd);
 	switch (ioread8(&hdr->class)) {
@@ -523,7 +506,7 @@ static int epf_vnet_rc_process_ctrlq_entry(struct epf_vnet *vnet)
 		epf_vnet_rc_clear_config16(vnet, VIRTIO_PCI_ISR,
 					   VIRTIO_PCI_ISR_CONFIG);
 
-		iowrite8(VIRTIO_NET_OK, wmem->addr);
+		iowrite8(VIRTIO_NET_OK, wmem->virt);
 		break;
 	default:
 		pr_err("Found unsupported class in control queue: %d\n", class);
