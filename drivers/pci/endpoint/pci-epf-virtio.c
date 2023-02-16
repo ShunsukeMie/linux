@@ -11,23 +11,17 @@ static void __iomem *epf_virtio_map_vq(struct pci_epf *epf, u32 pfn,
 				       size_t size, phys_addr_t *vq_phys)
 {
 	int err;
-	phys_addr_t vq_addr;
 	size_t vq_size;
 	void __iomem *vq_virt;
+	phys_addr_t vq_pci_addr;
 
-	vq_addr = (phys_addr_t)pfn << VIRTIO_PCI_QUEUE_ADDR_SHIFT;
+	vq_pci_addr = (phys_addr_t)pfn << VIRTIO_PCI_QUEUE_ADDR_SHIFT;
 
-	vq_size = vring_size(size, VIRTIO_PCI_VRING_ALIGN) + 100;
+	vq_size = vring_size(size, VIRTIO_PCI_VRING_ALIGN);
 
-	vq_virt = pci_epc_mem_alloc_addr(epf->epc, vq_phys, vq_size);
-	if (!vq_virt) {
-		pr_err("Failed to allocate epc memory\n");
-		return ERR_PTR(-ENOMEM);
-	}
-
-	err = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no, *vq_phys,
-			       vq_addr, vq_size);
-	if (err) {
+	vq_virt = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
+				   vq_pci_addr, vq_phys, vq_size);
+	if (IS_ERR(vq_virt)) {
 		pr_err("Failed to map virtuqueue to local");
 		goto err_free;
 	}
@@ -43,7 +37,8 @@ err_free:
 static void epf_virtio_unmap_vq(struct pci_epf *epf, void __iomem *vq_virt,
 				phys_addr_t vq_phys, size_t size)
 {
-	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, vq_phys, vq_virt, size);
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, vq_phys,
+			   vq_virt, size);
 	pci_epc_mem_free_addr(epf->epc, vq_phys, vq_virt,
 			      vring_size(size, VIRTIO_PCI_VRING_ALIGN));
 }
