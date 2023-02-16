@@ -490,7 +490,7 @@ void __iomem *pci_epc_map_addr(struct pci_epc *epc, u8 func_no, u8 vfunc_no,
 		return ERR_PTR(-EINVAL);
 
 	if (!epc->ops->map_addr)
-		return ERR_PTR(-ENOPTSUPP);
+		return ERR_PTR(-ENOTSUPP);
 
 	if (epc->ops->align_mem) {
 		mutex_lock(&epc->lock);
