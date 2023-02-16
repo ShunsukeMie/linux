@@ -43,7 +43,7 @@ err_free:
 static void epf_virtio_unmap_vq(struct pci_epf *epf, void __iomem *vq_virt,
 				phys_addr_t vq_phys, size_t size)
 {
-	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, vq_phys);
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, vq_phys, vq_virt, size);
 	pci_epc_mem_free_addr(epf->epc, vq_phys, vq_virt,
 			      vring_size(size, VIRTIO_PCI_VRING_ALIGN));
 }
