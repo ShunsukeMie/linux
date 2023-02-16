@@ -103,8 +103,8 @@ static void epf_vnet_rc_setup_configs(struct epf_vnet *vnet,
 	epf_vnet_rc_set_config16(vnet, VIRTIO_PCI_ISR, VIRTIO_PCI_ISR_QUEUE);
 	/*
 	 * Initialize the queue notify and selector to outside of the appropriate
-	 * virtqueue index. It is used to detect change with polling. There is no
-	 * other ways to detect host side driver updateing those values
+	 * virtqueue index. It is used to detect change with polling because there is
+	 * no other ways to detect host side driver updateing those values
 	 */
 	epf_vnet_rc_set_config16(vnet, VIRTIO_PCI_QUEUE_NOTIFY, default_qindex);
 	epf_vnet_rc_set_config16(vnet, VIRTIO_PCI_QUEUE_SEL, default_qindex);
