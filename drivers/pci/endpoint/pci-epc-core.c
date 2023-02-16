@@ -469,8 +469,8 @@ EXPORT_SYMBOL_GPL(pci_epc_unmap_addr);
  * @epc: the EPC device on which address is allocated
  * @func_no: the physical endpoint function number in the EPC device
  * @vfunc_no: the virtual endpoint function number in the physical function
- * @phys_addr: physical address of the local system
  * @pci_addr: PCI address to which the physical address should be mapped
+ * @phys_addr: physical address of the local system
  * @size: the size of the allocation
  *
  * Invoke to map CPU address with PCI address.
