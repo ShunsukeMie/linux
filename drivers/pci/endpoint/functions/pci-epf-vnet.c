@@ -23,6 +23,28 @@ int epf_vnet_get_vq_size(void)
 	return virtio_queue_size;
 }
 
+#if defined(CONFIG_PCI_EPF_VNET_ROCE)
+struct epf_vnet_roce_dev_attr {
+	u64 max_mr_size;
+	u64 page_size_cap;
+	u32 hw_ver;
+	u32 max_qp_wr;
+	u64 device_cap_flags;
+	u32 max_send_sge;
+	u32 max_recv_sge;
+	u32 max_sge_rd;
+	u32 max_cqe;
+	u32 max_mr;
+	u32 max_mw;
+	u32 max_pd;
+	u32 max_qp_rd_atom;
+	u32 max_qp_init_rd_atom;
+	u32 max_ah;
+	u32 max_fast_reg_page_list_len;
+	u8 local_ca_ack_delay;
+};
+#endif // CONFIG_PCI_EPF_VNET_ROCE
+
 struct epf_vnet {
 	//TODO Should this variable be placed here?
 	struct pci_epf *epf;
@@ -57,6 +79,10 @@ struct epf_vnet {
 	u8 init_complete;
 
 	spinlock_t slock;
+
+#if defined(CONFIG_PCI_EPF_VNET_ROCE)
+	struct epf_vnet_roce_dev_attr roce_attr;
+#endif // CONFIG_PCI_EPF_VNET_ROCE
 };
 
 int epf_vnet_transfer(struct epf_vnet *vnet, struct vringh *tx_vrh,
@@ -1218,6 +1244,26 @@ static void epf_vnet_virtio_init(struct epf_vnet *vnet)
 	vnet->vnet_cfg.max_virtqueue_pairs = 1;
 	vnet->vnet_cfg.status = 0;
 	vnet->vnet_cfg.mtu = PAGE_SIZE;
+
+#if defined(CONFIG_PCI_EPF_VNET_ROCE)
+	vnet->roce_attr.max_mr_size = 1 << 30;
+	vnet->roce_attr.page_size_cap = 0xfffff000;
+	vnet->roce_attr.hw_ver = 0xdeadbeef;
+	vnet->roce_attr.max_qp_wr = 1024;
+	vnet->roce_attr.device_cap_flags = VIRTIO_IB_DEVICE_RC_RNR_NAK_GEN;
+	vnet->roce_attr.max_send_sge = 32;
+	vnet->roce_attr.max_recv_sge = 32;
+	vnet->roce_attr.max_sge_rd = 32;
+	vnet->roce_attr.max_cqe = 1024;
+	vnet->roce_attr.max_mr = 0x1000;
+	vnet->roce_attr.max_mw = 0;
+	vnet->roce_attr.max_pd = 0x7ffc;
+	vnet->roce_attr.max_qp_rd_atom = 128;
+	vnet->roce_attr.max_qp_init_rd_atom = 128;
+	vnet->roce_attr.max_ah = 100;
+	vnet->roce_attr.max_fast_reg_page_list_len = 512;
+	vnet->roce_attr.local_ca_ack_delay = 15;
+#endif // CONFIG_PCI_EPF_VNET_ROCE
 }
 
 static int epf_vnet_probe(struct pci_epf *epf)
