@@ -53,6 +53,7 @@ static int epf_vnet_ep_process_ctrlq_entry(struct epf_vnet *vnet)
 	size_t len;
 	struct virtio_rdma_ack_query_port *port;
 	struct virtio_rdma_ack_query_device *device;
+	struct virtio_rdma_cmd_add_gid *cmd_add_gid;
 
 	err = vringh_getdesc(vrh, riov, wiov, &head);
 	if (err <= 0)
@@ -74,6 +75,7 @@ static int epf_vnet_ep_process_ctrlq_entry(struct epf_vnet *vnet)
 	hdr = phys_to_virt((unsigned long)riov->iov[riov->i].iov_base);
 	ack = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
 	wiov->i++;
+	riov->i++;
 
 	switch (hdr->class) {
 	case VIRTIO_NET_CTRL_ANNOUNCE:
@@ -102,7 +104,7 @@ static int epf_vnet_ep_process_ctrlq_entry(struct epf_vnet *vnet)
 			}
 			port = phys_to_virt(
 				(unsigned long)wiov->iov[wiov->i].iov_base);
-			port->gid_tbl_len = 512;
+			port->gid_tbl_len = EPF_VNET_ROCE_GID_TBL_LEN;
 			port->max_msg_sz = 0x800000;
 			*ack = VIRTIO_NET_OK;
 			break;
@@ -122,7 +124,8 @@ static int epf_vnet_ep_process_ctrlq_entry(struct epf_vnet *vnet)
 			device = phys_to_virt(
 				(unsigned long)wiov->iov[wiov->i].iov_base);
 
-			device->device_cap_flags = vnet->roce_attr.device_cap_flags;
+			device->device_cap_flags =
+				vnet->roce_attr.device_cap_flags;
 			device->max_mr_size = vnet->roce_attr.max_mr_size;
 			device->page_size_cap = vnet->roce_attr.page_size_cap;
 			device->hw_ver = vnet->roce_attr.hw_ver;
@@ -134,8 +137,37 @@ static int epf_vnet_ep_process_ctrlq_entry(struct epf_vnet *vnet)
 			device->max_mr = vnet->roce_attr.max_mr;
 			device->max_pd = vnet->roce_attr.max_pd;
 			device->max_qp_rd_atom = vnet->roce_attr.max_qp_rd_atom;
-			device->max_qp_init_rd_atom = vnet->roce_attr.max_qp_init_rd_atom;
+			device->max_qp_init_rd_atom =
+				vnet->roce_attr.max_qp_init_rd_atom;
 			device->max_ah = vnet->roce_attr.max_ah;
+
+			*ack = VIRTIO_NET_OK;
+			break;
+		case VIRTIO_NET_CTRL_ROCE_ADD_GID:
+			if (riov->i >= riov->used) {
+				pr_err("");
+				err = -EIO;
+				break;
+			}
+
+			if (riov->iov[riov->i].iov_len < sizeof(*cmd_add_gid)) {
+				pr_err("invalid size of port query\n");
+				err = -EIO;
+				break;
+			}
+
+			cmd_add_gid = phys_to_virt(
+				(unsigned long)riov->iov[riov->i].iov_base);
+
+			if (cmd_add_gid->index >= EPF_VNET_ROCE_GID_TBL_LEN) {
+				err = -EINVAL;
+				break;
+			}
+
+			memcpy(vnet->roce_gid_tbl[cmd_add_gid->index].raw,
+			       cmd_add_gid->gid, sizeof(cmd_add_gid->gid));
+
+			//TODO print gid for debuging
 
 			*ack = VIRTIO_NET_OK;
 			break;

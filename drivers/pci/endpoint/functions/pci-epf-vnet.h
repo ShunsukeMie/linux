@@ -9,6 +9,10 @@
 #include <linux/virtio.h>
 
 #if defined(CONFIG_PCI_EPF_VNET_ROCE)
+#include <rdma/ib_verbs.h>
+
+#define EPF_VNET_ROCE_GID_TBL_LEN 512
+
 struct epf_vnet_roce_dev_attr {
 	u64 max_mr_size;
 	u64 page_size_cap;
@@ -63,6 +67,8 @@ struct epf_vnet {
 
 #if defined(CONFIG_PCI_EPF_VNET_ROCE)
 	struct epf_vnet_roce_dev_attr roce_attr;
+	union ib_gid roce_gid_tbl[EPF_VNET_ROCE_GID_TBL_LEN];
+
 #endif // CONFIG_PCI_EPF_VNET_ROCE
 };
 
