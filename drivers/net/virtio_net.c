@@ -2613,9 +2613,9 @@ static bool virtnet_commit_rss_command(struct virtnet_info *vi)
 	sg_buf_size = vi->rss_key_size;
 	sg_set_buf(&sgs[3], vi->ctrl->rss.key, sg_buf_size);
 
-	if (!virtnet_send_command(vi, VIRTIO_NET_CTRL_MQ,
+	if (!virtnet_send_command(dev, VIRTIO_NET_CTRL_MQ,
 				  vi->has_rss ? VIRTIO_NET_CTRL_MQ_RSS_CONFIG
-				  : VIRTIO_NET_CTRL_MQ_HASH_CONFIG, sgs)) {
+				  : VIRTIO_NET_CTRL_MQ_HASH_CONFIG, sgs, NULL)) {
 		dev_warn(&dev->dev, "VIRTIONET issue with committing RSS sgs\n");
 		return false;
 	}
@@ -2929,9 +2929,9 @@ static int virtnet_send_notf_coal_cmds(struct virtnet_info *vi,
 	coal_tx.tx_max_packets = cpu_to_le32(ec->tx_max_coalesced_frames);
 	sg_init_one(&sgs_tx, &coal_tx, sizeof(coal_tx));
 
-	if (!virtnet_send_command(vi, VIRTIO_NET_CTRL_NOTF_COAL,
+	if (!virtnet_send_command(vi->dev, VIRTIO_NET_CTRL_NOTF_COAL,
 				  VIRTIO_NET_CTRL_NOTF_COAL_TX_SET,
-				  &sgs_tx))
+				  &sgs_tx, NULL))
 		return -EINVAL;
 
 	/* Save parameters */
@@ -2942,9 +2942,9 @@ static int virtnet_send_notf_coal_cmds(struct virtnet_info *vi,
 	coal_rx.rx_max_packets = cpu_to_le32(ec->rx_max_coalesced_frames);
 	sg_init_one(&sgs_rx, &coal_rx, sizeof(coal_rx));
 
-	if (!virtnet_send_command(vi, VIRTIO_NET_CTRL_NOTF_COAL,
+	if (!virtnet_send_command(vi->dev, VIRTIO_NET_CTRL_NOTF_COAL,
 				  VIRTIO_NET_CTRL_NOTF_COAL_RX_SET,
-				  &sgs_rx))
+				  &sgs_rx, NULL))
 		return -EINVAL;
 
 	/* Save parameters */
@@ -4245,8 +4245,8 @@ static int virtnet_probe(struct virtio_device *vdev)
 		struct scatterlist sg;
 
 		sg_init_one(&sg, dev->dev_addr, dev->addr_len);
-		if (!virtnet_send_command(vi, VIRTIO_NET_CTRL_MAC,
-					  VIRTIO_NET_CTRL_MAC_ADDR_SET, &sg)) {
+		if (!virtnet_send_command(vi->dev, VIRTIO_NET_CTRL_MAC,
+					  VIRTIO_NET_CTRL_MAC_ADDR_SET, &sg, NULL)) {
 			pr_debug("virtio_net: setting MAC address failed\n");
 			rtnl_unlock();
 			err = -EINVAL;
