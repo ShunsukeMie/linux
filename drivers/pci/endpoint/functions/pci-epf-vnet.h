@@ -8,6 +8,28 @@
 #include <linux/dmaengine.h>
 #include <linux/virtio.h>
 
+#if defined(CONFIG_PCI_EPF_VNET_ROCE)
+struct epf_vnet_roce_dev_attr {
+	u64 max_mr_size;
+	u64 page_size_cap;
+	u32 hw_ver;
+	u32 max_qp_wr;
+	u64 device_cap_flags;
+	u32 max_send_sge;
+	u32 max_recv_sge;
+	u32 max_sge_rd;
+	u32 max_cqe;
+	u32 max_mr;
+	u32 max_mw;
+	u32 max_pd;
+	u32 max_qp_rd_atom;
+	u32 max_qp_init_rd_atom;
+	u32 max_ah;
+	u32 max_fast_reg_page_list_len;
+	u8 local_ca_ack_delay;
+};
+#endif // CONFIG_PCI_EPF_VNET_ROCE
+
 struct epf_vnet {
 	//TODO Should this variable be placed here?
 	struct pci_epf *epf;
@@ -38,6 +60,10 @@ struct epf_vnet {
 #define EPF_VNET_INIT_COMPLETE_EP BIT(0)
 #define EPF_VNET_INIT_COMPLETE_RC BIT(1)
 	u8 init_complete;
+
+#if defined(CONFIG_PCI_EPF_VNET_ROCE)
+	struct epf_vnet_roce_dev_attr roce_attr;
+#endif // CONFIG_PCI_EPF_VNET_ROCE
 };
 
 int epf_vnet_rc_setup(struct epf_vnet *vnet);

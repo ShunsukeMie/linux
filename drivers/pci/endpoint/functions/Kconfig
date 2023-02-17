@@ -38,7 +38,7 @@ config PCI_EPF_VNTB
 
 	  If in doubt, say "N" to disable Endpoint NTB driver.
 
-config PCI_EPF_VNET
+menuconfig PCI_EPF_VNET
 	tristate "PCI Endpoint virtio-net driver"
 	depends on PCI_ENDPOINT
 	select PCI_ENDPOINT_VIRTIO
@@ -49,3 +49,9 @@ config PCI_EPF_VNET
 	  show the virtio-net as pci device to PCIe Host side, and, another
 	  virtio-net device show to local machine. Those devices can communicate
 	  each other.
+
+config PCI_EPF_VNET_ROCE
+	tristate "Support RoCE feature"
+	depends on PCI_EPF_VNET
+	help
+	  This configuration enables to RDMA feature to PCI Endpoint virtio-net driver.

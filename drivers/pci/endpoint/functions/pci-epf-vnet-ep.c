@@ -51,6 +51,8 @@ static int epf_vnet_ep_process_ctrlq_entry(struct epf_vnet *vnet)
 	int err;
 	u16 head;
 	size_t len;
+	struct virtio_rdma_ack_query_port *port;
+	struct virtio_rdma_ack_query_device *device;
 
 	err = vringh_getdesc(vrh, riov, wiov, &head);
 	if (err <= 0)
@@ -71,6 +73,7 @@ static int epf_vnet_ep_process_ctrlq_entry(struct epf_vnet *vnet)
 
 	hdr = phys_to_virt((unsigned long)riov->iov[riov->i].iov_base);
 	ack = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
+	wiov->i++;
 
 	switch (hdr->class) {
 	case VIRTIO_NET_CTRL_ANNOUNCE:
@@ -82,6 +85,68 @@ static int epf_vnet_ep_process_ctrlq_entry(struct epf_vnet *vnet)
 		epf_vnet_ep_clear_status(vnet, VIRTIO_NET_S_ANNOUNCE);
 		*ack = VIRTIO_NET_OK;
 		break;
+#if defined(CONFIG_PCI_EPF_VNET_ROCE)
+	case VIRTIO_NET_CTRL_ROCE: {
+		switch (hdr->cmd) {
+		case VIRTIO_NET_CTRL_ROCE_QUERY_PORT:
+			//TODO
+			if (wiov->i >= wiov->used) {
+				err = -EIO;
+				break;
+			}
+
+			if (wiov->iov[wiov->i].iov_len < sizeof(*port)) {
+				pr_err("invalid size of port query\n");
+				err = -EIO;
+				break;
+			}
+			port = phys_to_virt(
+				(unsigned long)wiov->iov[wiov->i].iov_base);
+			port->gid_tbl_len = 512;
+			port->max_msg_sz = 0x800000;
+			*ack = VIRTIO_NET_OK;
+			break;
+		case VIRTIO_NET_CTRL_ROCE_QUERY_DEVICE:
+			if (wiov->i >= wiov->used) {
+				pr_err("");
+				err = -EIO;
+				break;
+			}
+
+			if (wiov->iov[wiov->i].iov_len < sizeof(*device)) {
+				pr_err("");
+				err = -EIO;
+				break;
+			}
+
+			device = phys_to_virt(
+				(unsigned long)wiov->iov[wiov->i].iov_base);
+
+			device->device_cap_flags = vnet->roce_attr.device_cap_flags;
+			device->max_mr_size = vnet->roce_attr.max_mr_size;
+			device->page_size_cap = vnet->roce_attr.page_size_cap;
+			device->hw_ver = vnet->roce_attr.hw_ver;
+			device->max_qp_wr = vnet->roce_attr.max_qp_wr;
+			device->max_send_sge = vnet->roce_attr.max_send_sge;
+			device->max_recv_sge = vnet->roce_attr.max_recv_sge;
+			device->max_sge_rd = vnet->roce_attr.max_sge_rd;
+			device->max_cqe = vnet->roce_attr.max_cqe;
+			device->max_mr = vnet->roce_attr.max_mr;
+			device->max_pd = vnet->roce_attr.max_pd;
+			device->max_qp_rd_atom = vnet->roce_attr.max_qp_rd_atom;
+			device->max_qp_init_rd_atom = vnet->roce_attr.max_qp_init_rd_atom;
+			device->max_ah = vnet->roce_attr.max_ah;
+
+			*ack = VIRTIO_NET_OK;
+			break;
+		default:
+			pr_debug("Found unknown roce command: %d\n", hdr->cmd);
+			err = -EIO;
+			break;
+		}
+		break;
+	}
+#endif // CONFIG_PCI_EPF_VNET_ROCE
 	default:
 		pr_debug("Found not supported class: %d\n", hdr->class);
 		err = -EIO;
