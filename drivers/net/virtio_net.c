@@ -4236,6 +4236,8 @@ static int virtnet_probe(struct virtio_device *vdev)
 
 	virtio_device_ready(vdev);
 
+	rtnl_unlock();
+
 	/* a random MAC address has been assigned, notify the device.
 	 * We don't fail probe if VIRTIO_NET_F_CTRL_MAC_ADDR is not there
 	 * because many devices work fine without getting MAC explicitly
@@ -4264,7 +4266,6 @@ static int virtnet_probe(struct virtio_device *vdev)
 		}
 	}
 
-	rtnl_unlock();
 
 	err = virtnet_cpu_notif_add(vi);
 	if (err) {
