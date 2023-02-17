@@ -331,7 +331,8 @@ static void epf_vnet_virtio_init(struct epf_vnet *vnet)
 		BIT(VIRTIO_NET_F_GUEST_TSO6) | BIT(VIRTIO_NET_F_GUEST_ECN) |
 		BIT(VIRTIO_NET_F_GUEST_UFO) |
 		// The control queue is just used for linkup announcement.
-		BIT(VIRTIO_NET_F_CTRL_VQ);
+		BIT(VIRTIO_NET_F_CTRL_VQ) |
+		BIT(VIRTIO_NET_F_ROCE);
 
 	vnet->vnet_cfg.max_virtqueue_pairs = 1;
 	vnet->vnet_cfg.status = 0;
