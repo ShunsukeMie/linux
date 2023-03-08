@@ -308,7 +308,7 @@ static int pci_endpoint_test_validate_xfer_params(struct device *dev,
 		return -EINVAL;
 	}
 
-	if (param->size > SIZE_MAX - alignment) {
+	if (param->size * param->count > SIZE_MAX - alignment) {
 		dev_dbg(dev, "Maximum transfer data size exceeded\n");
 		return -EINVAL;
 	}
@@ -325,7 +325,7 @@ static bool pci_endpoint_test_copy(struct pci_endpoint_test *test,
 	void *dst_addr;
 	u32 flags = 0;
 	bool use_dma;
-	size_t size;
+	size_t xfer_size;
 	dma_addr_t src_phys_addr;
 	dma_addr_t dst_phys_addr;
 	struct pci_dev *pdev = test->pdev;
@@ -351,7 +351,7 @@ static bool pci_endpoint_test_copy(struct pci_endpoint_test *test,
 	if (err)
 		return false;
 
-	size = param.size;
+	xfer_size = param.size * param.count;
 
 	use_dma = !!(param.flags & PCITEST_FLAGS_USE_DMA);
 	if (use_dma)
@@ -362,16 +362,16 @@ static bool pci_endpoint_test_copy(struct pci_endpoint_test *test,
 		goto err;
 	}
 
-	orig_src_addr = kzalloc(size + alignment, GFP_KERNEL);
+	orig_src_addr = kzalloc(xfer_size + alignment, GFP_KERNEL);
 	if (!orig_src_addr) {
 		dev_err(dev, "Failed to allocate source buffer\n");
 		ret = false;
 		goto err;
 	}
 
-	get_random_bytes(orig_src_addr, size + alignment);
+	get_random_bytes(orig_src_addr, xfer_size + alignment);
 	orig_src_phys_addr = dma_map_single(dev, orig_src_addr,
-					    size + alignment, DMA_TO_DEVICE);
+					    xfer_size + alignment, DMA_TO_DEVICE);
 	if (dma_mapping_error(dev, orig_src_phys_addr)) {
 		dev_err(dev, "failed to map source buffer address\n");
 		ret = false;
@@ -389,9 +389,9 @@ static bool pci_endpoint_test_copy(struct pci_endpoint_test *test,
 
 	pci_endpoint_test_writeq(test, PCI_ENDPOINT_TEST_SRC_ADDR, src_phys_addr);
 
-	src_crc32 = crc32_le(~0, src_addr, size);
+	src_crc32 = crc32_le(~0, src_addr, xfer_size);
 
-	orig_dst_addr = kzalloc(size + alignment, GFP_KERNEL);
+	orig_dst_addr = kzalloc(xfer_size + alignment, GFP_KERNEL);
 	if (!orig_dst_addr) {
 		dev_err(dev, "Failed to allocate destination address\n");
 		ret = false;
@@ -399,7 +399,7 @@ static bool pci_endpoint_test_copy(struct pci_endpoint_test *test,
 	}
 
 	orig_dst_phys_addr = dma_map_single(dev, orig_dst_addr,
-					    size + alignment, DMA_FROM_DEVICE);
+					    xfer_size + alignment, DMA_FROM_DEVICE);
 	if (dma_mapping_error(dev, orig_dst_phys_addr)) {
 		dev_err(dev, "failed to map destination buffer address\n");
 		ret = false;
@@ -418,7 +418,8 @@ static bool pci_endpoint_test_copy(struct pci_endpoint_test *test,
 	pci_endpoint_test_writeq(test, PCI_ENDPOINT_TEST_DST_ADDR, dst_phys_addr);
 
 	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_SIZE,
-				 size);
+				 param.size);
+	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_COUNT, param.count);
 
 	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_FLAGS, flags);
 	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_IRQ_TYPE, irq_type);
@@ -428,10 +429,10 @@ static bool pci_endpoint_test_copy(struct pci_endpoint_test *test,
 
 	wait_for_completion(&test->irq_raised);
 
-	dma_unmap_single(dev, orig_dst_phys_addr, size + alignment,
+	dma_unmap_single(dev, orig_dst_phys_addr, xfer_size + alignment,
 			 DMA_FROM_DEVICE);
 
-	dst_crc32 = crc32_le(~0, dst_addr, size);
+	dst_crc32 = crc32_le(~0, dst_addr, xfer_size);
 	if (dst_crc32 == src_crc32)
 		ret = true;
 
@@ -439,7 +440,7 @@ err_dst_phys_addr:
 	kfree(orig_dst_addr);
 
 err_dst_addr:
-	dma_unmap_single(dev, orig_src_phys_addr, size + alignment,
+	dma_unmap_single(dev, orig_src_phys_addr, xfer_size + alignment,
 			 DMA_TO_DEVICE);
 
 err_src_phys_addr:
@@ -466,7 +467,7 @@ static bool pci_endpoint_test_write(struct pci_endpoint_test *test,
 	size_t offset;
 	size_t alignment = test->alignment;
 	int irq_type = test->irq_type;
-	size_t size;
+	size_t xfer_size;
 	u32 crc32;
 	int err;
 
@@ -480,7 +481,7 @@ static bool pci_endpoint_test_write(struct pci_endpoint_test *test,
 	if (err)
 		return false;
 
-	size = param.size;
+	xfer_size = param.size * param.count;
 
 	use_dma = !!(param.flags & PCITEST_FLAGS_USE_DMA);
 	if (use_dma)
@@ -491,16 +492,16 @@ static bool pci_endpoint_test_write(struct pci_endpoint_test *test,
 		goto err;
 	}
 
-	orig_addr = kzalloc(size + alignment, GFP_KERNEL);
+	orig_addr = kzalloc(xfer_size + alignment, GFP_KERNEL);
 	if (!orig_addr) {
 		dev_err(dev, "Failed to allocate address\n");
 		ret = false;
 		goto err;
 	}
 
-	get_random_bytes(orig_addr, size + alignment);
+	get_random_bytes(orig_addr, xfer_size + alignment);
 
-	orig_phys_addr = dma_map_single(dev, orig_addr, size + alignment,
+	orig_phys_addr = dma_map_single(dev, orig_addr, xfer_size + alignment,
 					DMA_TO_DEVICE);
 	if (dma_mapping_error(dev, orig_phys_addr)) {
 		dev_err(dev, "failed to map source buffer address\n");
@@ -517,13 +518,14 @@ static bool pci_endpoint_test_write(struct pci_endpoint_test *test,
 		addr = orig_addr;
 	}
 
-	crc32 = crc32_le(~0, addr, size);
+	crc32 = crc32_le(~0, addr, xfer_size);
 	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_CHECKSUM,
 				 crc32);
 
 	pci_endpoint_test_writeq(test, PCI_ENDPOINT_TEST_SRC_ADDR, phys_addr);
 
-	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_SIZE, size);
+	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_SIZE, param.size);
+	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_COUNT, param.count);
 
 	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_FLAGS, flags);
 	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_IRQ_TYPE, irq_type);
@@ -537,7 +539,7 @@ static bool pci_endpoint_test_write(struct pci_endpoint_test *test,
 	if (reg & STATUS_READ_SUCCESS)
 		ret = true;
 
-	dma_unmap_single(dev, orig_phys_addr, size + alignment,
+	dma_unmap_single(dev, orig_phys_addr, xfer_size + alignment,
 			 DMA_TO_DEVICE);
 
 err_phys_addr:
@@ -554,7 +556,7 @@ static bool pci_endpoint_test_read(struct pci_endpoint_test *test,
 	bool ret = false;
 	u32 flags = 0;
 	bool use_dma;
-	size_t size;
+	size_t xfer_size;
 	void *addr;
 	dma_addr_t phys_addr;
 	struct pci_dev *pdev = test->pdev;
@@ -577,7 +579,7 @@ static bool pci_endpoint_test_read(struct pci_endpoint_test *test,
 	if (err)
 		return false;
 
-	size = param.size;
+	xfer_size = param.size * param.count;
 
 	use_dma = !!(param.flags & PCITEST_FLAGS_USE_DMA);
 	if (use_dma)
@@ -588,14 +590,14 @@ static bool pci_endpoint_test_read(struct pci_endpoint_test *test,
 		goto err;
 	}
 
-	orig_addr = kzalloc(size + alignment, GFP_KERNEL);
+	orig_addr = kzalloc(xfer_size + alignment, GFP_KERNEL);
 	if (!orig_addr) {
 		dev_err(dev, "Failed to allocate destination address\n");
 		ret = false;
 		goto err;
 	}
 
-	orig_phys_addr = dma_map_single(dev, orig_addr, size + alignment,
+	orig_phys_addr = dma_map_single(dev, orig_addr, xfer_size + alignment,
 					DMA_FROM_DEVICE);
 	if (dma_mapping_error(dev, orig_phys_addr)) {
 		dev_err(dev, "failed to map source buffer address\n");
@@ -614,7 +616,8 @@ static bool pci_endpoint_test_read(struct pci_endpoint_test *test,
 
 	pci_endpoint_test_writeq(test, PCI_ENDPOINT_TEST_DST_ADDR, phys_addr);
 
-	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_SIZE, size);
+	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_SIZE, param.size);
+	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_COUNT, param.count);
 
 	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_FLAGS, flags);
 	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_IRQ_TYPE, irq_type);
@@ -624,10 +627,10 @@ static bool pci_endpoint_test_read(struct pci_endpoint_test *test,
 
 	wait_for_completion(&test->irq_raised);
 
-	dma_unmap_single(dev, orig_phys_addr, size + alignment,
+	dma_unmap_single(dev, orig_phys_addr, xfer_size + alignment,
 			 DMA_FROM_DEVICE);
 
-	crc32 = crc32_le(~0, addr, size);
+	crc32 = crc32_le(~0, addr, xfer_size);
 	if (crc32 == pci_endpoint_test_readl(test, PCI_ENDPOINT_TEST_CHECKSUM))
 		ret = true;
 
