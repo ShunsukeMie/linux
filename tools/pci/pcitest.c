@@ -35,6 +35,7 @@ struct pci_test {
 	bool		write;
 	bool		copy;
 	unsigned long	size;
+	unsigned long	count;
 	bool		use_dma;
 };
 
@@ -115,6 +116,7 @@ static int run_test(struct pci_test *test)
 
 	if (test->write) {
 		param.size = test->size;
+		param.count = test->count;
 		if (test->use_dma)
 			param.flags = PCITEST_FLAGS_USE_DMA;
 		ret = ioctl(fd, PCITEST_WRITE, &param);
@@ -127,6 +129,7 @@ static int run_test(struct pci_test *test)
 
 	if (test->read) {
 		param.size = test->size;
+		param.count = test->count;
 		if (test->use_dma)
 			param.flags = PCITEST_FLAGS_USE_DMA;
 		ret = ioctl(fd, PCITEST_READ, &param);
@@ -139,6 +142,7 @@ static int run_test(struct pci_test *test)
 
 	if (test->copy) {
 		param.size = test->size;
+		param.count = test->count;
 		if (test->use_dma)
 			param.flags = PCITEST_FLAGS_USE_DMA;
 		ret = ioctl(fd, PCITEST_COPY, &param);
@@ -171,10 +175,13 @@ int main(int argc, char **argv)
 	/* set default size as 100KB */
 	test->size = 0x19000;
 
+	/* set default transfer count */
+	test->count = 1;
+
 	/* set default endpoint device */
 	test->device = "/dev/pci-endpoint-test.0";
 
-	while ((c = getopt(argc, argv, "D:b:m:x:i:deIlhrwcs:")) != EOF)
+	while ((c = getopt(argc, argv, "D:b:m:x:i:deIlhrwcs:C:")) != EOF)
 	switch (c) {
 	case 'D':
 		test->device = optarg;
@@ -221,6 +228,9 @@ int main(int argc, char **argv)
 	case 's':
 		test->size = strtoul(optarg, NULL, 0);
 		continue;
+	case 'C':
+		test->count = strtoul(optarg, NULL, 0);
+		continue;
 	case 'd':
 		test->use_dma = true;
 		continue;
@@ -243,6 +253,7 @@ usage:
 			"\t-w			Write buffer test\n"
 			"\t-c			Copy buffer test\n"
 			"\t-s <size>		Size of buffer {default: 100KB}\n"
+			"\t-C <count>		Number of consecutive DMA transfers {default: 1}\n"
 			"\t-h			Print this help message\n",
 			argv[0]);
 		return -EINVAL;
