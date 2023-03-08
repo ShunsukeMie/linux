@@ -22,51 +22,11 @@
 #include <linux/pci_ids.h>
 
 #include <linux/pci_regs.h>
+#include <linux/pci-epf-test.h>
 
 #include <uapi/linux/pcitest.h>
 
 #define DRV_MODULE_NAME				"pci-endpoint-test"
-
-#define IRQ_TYPE_UNDEFINED			-1
-#define IRQ_TYPE_LEGACY				0
-#define IRQ_TYPE_MSI				1
-#define IRQ_TYPE_MSIX				2
-
-#define PCI_ENDPOINT_TEST_MAGIC			0x0
-
-#define PCI_ENDPOINT_TEST_COMMAND		0x4
-#define COMMAND_RAISE_LEGACY_IRQ		BIT(0)
-#define COMMAND_RAISE_MSI_IRQ			BIT(1)
-#define COMMAND_RAISE_MSIX_IRQ			BIT(2)
-#define COMMAND_READ				BIT(3)
-#define COMMAND_WRITE				BIT(4)
-#define COMMAND_COPY				BIT(5)
-
-#define PCI_ENDPOINT_TEST_STATUS		0x8
-#define STATUS_READ_SUCCESS			BIT(0)
-#define STATUS_READ_FAIL			BIT(1)
-#define STATUS_WRITE_SUCCESS			BIT(2)
-#define STATUS_WRITE_FAIL			BIT(3)
-#define STATUS_COPY_SUCCESS			BIT(4)
-#define STATUS_COPY_FAIL			BIT(5)
-#define STATUS_IRQ_RAISED			BIT(6)
-#define STATUS_SRC_ADDR_INVALID			BIT(7)
-#define STATUS_DST_ADDR_INVALID			BIT(8)
-
-#define PCI_ENDPOINT_TEST_LOWER_SRC_ADDR	0x0c
-#define PCI_ENDPOINT_TEST_UPPER_SRC_ADDR	0x10
-
-#define PCI_ENDPOINT_TEST_LOWER_DST_ADDR	0x14
-#define PCI_ENDPOINT_TEST_UPPER_DST_ADDR	0x18
-
-#define PCI_ENDPOINT_TEST_SIZE			0x1c
-#define PCI_ENDPOINT_TEST_CHECKSUM		0x20
-
-#define PCI_ENDPOINT_TEST_IRQ_TYPE		0x24
-#define PCI_ENDPOINT_TEST_IRQ_NUMBER		0x28
-
-#define PCI_ENDPOINT_TEST_FLAGS			0x2c
-#define FLAG_USE_DMA				BIT(0)
 
 #define PCI_DEVICE_ID_TI_AM654			0xb00c
 #define PCI_DEVICE_ID_TI_J7200			0xb00f
@@ -136,6 +96,12 @@ static inline void pci_endpoint_test_writel(struct pci_endpoint_test *test,
 					    u32 offset, u32 value)
 {
 	writel(value, test->base + offset);
+}
+
+static inline void pci_endpoint_test_write64(struct pci_endpoint_test *test,
+					    u32 offset, u64 value)
+{
+	iowrite64(value, test->base + offset);
 }
 
 static inline u32 pci_endpoint_test_bar_readl(struct pci_endpoint_test *test,
@@ -358,7 +324,7 @@ static bool pci_endpoint_test_copy(struct pci_endpoint_test *test,
 	void *dst_addr;
 	u32 flags = 0;
 	bool use_dma;
-	size_t size;
+	size_t size, count;
 	dma_addr_t src_phys_addr;
 	dma_addr_t dst_phys_addr;
 	struct pci_dev *pdev = test->pdev;
@@ -385,6 +351,7 @@ static bool pci_endpoint_test_copy(struct pci_endpoint_test *test,
 		return false;
 
 	size = param.size;
+	count = param.count;
 
 	use_dma = !!(param.flags & PCITEST_FLAGS_USE_DMA);
 	if (use_dma)
@@ -420,11 +387,7 @@ static bool pci_endpoint_test_copy(struct pci_endpoint_test *test,
 		src_addr = orig_src_addr;
 	}
 
-	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_LOWER_SRC_ADDR,
-				 lower_32_bits(src_phys_addr));
-
-	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_UPPER_SRC_ADDR,
-				 upper_32_bits(src_phys_addr));
+	pci_endpoint_test_write64(test, PCI_ENDPOINT_TEST_SRC_ADDR, src_phys_addr);
 
 	src_crc32 = crc32_le(~0, src_addr, size);
 
@@ -452,13 +415,11 @@ static bool pci_endpoint_test_copy(struct pci_endpoint_test *test,
 		dst_addr = orig_dst_addr;
 	}
 
-	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_LOWER_DST_ADDR,
-				 lower_32_bits(dst_phys_addr));
-	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_UPPER_DST_ADDR,
-				 upper_32_bits(dst_phys_addr));
+	pci_endpoint_test_write64(test, PCI_ENDPOINT_TEST_DST_ADDR, dst_phys_addr);
 
 	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_SIZE,
 				 size);
+	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_COUNT, count);
 
 	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_FLAGS, flags);
 	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_IRQ_TYPE, irq_type);
@@ -506,7 +467,7 @@ static bool pci_endpoint_test_write(struct pci_endpoint_test *test,
 	size_t offset;
 	size_t alignment = test->alignment;
 	int irq_type = test->irq_type;
-	size_t size;
+	size_t size, count;
 	u32 crc32;
 	int err;
 
@@ -521,6 +482,7 @@ static bool pci_endpoint_test_write(struct pci_endpoint_test *test,
 		return false;
 
 	size = param.size;
+	count = param.count;
 
 	use_dma = !!(param.flags & PCITEST_FLAGS_USE_DMA);
 	if (use_dma)
@@ -561,12 +523,10 @@ static bool pci_endpoint_test_write(struct pci_endpoint_test *test,
 	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_CHECKSUM,
 				 crc32);
 
-	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_LOWER_SRC_ADDR,
-				 lower_32_bits(phys_addr));
-	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_UPPER_SRC_ADDR,
-				 upper_32_bits(phys_addr));
+	pci_endpoint_test_write64(test, PCI_ENDPOINT_TEST_SRC_ADDR, phys_addr);
 
 	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_SIZE, size);
+	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_COUNT, count);
 
 	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_FLAGS, flags);
 	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_IRQ_TYPE, irq_type);
@@ -597,7 +557,7 @@ static bool pci_endpoint_test_read(struct pci_endpoint_test *test,
 	bool ret = false;
 	u32 flags = 0;
 	bool use_dma;
-	size_t size;
+	size_t size, count;
 	void *addr;
 	dma_addr_t phys_addr;
 	struct pci_dev *pdev = test->pdev;
@@ -621,6 +581,7 @@ static bool pci_endpoint_test_read(struct pci_endpoint_test *test,
 		return false;
 
 	size = param.size;
+	count = param.count;
 
 	use_dma = !!(param.flags & PCITEST_FLAGS_USE_DMA);
 	if (use_dma)
@@ -631,14 +592,14 @@ static bool pci_endpoint_test_read(struct pci_endpoint_test *test,
 		goto err;
 	}
 
-	orig_addr = kzalloc(size + alignment, GFP_KERNEL);
+	orig_addr = kzalloc(size * count + alignment, GFP_KERNEL);
 	if (!orig_addr) {
 		dev_err(dev, "Failed to allocate destination address\n");
 		ret = false;
 		goto err;
 	}
 
-	orig_phys_addr = dma_map_single(dev, orig_addr, size + alignment,
+	orig_phys_addr = dma_map_single(dev, orig_addr, size * count + alignment,
 					DMA_FROM_DEVICE);
 	if (dma_mapping_error(dev, orig_phys_addr)) {
 		dev_err(dev, "failed to map source buffer address\n");
@@ -655,12 +616,10 @@ static bool pci_endpoint_test_read(struct pci_endpoint_test *test,
 		addr = orig_addr;
 	}
 
-	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_LOWER_DST_ADDR,
-				 lower_32_bits(phys_addr));
-	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_UPPER_DST_ADDR,
-				 upper_32_bits(phys_addr));
+	pci_endpoint_test_write64(test, PCI_ENDPOINT_TEST_DST_ADDR, phys_addr);
 
 	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_SIZE, size);
+	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_COUNT, count);
 
 	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_FLAGS, flags);
 	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_IRQ_TYPE, irq_type);
@@ -670,10 +629,10 @@ static bool pci_endpoint_test_read(struct pci_endpoint_test *test,
 
 	wait_for_completion(&test->irq_raised);
 
-	dma_unmap_single(dev, orig_phys_addr, size + alignment,
+	dma_unmap_single(dev, orig_phys_addr, size * count + alignment,
 			 DMA_FROM_DEVICE);
 
-	crc32 = crc32_le(~0, addr, size);
+	crc32 = crc32_le(~0, addr, size * count);
 	if (crc32 == pci_endpoint_test_readl(test, PCI_ENDPOINT_TEST_CHECKSUM))
 		ret = true;
 

@@ -25,6 +25,7 @@
 
 struct pci_endpoint_test_xfer_param {
 	unsigned long size;
+	unsigned long count;
 	unsigned char flags;
 };
 
