@@ -696,6 +696,18 @@ void dw_pcie_upconfig_setup(struct dw_pcie *pci)
 }
 EXPORT_SYMBOL_GPL(dw_pcie_upconfig_setup);
 
+void dw_pcie_num_lanes_setup(struct dw_pcie *pci, int num_lanes)
+{
+	u8 cap = dw_pcie_find_capability(pci, PCI_CAP_ID_EXP);
+	u32 val;
+
+	val = dw_pcie_readl_dbi(pci, cap + PCI_EXP_LNKCAP);
+	val &= ~PCI_EXP_LNKCAP_MLW;
+	val |= num_lanes << PCI_EXP_LNKSTA_NLW_SHIFT;
+	dw_pcie_writel_dbi(pci, cap + PCI_EXP_LNKCAP, val);
+}
+EXPORT_SYMBOL_GPL(dw_pcie_num_lanes_setup);
+
 static void dw_pcie_link_set_max_speed(struct dw_pcie *pci, u32 link_gen)
 {
 	u32 cap, ctrl2, link_speed;
