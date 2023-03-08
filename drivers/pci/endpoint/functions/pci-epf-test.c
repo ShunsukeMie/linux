@@ -17,30 +17,8 @@
 
 #include <linux/pci-epc.h>
 #include <linux/pci-epf.h>
+#include <linux/pci-epf-test.h>
 #include <linux/pci_regs.h>
-
-#define IRQ_TYPE_LEGACY			0
-#define IRQ_TYPE_MSI			1
-#define IRQ_TYPE_MSIX			2
-
-#define COMMAND_RAISE_LEGACY_IRQ	BIT(0)
-#define COMMAND_RAISE_MSI_IRQ		BIT(1)
-#define COMMAND_RAISE_MSIX_IRQ		BIT(2)
-#define COMMAND_READ			BIT(3)
-#define COMMAND_WRITE			BIT(4)
-#define COMMAND_COPY			BIT(5)
-
-#define STATUS_READ_SUCCESS		BIT(0)
-#define STATUS_READ_FAIL		BIT(1)
-#define STATUS_WRITE_SUCCESS		BIT(2)
-#define STATUS_WRITE_FAIL		BIT(3)
-#define STATUS_COPY_SUCCESS		BIT(4)
-#define STATUS_COPY_FAIL		BIT(5)
-#define STATUS_IRQ_RAISED		BIT(6)
-#define STATUS_SRC_ADDR_INVALID		BIT(7)
-#define STATUS_DST_ADDR_INVALID		BIT(8)
-
-#define FLAG_USE_DMA			BIT(0)
 
 #define TIMER_RESOLUTION		1
 
@@ -59,19 +37,6 @@ struct pci_epf_test {
 	bool			dma_private;
 	const struct pci_epc_features *epc_features;
 };
-
-struct pci_epf_test_reg {
-	u32	magic;
-	u32	command;
-	u32	status;
-	u64	src_addr;
-	u64	dst_addr;
-	u32	size;
-	u32	checksum;
-	u32	irq_type;
-	u32	irq_number;
-	u32	flags;
-} __packed;
 
 static struct pci_epf_header test_header = {
 	.vendorid	= PCI_ANY_ID,
