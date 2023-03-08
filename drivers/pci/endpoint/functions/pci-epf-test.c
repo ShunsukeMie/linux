@@ -63,6 +63,7 @@ static void pci_epf_test_dma_callback(void *param)
  * @dma_src: The source address of the data transfer. It can be a physical
  *	     address given by pci_epc_mem_alloc_addr or DMA mapping APIs.
  * @len: The size of the data transfer
+ * @count: The number of DMAs issuing in consecutive
  * @dma_remote: remote RC physical address
  * @dir: DMA transfer direction
  *
@@ -74,7 +75,7 @@ static void pci_epf_test_dma_callback(void *param)
  */
 static int pci_epf_test_data_transfer(struct pci_epf_test *epf_test,
 				      dma_addr_t dma_dst, dma_addr_t dma_src,
-				      size_t len, dma_addr_t dma_remote,
+				      size_t len, size_t count, dma_addr_t dma_remote,
 				      enum dma_transfer_direction dir)
 {
 	struct dma_chan *chan = (dir == DMA_DEV_TO_MEM) ?
@@ -87,47 +88,56 @@ static int pci_epf_test_data_transfer(struct pci_epf_test *epf_test,
 	struct device *dev = &epf->dev;
 	dma_cookie_t cookie;
 	int ret;
+	int i;
+	size_t offset;
 
 	if (IS_ERR_OR_NULL(chan)) {
 		dev_err(dev, "Invalid DMA memcpy channel\n");
 		return -EINVAL;
 	}
 
-	if (epf_test->dma_private) {
-		sconf.direction = dir;
-		if (dir == DMA_MEM_TO_DEV)
-			sconf.dst_addr = dma_remote;
-		else
-			sconf.src_addr = dma_remote;
+	for (i = 0, offset = 0; i < count; i++, offset += len) {
+		if (epf_test->dma_private) {
+			sconf.direction = dir;
+			if (dir == DMA_MEM_TO_DEV)
+				sconf.dst_addr = dma_remote + offset;
+			else
+				sconf.src_addr = dma_remote + offset;
 
-		if (dmaengine_slave_config(chan, &sconf)) {
-			dev_err(dev, "DMA slave config fail\n");
+			if (dmaengine_slave_config(chan, &sconf)) {
+				dev_err(dev, "DMA slave config fail\n");
+				return -EIO;
+			}
+			tx = dmaengine_prep_slave_single(
+				chan, dma_local + offset, len, dir, flags);
+		} else {
+			tx = dmaengine_prep_dma_memcpy(chan, dma_dst + offset,
+						       dma_src + offset, len,
+						       flags);
+		}
+
+		if (!tx) {
+			dev_err(dev, "Failed to prepare DMA memcpy\n");
 			return -EIO;
 		}
-		tx = dmaengine_prep_slave_single(chan, dma_local, len, dir,
-						 flags);
-	} else {
-		tx = dmaengine_prep_dma_memcpy(chan, dma_dst, dma_src, len,
-					       flags);
+
+		if (i == count - 1) {
+			tx->callback = pci_epf_test_dma_callback;
+			tx->callback_param = epf_test;
+			reinit_completion(&epf_test->transfer_complete);
+		}
+
+		cookie = tx->tx_submit(tx);
+
+		ret = dma_submit_error(cookie);
+		if (ret) {
+			dev_err(dev, "Failed to do DMA tx_submit %d\n", cookie);
+			return -EIO;
+		}
+
+		dma_async_issue_pending(chan);
 	}
 
-	if (!tx) {
-		dev_err(dev, "Failed to prepare DMA memcpy\n");
-		return -EIO;
-	}
-
-	tx->callback = pci_epf_test_dma_callback;
-	tx->callback_param = epf_test;
-	cookie = tx->tx_submit(tx);
-	reinit_completion(&epf_test->transfer_complete);
-
-	ret = dma_submit_error(cookie);
-	if (ret) {
-		dev_err(dev, "Failed to do DMA tx_submit %d\n", cookie);
-		return -EIO;
-	}
-
-	dma_async_issue_pending(chan);
 	ret = wait_for_completion_interruptible(&epf_test->transfer_complete);
 	if (ret < 0) {
 		dmaengine_terminate_sync(chan);
@@ -244,7 +254,7 @@ static void pci_epf_test_clean_dma_chan(struct pci_epf_test *epf_test)
 	return;
 }
 
-static void pci_epf_test_print_rate(const char *ops, u64 size,
+static void pci_epf_test_print_rate(const char *ops, u64 size, u64 count,
 				    struct timespec64 *start,
 				    struct timespec64 *end, bool dma)
 {
@@ -255,7 +265,7 @@ static void pci_epf_test_print_rate(const char *ops, u64 size,
 
 	/* convert both size (stored in 'rate') and time in terms of 'ns' */
 	ns = timespec64_to_ns(&ts);
-	rate = size * NSEC_PER_SEC;
+	rate = size * count * NSEC_PER_SEC;
 
 	/* Divide both size (stored in 'rate') and ns by a common factor */
 	while (ns > UINT_MAX) {
@@ -269,8 +279,8 @@ static void pci_epf_test_print_rate(const char *ops, u64 size,
 	/* calculate the rate */
 	do_div(rate, (uint32_t)ns);
 
-	pr_info("\n%s => Size: %llu bytes\t DMA: %s\t Time: %llu.%09u seconds\t"
-		"Rate: %llu KB/s\n", ops, size, dma ? "YES" : "NO",
+	pr_info("\n%s => Size: %llu bytes\tcount %lld\t DMA: %s\t Time: %llu.%09u seconds\t"
+		"Rate: %llu KB/s\n", ops, size, count, dma ? "YES" : "NO",
 		(u64)ts.tv_sec, (u32)ts.tv_nsec, rate / 1024);
 }
 
@@ -289,7 +299,7 @@ static int pci_epf_test_copy(struct pci_epf_test *epf_test)
 	enum pci_barno test_reg_bar = epf_test->test_reg_bar;
 	struct pci_epf_test_reg *reg = epf_test->reg[test_reg_bar];
 
-	src_addr = pci_epc_mem_alloc_addr(epc, &src_phys_addr, reg->size);
+	src_addr = pci_epc_mem_alloc_addr(epc, &src_phys_addr, reg->size * reg->count);
 	if (!src_addr) {
 		dev_err(dev, "Failed to allocate source address\n");
 		reg->status = STATUS_SRC_ADDR_INVALID;
@@ -298,14 +308,14 @@ static int pci_epf_test_copy(struct pci_epf_test *epf_test)
 	}
 
 	ret = pci_epc_map_addr(epc, epf->func_no, epf->vfunc_no, src_phys_addr,
-			       reg->src_addr, reg->size);
+			       reg->src_addr, reg->size * reg->count);
 	if (ret) {
 		dev_err(dev, "Failed to map source address\n");
 		reg->status = STATUS_SRC_ADDR_INVALID;
 		goto err_src_addr;
 	}
 
-	dst_addr = pci_epc_mem_alloc_addr(epc, &dst_phys_addr, reg->size);
+	dst_addr = pci_epc_mem_alloc_addr(epc, &dst_phys_addr, reg->size * reg->count);
 	if (!dst_addr) {
 		dev_err(dev, "Failed to allocate destination address\n");
 		reg->status = STATUS_DST_ADDR_INVALID;
@@ -314,7 +324,7 @@ static int pci_epf_test_copy(struct pci_epf_test *epf_test)
 	}
 
 	ret = pci_epc_map_addr(epc, epf->func_no, epf->vfunc_no, dst_phys_addr,
-			       reg->dst_addr, reg->size);
+			       reg->dst_addr, reg->size * reg->count);
 	if (ret) {
 		dev_err(dev, "Failed to map destination address\n");
 		reg->status = STATUS_DST_ADDR_INVALID;
@@ -337,7 +347,7 @@ static int pci_epf_test_copy(struct pci_epf_test *epf_test)
 		}
 
 		ret = pci_epf_test_data_transfer(epf_test, dst_phys_addr,
-						 src_phys_addr, reg->size, 0,
+						 src_phys_addr, reg->size, reg->count, 0,
 						 DMA_MEM_TO_MEM);
 		if (ret)
 			dev_err(dev, "Data transfer failed\n");
@@ -353,21 +363,23 @@ static int pci_epf_test_copy(struct pci_epf_test *epf_test)
 		memcpy_fromio(buf, src_addr, reg->size);
 		memcpy_toio(dst_addr, buf, reg->size);
 		kfree(buf);
+
+		reg->count = 1;
 	}
 	ktime_get_ts64(&end);
-	pci_epf_test_print_rate("COPY", reg->size, &start, &end, use_dma);
+	pci_epf_test_print_rate("COPY", reg->size, reg->count, &start, &end, use_dma);
 
 err_map_addr:
 	pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no, dst_phys_addr);
 
 err_dst_addr:
-	pci_epc_mem_free_addr(epc, dst_phys_addr, dst_addr, reg->size);
+	pci_epc_mem_free_addr(epc, dst_phys_addr, dst_addr, reg->size * reg->count);
 
 err_src_map_addr:
 	pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no, src_phys_addr);
 
 err_src_addr:
-	pci_epc_mem_free_addr(epc, src_phys_addr, src_addr, reg->size);
+	pci_epc_mem_free_addr(epc, src_phys_addr, src_addr, reg->size * reg->count);
 
 err:
 	return ret;
@@ -390,7 +402,7 @@ static int pci_epf_test_read(struct pci_epf_test *epf_test)
 	enum pci_barno test_reg_bar = epf_test->test_reg_bar;
 	struct pci_epf_test_reg *reg = epf_test->reg[test_reg_bar];
 
-	src_addr = pci_epc_mem_alloc_addr(epc, &phys_addr, reg->size);
+	src_addr = pci_epc_mem_alloc_addr(epc, &phys_addr, reg->size * reg->count);
 	if (!src_addr) {
 		dev_err(dev, "Failed to allocate address\n");
 		reg->status = STATUS_SRC_ADDR_INVALID;
@@ -399,14 +411,14 @@ static int pci_epf_test_read(struct pci_epf_test *epf_test)
 	}
 
 	ret = pci_epc_map_addr(epc, epf->func_no, epf->vfunc_no, phys_addr,
-			       reg->src_addr, reg->size);
+			       reg->src_addr, reg->size * reg->count);
 	if (ret) {
 		dev_err(dev, "Failed to map address\n");
 		reg->status = STATUS_SRC_ADDR_INVALID;
 		goto err_addr;
 	}
 
-	buf = kzalloc(reg->size, GFP_KERNEL);
+	buf = kzalloc(reg->size * reg->count, GFP_KERNEL);
 	if (!buf) {
 		ret = -ENOMEM;
 		goto err_map_addr;
@@ -420,7 +432,7 @@ static int pci_epf_test_read(struct pci_epf_test *epf_test)
 			goto err_dma_map;
 		}
 
-		dst_phys_addr = dma_map_single(dma_dev, buf, reg->size,
+		dst_phys_addr = dma_map_single(dma_dev, buf, reg->size * reg->count,
 					       DMA_FROM_DEVICE);
 		if (dma_mapping_error(dma_dev, dst_phys_addr)) {
 			dev_err(dev, "Failed to map destination buffer addr\n");
@@ -430,23 +442,24 @@ static int pci_epf_test_read(struct pci_epf_test *epf_test)
 
 		ktime_get_ts64(&start);
 		ret = pci_epf_test_data_transfer(epf_test, dst_phys_addr,
-						 phys_addr, reg->size,
+						 phys_addr, reg->size, reg->count,
 						 reg->src_addr, DMA_DEV_TO_MEM);
 		if (ret)
 			dev_err(dev, "Data transfer failed\n");
 		ktime_get_ts64(&end);
 
-		dma_unmap_single(dma_dev, dst_phys_addr, reg->size,
+		dma_unmap_single(dma_dev, dst_phys_addr, reg->size * reg->count,
 				 DMA_FROM_DEVICE);
 	} else {
 		ktime_get_ts64(&start);
 		memcpy_fromio(buf, src_addr, reg->size);
 		ktime_get_ts64(&end);
+		reg->count = 1;
 	}
 
-	pci_epf_test_print_rate("READ", reg->size, &start, &end, use_dma);
+	pci_epf_test_print_rate("READ", reg->size, reg->count, &start, &end, use_dma);
 
-	crc32 = crc32_le(~0, buf, reg->size);
+	crc32 = crc32_le(~0, buf, reg->size * reg->count);
 	if (crc32 != reg->checksum)
 		ret = -EIO;
 
@@ -457,7 +470,7 @@ err_map_addr:
 	pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no, phys_addr);
 
 err_addr:
-	pci_epc_mem_free_addr(epc, phys_addr, src_addr, reg->size);
+	pci_epc_mem_free_addr(epc, phys_addr, src_addr, reg->size * reg->count);
 
 err:
 	return ret;
@@ -479,7 +492,7 @@ static int pci_epf_test_write(struct pci_epf_test *epf_test)
 	enum pci_barno test_reg_bar = epf_test->test_reg_bar;
 	struct pci_epf_test_reg *reg = epf_test->reg[test_reg_bar];
 
-	dst_addr = pci_epc_mem_alloc_addr(epc, &phys_addr, reg->size);
+	dst_addr = pci_epc_mem_alloc_addr(epc, &phys_addr, reg->size * reg->count);
 	if (!dst_addr) {
 		dev_err(dev, "Failed to allocate address\n");
 		reg->status = STATUS_DST_ADDR_INVALID;
@@ -488,21 +501,21 @@ static int pci_epf_test_write(struct pci_epf_test *epf_test)
 	}
 
 	ret = pci_epc_map_addr(epc, epf->func_no, epf->vfunc_no, phys_addr,
-			       reg->dst_addr, reg->size);
+			       reg->dst_addr, reg->size * reg->count);
 	if (ret) {
 		dev_err(dev, "Failed to map address\n");
 		reg->status = STATUS_DST_ADDR_INVALID;
 		goto err_addr;
 	}
 
-	buf = kzalloc(reg->size, GFP_KERNEL);
+	buf = kzalloc(reg->size * reg->count, GFP_KERNEL);
 	if (!buf) {
 		ret = -ENOMEM;
 		goto err_map_addr;
 	}
 
-	get_random_bytes(buf, reg->size);
-	reg->checksum = crc32_le(~0, buf, reg->size);
+	get_random_bytes(buf, reg->size * reg->count);
+	reg->checksum = crc32_le(~0, buf, reg->size * reg->count);
 
 	use_dma = !!(reg->flags & FLAG_USE_DMA);
 	if (use_dma) {
@@ -512,7 +525,7 @@ static int pci_epf_test_write(struct pci_epf_test *epf_test)
 			goto err_dma_map;
 		}
 
-		src_phys_addr = dma_map_single(dma_dev, buf, reg->size,
+		src_phys_addr = dma_map_single(dma_dev, buf, reg->size * reg->count,
 					       DMA_TO_DEVICE);
 		if (dma_mapping_error(dma_dev, src_phys_addr)) {
 			dev_err(dev, "Failed to map source buffer addr\n");
@@ -523,22 +536,23 @@ static int pci_epf_test_write(struct pci_epf_test *epf_test)
 		ktime_get_ts64(&start);
 
 		ret = pci_epf_test_data_transfer(epf_test, phys_addr,
-						 src_phys_addr, reg->size,
+						 src_phys_addr, reg->size, reg->count,
 						 reg->dst_addr,
 						 DMA_MEM_TO_DEV);
 		if (ret)
 			dev_err(dev, "Data transfer failed\n");
 		ktime_get_ts64(&end);
 
-		dma_unmap_single(dma_dev, src_phys_addr, reg->size,
+		dma_unmap_single(dma_dev, src_phys_addr, reg->size * reg->count,
 				 DMA_TO_DEVICE);
 	} else {
 		ktime_get_ts64(&start);
 		memcpy_toio(dst_addr, buf, reg->size);
 		ktime_get_ts64(&end);
+		reg->count = 1;
 	}
 
-	pci_epf_test_print_rate("WRITE", reg->size, &start, &end, use_dma);
+	pci_epf_test_print_rate("WRITE", reg->size, reg->count, &start, &end, use_dma);
 
 	/*
 	 * wait 1ms inorder for the write to complete. Without this delay L3
@@ -553,7 +567,7 @@ err_map_addr:
 	pci_epc_unmap_addr(epc, epf->func_no, epf->vfunc_no, phys_addr);
 
 err_addr:
-	pci_epc_mem_free_addr(epc, phys_addr, dst_addr, reg->size);
+	pci_epc_mem_free_addr(epc, phys_addr, dst_addr, reg->size * reg->count);
 
 err:
 	return ret;
