@@ -41,12 +41,11 @@ config PCI_EPF_VNTB
 config PCI_EPF_VIRTIO
 	tristate
 	help
-	  A library to implement virtio device for pci endpoint function
+	  This is a util functions to impelment virtio device.
 
-config PCI_EPF_VNET
+menuconfig PCI_EPF_VNET
 	tristate "PCI Endpoint virtio-net driver"
 	depends on PCI_ENDPOINT
-# 	select PCI_ENDPOINT_VIRTIO
 	select VHOST_RING
 	select VHOST_IOMEM
 	select PCI_EPF_VIRTIO
@@ -55,3 +54,9 @@ config PCI_EPF_VNET
 	  show the virtio-net as pci device to PCIe Host side, and, another
 	  virtio-net device show to local machine. Those devices can communicate
 	  each other.
+
+config PCI_EPF_VNET_ROCE
+	tristate "Support RoCE feature"
+	depends on PCI_EPF_VNET
+	help
+	  This configuration enables to RDMA feature to PCI Endpoint virtio-net driver.
