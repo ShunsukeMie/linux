@@ -11,6 +11,7 @@
 #include <linux/virtio_pci.h>
 #include <linux/virtio_ring.h>
 #include <linux/vringh.h>
+#include <rdma/ib_verbs.h>
 
 #include "pci-epf-virtio.h"
 
@@ -24,6 +25,7 @@ int epf_vnet_get_vq_size(void)
 }
 
 #if defined(CONFIG_PCI_EPF_VNET_ROCE)
+#define EPF_VNET_ROCE_GID_TBL_LEN 512
 struct epf_vnet_roce_dev_attr {
 	u64 max_mr_size;
 	u64 page_size_cap;
@@ -66,8 +68,11 @@ struct epf_vnet {
 
 	struct {
 		struct virtqueue *rxvq, *txvq, *ctlvq;
+		struct virtqueue *rcq_vq, *rsq_vq, *rrq_vq;
 		struct vringh txvrh, rxvrh, ctlvrh;
+		struct vringh rcq_vrh, rsq_vrh, rrq_vrh;
 		struct vringh_kiov tx_iov, rx_iov, ctl_riov, ctl_wiov;
+		struct vringh_kiov rcq_iov, rsq_iov, rrq_iov;
 		struct virtio_device vdev;
 		struct workqueue_struct *tx_wq;
 		struct work_struct tx_work;
@@ -82,6 +87,7 @@ struct epf_vnet {
 
 #if defined(CONFIG_PCI_EPF_VNET_ROCE)
 	struct epf_vnet_roce_dev_attr roce_attr;
+	union ib_gid roce_gid_tbl[EPF_VNET_ROCE_GID_TBL_LEN];
 #endif // CONFIG_PCI_EPF_VNET_ROCE
 };
 
@@ -616,6 +622,11 @@ static int epf_vnet_lhost_process_ctrlq_entry(struct epf_vnet *vnet)
 	int err;
 	u16 head;
 	size_t len;
+	struct virtio_rdma_ack_query_port *port;
+	struct virtio_rdma_ack_query_device *device;
+	struct virtio_rdma_cmd_add_gid *cmd_add_gid;
+	struct virtio_rdma_ack_create_pd *create_pd;
+	pr_info("%s:%d\n", __func__, __LINE__);
 
 	err = vringh_getdesc(vrh, riov, wiov, &head);
 	if (err <= 0)
@@ -637,6 +648,9 @@ static int epf_vnet_lhost_process_ctrlq_entry(struct epf_vnet *vnet)
 	hdr = phys_to_virt((unsigned long)riov->iov[riov->i].iov_base);
 	ack = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
 
+	riov->i++;
+	wiov->i++;
+
 	switch (hdr->class) {
 	case VIRTIO_NET_CTRL_ANNOUNCE:
 		if (hdr->cmd != VIRTIO_NET_CTRL_ANNOUNCE_ACK) {
@@ -647,8 +661,113 @@ static int epf_vnet_lhost_process_ctrlq_entry(struct epf_vnet *vnet)
 		epf_vnet_lhost_clear_status(vnet, VIRTIO_NET_S_ANNOUNCE);
 		*ack = VIRTIO_NET_OK;
 		break;
+#if defined(CONFIG_PCI_EPF_VNET_ROCE)
+	case VIRTIO_NET_CTRL_ROCE: {
+		pr_info("VIRTIO_NET_CTRL_ROCE\n");
+		switch (hdr->cmd) {
+		case VIRTIO_NET_CTRL_ROCE_QUERY_PORT:
+			//TODO
+			if (wiov->i >= wiov->used) {
+				err = -EIO;
+				break;
+			}
+
+			if (wiov->iov[wiov->i].iov_len < sizeof(*port)) {
+				pr_err("invalid size of port query %ld < %ld\n", wiov->iov[wiov->i].iov_len, sizeof (*port));
+				err = -EIO;
+				break;
+			}
+			port = phys_to_virt(
+				(unsigned long)wiov->iov[wiov->i].iov_base);
+			port->gid_tbl_len = EPF_VNET_ROCE_GID_TBL_LEN;
+			port->max_msg_sz = 0x800000;
+			*ack = VIRTIO_NET_OK;
+			break;
+		case VIRTIO_NET_CTRL_ROCE_QUERY_DEVICE:
+			if (wiov->i >= wiov->used) {
+				pr_err("");
+				err = -EIO;
+				break;
+			}
+
+			if (wiov->iov[wiov->i].iov_len < sizeof(*device)) {
+				pr_err("");
+				err = -EIO;
+				break;
+			}
+
+			device = phys_to_virt(
+				(unsigned long)wiov->iov[wiov->i].iov_base);
+
+			device->device_cap_flags =
+				vnet->roce_attr.device_cap_flags;
+			device->max_mr_size = vnet->roce_attr.max_mr_size;
+			device->page_size_cap = vnet->roce_attr.page_size_cap;
+			device->hw_ver = vnet->roce_attr.hw_ver;
+			device->max_qp_wr = vnet->roce_attr.max_qp_wr;
+			device->max_send_sge = vnet->roce_attr.max_send_sge;
+			device->max_recv_sge = vnet->roce_attr.max_recv_sge;
+			device->max_sge_rd = vnet->roce_attr.max_sge_rd;
+			device->max_cqe = vnet->roce_attr.max_cqe;
+			device->max_mr = vnet->roce_attr.max_mr;
+			device->max_pd = vnet->roce_attr.max_pd;
+			device->max_qp_rd_atom = vnet->roce_attr.max_qp_rd_atom;
+			device->max_qp_init_rd_atom =
+				vnet->roce_attr.max_qp_init_rd_atom;
+			device->max_ah = vnet->roce_attr.max_ah;
+
+			*ack = VIRTIO_NET_OK;
+			break;
+		case VIRTIO_NET_CTRL_ROCE_ADD_GID:
+			if (riov->i >= riov->used) {
+				pr_err("");
+				err = -EIO;
+				break;
+			}
+
+			if (riov->iov[riov->i].iov_len < sizeof(*cmd_add_gid)) {
+				pr_err("invalid size of port query\n");
+				err = -EIO;
+				break;
+			}
+
+			cmd_add_gid = phys_to_virt(
+				(unsigned long)riov->iov[riov->i].iov_base);
+
+			if (cmd_add_gid->index >= EPF_VNET_ROCE_GID_TBL_LEN) {
+				err = -EINVAL;
+				break;
+			}
+
+			memcpy(vnet->roce_gid_tbl[cmd_add_gid->index].raw,
+			       cmd_add_gid->gid, sizeof(cmd_add_gid->gid));
+
+			//TODO print gid for debuging
+
+			*ack = VIRTIO_NET_OK;
+			break;
+		case VIRTIO_NET_CTRL_ROCE_CREATE_PD:
+			if (wiov->iov[wiov->i].iov_len < sizeof (*create_pd)) {
+				pr_err("invalid size of ack for create pd query");
+				err = -EIO;
+				break;
+			}
+			create_pd = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
+
+			//TODO
+			create_pd->pdn = 1;
+
+			*ack = VIRTIO_NET_OK;
+			break;
+		default:
+			pr_info("The cmd number %d is not yet implemented\n", hdr->cmd);
+		}
+	}
+	break;
+#endif /* CONFIG_PCI_EPF_VNET_ROCE */
+
 	default:
-		pr_debug("Found not supported class: %d\n", hdr->class);
+		pr_info("Found not supported class: %d\n", hdr->class);
 		err = -EIO;
 	}
 
@@ -791,6 +910,7 @@ epf_vnet_lhost_vdev_find_vqs(struct virtio_device *vdev, unsigned int nvqs,
 		vqs[i] = vq;
 		vring = virtqueue_get_vring(vq);
 
+		pr_info("%s:%d nvq %d: %d\n", __func__, __LINE__, nvqs, i);
 		switch (i) {
 		case 0: // rx
 			vrh = &vnet->lhost.rxvrh;
@@ -803,6 +923,18 @@ epf_vnet_lhost_vdev_find_vqs(struct virtio_device *vdev, unsigned int nvqs,
 		case 2: // control
 			vrh = &vnet->lhost.ctlvrh;
 			vnet->lhost.ctlvq = vq;
+			break;
+		case 3: // rdma complete queue
+			vrh = &vnet->lhost.rcq_vrh;
+			vnet->lhost.rcq_vq = vq;
+			break;
+		case 4: // rdma send queue
+			vrh = &vnet->lhost.rsq_vrh;
+			vnet->lhost.rsq_vq = vq;
+			break;
+		case 5: // rdma receive queue
+			vrh = &vnet->lhost.rrq_vrh;
+			vnet->lhost.rrq_vq = vq;
 			break;
 		default:
 			err = -EIO;
@@ -822,6 +954,9 @@ epf_vnet_lhost_vdev_find_vqs(struct virtio_device *vdev, unsigned int nvqs,
 	vringh_kiov_init(&vnet->lhost.rx_iov, NULL, 0);
 	vringh_kiov_init(&vnet->lhost.ctl_riov, NULL, 0);
 	vringh_kiov_init(&vnet->lhost.ctl_wiov, NULL, 0);
+	vringh_kiov_init(&vnet->lhost.rcq_iov, NULL, 0);
+	vringh_kiov_init(&vnet->lhost.rsq_iov, NULL, 0);
+	vringh_kiov_init(&vnet->lhost.rrq_iov, NULL, 0);
 
 	return 0;
 
@@ -1246,6 +1381,9 @@ static void epf_vnet_virtio_init(struct epf_vnet *vnet)
 	vnet->vnet_cfg.mtu = PAGE_SIZE;
 
 #if defined(CONFIG_PCI_EPF_VNET_ROCE)
+	vnet->vnet_cfg.max_rdma_qps = 1;
+	vnet->vnet_cfg.max_rdma_cqs = 1;
+
 	vnet->roce_attr.max_mr_size = 1 << 30;
 	vnet->roce_attr.page_size_cap = 0xfffff000;
 	vnet->roce_attr.hw_ver = 0xdeadbeef;
