@@ -626,6 +626,9 @@ static int epf_vnet_lhost_process_ctrlq_entry(struct epf_vnet *vnet)
 	struct virtio_rdma_ack_query_device *device;
 	struct virtio_rdma_cmd_add_gid *cmd_add_gid;
 	struct virtio_rdma_ack_create_pd *create_pd;
+	struct virtio_rdma_cmd_get_dma_mr *get_dma_mr_cmd;
+	struct virtio_rdma_ack_get_dma_mr *get_dma_mr_rsp;
+
 	pr_info("%s:%d\n", __func__, __LINE__);
 
 	err = vringh_getdesc(vrh, riov, wiov, &head);
@@ -662,7 +665,7 @@ static int epf_vnet_lhost_process_ctrlq_entry(struct epf_vnet *vnet)
 		*ack = VIRTIO_NET_OK;
 		break;
 #if defined(CONFIG_PCI_EPF_VNET_ROCE)
-	case VIRTIO_NET_CTRL_ROCE: {
+	case VIRTIO_NET_CTRL_ROCE:
 		pr_info("VIRTIO_NET_CTRL_ROCE\n");
 		switch (hdr->cmd) {
 		case VIRTIO_NET_CTRL_ROCE_QUERY_PORT:
@@ -673,7 +676,9 @@ static int epf_vnet_lhost_process_ctrlq_entry(struct epf_vnet *vnet)
 			}
 
 			if (wiov->iov[wiov->i].iov_len < sizeof(*port)) {
-				pr_err("invalid size of port query %ld < %ld\n", wiov->iov[wiov->i].iov_len, sizeof (*port));
+				pr_err("invalid size of port query %ld < %ld\n",
+				       wiov->iov[wiov->i].iov_len,
+				       sizeof(*port));
 				err = -EIO;
 				break;
 			}
@@ -747,22 +752,48 @@ static int epf_vnet_lhost_process_ctrlq_entry(struct epf_vnet *vnet)
 			*ack = VIRTIO_NET_OK;
 			break;
 		case VIRTIO_NET_CTRL_ROCE_CREATE_PD:
-			if (wiov->iov[wiov->i].iov_len < sizeof (*create_pd)) {
+			if (wiov->iov[wiov->i].iov_len < sizeof(*create_pd)) {
 				pr_err("invalid size of ack for create pd query");
 				err = -EIO;
 				break;
 			}
-			create_pd = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
+			create_pd = phys_to_virt(
+				(unsigned long)wiov->iov[wiov->i].iov_base);
 
 			//TODO
 			create_pd->pdn = 1;
 
 			*ack = VIRTIO_NET_OK;
 			break;
+		case VIRTIO_NET_CTRL_ROCE_GET_DMA_MR:
+			if (riov->iov[riov->i].iov_len < sizeof(*get_dma_mr_cmd)) {
+				pr_err("GET_DMA_MR: cmd size not ehough\n");
+				err = -EIO;
+				break;
+			}
+// 			get_dma_mr_cmd = phys_to_virt(
+// 				(unsigned long)riov->iov[riov->i].iov_base);
+// 			get_dma_mr_cmd->pdn;
+
+			if (wiov->iov[wiov->i].iov_len < sizeof(*get_dma_mr_rsp)) {
+				pr_err("GET_DMA_MR: rsp buffer size not ehough\n");
+				err = -EIO;
+				break;
+			}
+
+			get_dma_mr_rsp = phys_to_virt(
+				(unsigned long)wiov->iov[wiov->i].iov_base);
+
+			get_dma_mr_rsp->lkey = 0;
+			get_dma_mr_rsp->rkey = 0;
+			get_dma_mr_rsp->mrn = 0;
+
+			*ack = VIRTIO_NET_OK;
+			break;
 		default:
-			pr_info("The cmd number %d is not yet implemented\n", hdr->cmd);
+			pr_info("The cmd number %d is not yet implemented\n",
+				hdr->cmd);
 		}
-	}
 	break;
 #endif /* CONFIG_PCI_EPF_VNET_ROCE */
 
@@ -1373,8 +1404,7 @@ static void epf_vnet_virtio_init(struct epf_vnet *vnet)
 		BIT(VIRTIO_NET_F_GUEST_TSO6) | BIT(VIRTIO_NET_F_GUEST_ECN) |
 		BIT(VIRTIO_NET_F_GUEST_UFO) |
 		/* The control queue is just used for linkup announcement. */
-		BIT(VIRTIO_NET_F_CTRL_VQ) |
-		BIT(VIRTIO_NET_F_ROCE);
+		BIT(VIRTIO_NET_F_CTRL_VQ) | BIT(VIRTIO_NET_F_ROCE);
 
 	vnet->vnet_cfg.max_virtqueue_pairs = 1;
 	vnet->vnet_cfg.status = 0;
