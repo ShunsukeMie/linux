@@ -714,7 +714,7 @@ int virtio_rdma_create_qp(struct ib_qp *ibqp,
 	struct virtio_rdma_ack_create_qp *rsp;
 	struct virtio_rdma_qp *vqp = to_vqp(ibqp);
 	struct ib_pd *ibpd = ibqp->pd;
-	int rc, vqn, ret;
+	int rc, vqn, ret = 0;
 
 	if (attr->srq) {
 		pr_err("srq not supported now");
