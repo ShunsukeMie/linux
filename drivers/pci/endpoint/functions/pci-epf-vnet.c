@@ -633,6 +633,7 @@ static int epf_vnet_lhost_process_ctrlq_entry(struct epf_vnet *vnet)
 	struct virtio_rdma_cmd_req_notify *req_notify_cmd;
 	struct virtio_rdma_cmd_create_qp *create_qp_cmd;
 	struct virtio_rdma_ack_create_qp *create_qp_rsp;
+	struct virtio_rdma_cmd_modify_qp *modify_qp_cmd;
 
 	pr_info("%s:%d\n", __func__, __LINE__);
 
@@ -770,6 +771,9 @@ static int epf_vnet_lhost_process_ctrlq_entry(struct epf_vnet *vnet)
 
 			*ack = VIRTIO_NET_OK;
 			break;
+		case VIRTIO_NET_CTRL_ROCE_DESTROY_PD:
+			*ack = VIRTIO_NET_OK;
+			break;
 		case VIRTIO_NET_CTRL_ROCE_GET_DMA_MR:
 			if (riov->iov[riov->i].iov_len <
 			    sizeof(*get_dma_mr_cmd)) {
@@ -795,6 +799,9 @@ static int epf_vnet_lhost_process_ctrlq_entry(struct epf_vnet *vnet)
 			get_dma_mr_rsp->rkey = 0;
 			get_dma_mr_rsp->mrn = 0;
 
+			*ack = VIRTIO_NET_OK;
+			break;
+		case VIRTIO_NET_CTRL_ROCE_DEREG_MR:
 			*ack = VIRTIO_NET_OK;
 			break;
 		case VIRTIO_NET_CTRL_ROCE_CREATE_CQ:
@@ -824,6 +831,9 @@ static int epf_vnet_lhost_process_ctrlq_entry(struct epf_vnet *vnet)
 
 			create_cq_rsp->cqn = 0;
 
+			*ack = VIRTIO_NET_OK;
+			break;
+		case VIRTIO_NET_CTRL_ROCE_DESTROY_CQ:
 			*ack = VIRTIO_NET_OK;
 			break;
 		case VIRTIO_NET_CTRL_ROCE_REQ_NOTIFY_CQ:
@@ -882,6 +892,26 @@ static int epf_vnet_lhost_process_ctrlq_entry(struct epf_vnet *vnet)
 			create_qp_rsp->qpn = 0;
 
 			*ack = VIRTIO_NET_OK;
+			break;
+		case VIRTIO_NET_CTRL_ROCE_DESTROY_QP:
+			//TODO
+			*ack = VIRTIO_NET_OK;
+			break;
+		case VIRTIO_NET_CTRL_ROCE_MODIFY_QP:
+			if (riov->iov[riov->i].iov_len <
+			    sizeof(*modify_qp_cmd)) {
+				pr_err("GET_DMA_MR: cmd size not ehough\n");
+				err = -EIO;
+				break;
+			}
+
+			modify_qp_cmd = phys_to_virt(
+				(unsigned long)riov->iov[riov->i].iov_base);
+
+			pr_info("modify qp: qpn %d\n", modify_qp_cmd->qpn);
+
+			*ack = VIRTIO_NET_OK;
+
 			break;
 		default:
 			pr_info("The cmd number %d is not yet implemented\n",
@@ -992,7 +1022,13 @@ static bool epf_vnet_lhost_vdev_vq_notify(struct virtqueue *vq)
 	case 2: // control queue
 		epf_vnet_lhost_process_ctrlq_entry(vnet);
 		break;
+	case 3:
+	case 4:
+	case 5:
+		pr_info("handled but not yet implemented: %d\n", vq->index);
+		break;
 	default:
+		pr_info("vq notify: not handled %d\n", vq->index);
 		return false;
 	}
 
