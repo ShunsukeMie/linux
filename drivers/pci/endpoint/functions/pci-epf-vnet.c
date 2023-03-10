@@ -15,7 +15,7 @@
 
 #include "pci-epf-virtio.h"
 
-static int virtio_queue_size = 0x100;
+static int virtio_queue_size = 0x400;
 module_param(virtio_queue_size, int, 0444);
 MODULE_PARM_DESC(virtio_queue_size, "A length of virtqueue");
 
@@ -628,6 +628,8 @@ static int epf_vnet_lhost_process_ctrlq_entry(struct epf_vnet *vnet)
 	struct virtio_rdma_ack_create_pd *create_pd;
 	struct virtio_rdma_cmd_get_dma_mr *get_dma_mr_cmd;
 	struct virtio_rdma_ack_get_dma_mr *get_dma_mr_rsp;
+	struct virtio_rdma_cmd_create_cq *create_cq_cmd;
+	struct virtio_rdma_ack_create_cq *create_cq_rsp;
 
 	pr_info("%s:%d\n", __func__, __LINE__);
 
@@ -766,16 +768,18 @@ static int epf_vnet_lhost_process_ctrlq_entry(struct epf_vnet *vnet)
 			*ack = VIRTIO_NET_OK;
 			break;
 		case VIRTIO_NET_CTRL_ROCE_GET_DMA_MR:
-			if (riov->iov[riov->i].iov_len < sizeof(*get_dma_mr_cmd)) {
+			if (riov->iov[riov->i].iov_len <
+			    sizeof(*get_dma_mr_cmd)) {
 				pr_err("GET_DMA_MR: cmd size not ehough\n");
 				err = -EIO;
 				break;
 			}
-// 			get_dma_mr_cmd = phys_to_virt(
-// 				(unsigned long)riov->iov[riov->i].iov_base);
-// 			get_dma_mr_cmd->pdn;
+			// 			get_dma_mr_cmd = phys_to_virt(
+			// 				(unsigned long)riov->iov[riov->i].iov_base);
+			// 			get_dma_mr_cmd->pdn;
 
-			if (wiov->iov[wiov->i].iov_len < sizeof(*get_dma_mr_rsp)) {
+			if (wiov->iov[wiov->i].iov_len <
+			    sizeof(*get_dma_mr_rsp)) {
 				pr_err("GET_DMA_MR: rsp buffer size not ehough\n");
 				err = -EIO;
 				break;
@@ -790,11 +794,40 @@ static int epf_vnet_lhost_process_ctrlq_entry(struct epf_vnet *vnet)
 
 			*ack = VIRTIO_NET_OK;
 			break;
+		case VIRTIO_NET_CTRL_ROCE_CREATE_CQ:
+			if (riov->iov[riov->i].iov_len <
+			    sizeof(*create_cq_cmd)) {
+				pr_err("GET_DMA_MR: cmd size not ehough\n");
+				err = -EIO;
+				break;
+			}
+
+			create_cq_cmd = phys_to_virt(
+				(unsigned long)riov->iov[riov->i].iov_base);
+
+			// TODO check cqe
+			// 			create_cq_cmd->cqe;
+			pr_info("create cq: cqe %d\n", create_cq_cmd->cqe);
+
+			if (wiov->iov[wiov->i].iov_len <
+			    sizeof(*create_cq_rsp)) {
+				pr_err("GET_DMA_MR: rsp buffer size not ehough\n");
+				err = -EIO;
+				break;
+			}
+
+			create_cq_rsp = phys_to_virt(
+				(unsigned long)wiov->iov[wiov->i].iov_base);
+
+			create_cq_rsp->cqn = 0;
+
+			*ack = VIRTIO_NET_OK;
+			break;
 		default:
 			pr_info("The cmd number %d is not yet implemented\n",
 				hdr->cmd);
 		}
-	break;
+		break;
 #endif /* CONFIG_PCI_EPF_VNET_ROCE */
 
 	default:
