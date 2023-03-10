@@ -630,6 +630,9 @@ static int epf_vnet_lhost_process_ctrlq_entry(struct epf_vnet *vnet)
 	struct virtio_rdma_ack_get_dma_mr *get_dma_mr_rsp;
 	struct virtio_rdma_cmd_create_cq *create_cq_cmd;
 	struct virtio_rdma_ack_create_cq *create_cq_rsp;
+	struct virtio_rdma_cmd_req_notify *req_notify_cmd;
+	struct virtio_rdma_cmd_create_qp *create_qp_cmd;
+	struct virtio_rdma_ack_create_qp *create_qp_rsp;
 
 	pr_info("%s:%d\n", __func__, __LINE__);
 
@@ -820,6 +823,63 @@ static int epf_vnet_lhost_process_ctrlq_entry(struct epf_vnet *vnet)
 				(unsigned long)wiov->iov[wiov->i].iov_base);
 
 			create_cq_rsp->cqn = 0;
+
+			*ack = VIRTIO_NET_OK;
+			break;
+		case VIRTIO_NET_CTRL_ROCE_REQ_NOTIFY_CQ:
+			if (riov->iov[riov->i].iov_len <
+			    sizeof(*req_notify_cmd)) {
+				pr_err("GET_DMA_MR: cmd size not ehough\n");
+				err = -EIO;
+				break;
+			}
+
+			req_notify_cmd = phys_to_virt(
+				(unsigned long)riov->iov[riov->i].iov_base);
+
+			pr_info("req_notify cqn %d flags 0x%x\n", req_notify_cmd->cqn, req_notify_cmd->flags);
+
+			//TODO do something
+
+			*ack = VIRTIO_NET_OK;
+			break;
+		case VIRTIO_NET_CTRL_ROCE_CREATE_QP:
+			if (riov->iov[riov->i].iov_len <
+			    sizeof(*create_qp_cmd)) {
+				pr_err("GET_DMA_MR: cmd size not ehough\n");
+				err = -EIO;
+				break;
+			}
+
+			create_qp_cmd = phys_to_virt(
+				(unsigned long)riov->iov[riov->i].iov_base);
+
+			pr_info("create qp: pdn %d\n", create_qp_cmd->pdn);
+
+			switch (create_qp_cmd->qp_type) {
+				case VIRTIO_IB_QPT_GSI:
+					// GSI is specifal qp. it is described in A18.3.6.2 GSI on IB spec.
+					break;
+				case VIRTIO_IB_QPT_RC:
+					break;
+				default:
+					pr_err("the type %d is not supported\n", create_qp_cmd->qp_type);
+					err = -EIO;
+					goto done;
+			}
+
+			if (wiov->iov[wiov->i].iov_len <
+					sizeof(*create_qp_rsp)) {
+				pr_err("GET_DMA_MR: rsp buffer size not ehough\n");
+				err = -EIO;
+				break;
+			}
+
+			create_qp_rsp = phys_to_virt(
+					(unsigned long)wiov->iov[wiov->i].iov_base);
+
+
+			create_qp_rsp->qpn = 0;
 
 			*ack = VIRTIO_NET_OK;
 			break;
