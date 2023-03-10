@@ -806,7 +806,7 @@
 			resets = <&cpg 624>;
 			num-lanes = <2>;
 			max-link-speed = <2>;
-			status = "disabled";
+			status = "okay";
 		};
 
 		pciec1_ep: pcie-ep@e65d8000 {
