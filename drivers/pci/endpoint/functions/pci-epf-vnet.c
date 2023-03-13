@@ -635,8 +635,6 @@ static int epf_vnet_lhost_process_ctrlq_entry(struct epf_vnet *vnet)
 	struct virtio_rdma_ack_create_qp *create_qp_rsp;
 	struct virtio_rdma_cmd_modify_qp *modify_qp_cmd;
 
-	pr_info("%s:%d\n", __func__, __LINE__);
-
 	err = vringh_getdesc(vrh, riov, wiov, &head);
 	if (err <= 0)
 		goto done;
@@ -1022,10 +1020,10 @@ static bool epf_vnet_lhost_vdev_vq_notify(struct virtqueue *vq)
 	case 2: // control queue
 		epf_vnet_lhost_process_ctrlq_entry(vnet);
 		break;
-	case 3:
-	case 4:
-	case 5:
-		pr_info("handled but not yet implemented: %d\n", vq->index);
+	case 3: // rdma completon queue
+	case 4: // rdma send queue
+	case 5: // rdma recv queue
+		pr_info("decteded qnotify for %d, but not yet implemented\n", vq->index);
 		break;
 	default:
 		pr_info("vq notify: not handled %d\n", vq->index);
@@ -1070,7 +1068,6 @@ epf_vnet_lhost_vdev_find_vqs(struct virtio_device *vdev, unsigned int nvqs,
 		vqs[i] = vq;
 		vring = virtqueue_get_vring(vq);
 
-		pr_info("%s:%d nvq %d: %d\n", __func__, __LINE__, nvqs, i);
 		switch (i) {
 		case 0: // rx
 			vrh = &vnet->lhost.rxvrh;
