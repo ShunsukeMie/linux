@@ -18,11 +18,6 @@ static int virtio_queue_size = 0x100;
 module_param(virtio_queue_size, int, 0444);
 MODULE_PARM_DESC(virtio_queue_size, "A length of virtqueue");
 
-int epf_vnet_get_vq_size(void)
-{
-	return virtio_queue_size;
-}
-
 struct epf_vnet {
 	//TODO Should this variable be placed here?
 	struct pci_epf *epf;
@@ -173,7 +168,7 @@ static void epf_vnet_rhost_setup_configs(struct epf_vnet *vnet,
 	epf_vnet_rhost_set_config16(vnet, VIRTIO_PCI_QUEUE_PFN, 0);
 
 	epf_vnet_rhost_set_config16(vnet, VIRTIO_PCI_QUEUE_NUM,
-				    epf_vnet_get_vq_size());
+				    virtio_queue_size);
 	epf_vnet_rhost_set_config8(vnet, VIRTIO_PCI_STATUS, 0);
 	epf_vnet_rhost_memcpy_config(vnet, VIRTIO_PCI_CONFIG_OFF(false),
 				     &vnet->vnet_cfg, sizeof(vnet->vnet_cfg));
@@ -257,7 +252,6 @@ static int epf_vnet_rhost_device_setup(void *data)
 {
 	struct epf_vnet *vnet = data;
 	struct pci_epf *epf = vnet->epf;
-	const size_t vq_size = epf_vnet_get_vq_size();
 	u16 __iomem *queue_notify =
 		vnet->rhost.cfg_base + VIRTIO_PCI_QUEUE_NOTIFY;
 	const u16 notify_default = epf_vnet_get_nqueues(vnet);
@@ -285,7 +279,8 @@ static int epf_vnet_rhost_device_setup(void *data)
 
 	for (int i = 0; i < nqueues; ++i) {
 		vrh = epf_virtio_alloc_vringh(epf, vnet->virtio_features,
-					      qinfo[i].pci_addr, vq_size);
+					      qinfo[i].pci_addr,
+					      virtio_queue_size);
 		if (IS_ERR(vrh)) {
 			err = PTR_ERR(vrh);
 			goto err_free_epf_vringh;
@@ -737,7 +732,6 @@ epf_vnet_lhost_vdev_find_vqs(struct virtio_device *vdev, unsigned int nvqs,
 			     struct irq_affinity *desc)
 {
 	struct epf_vnet *vnet = vdev_to_vnet(vdev);
-	const size_t vq_size = epf_vnet_get_vq_size();
 	int i;
 	int err;
 	int qidx;
@@ -752,7 +746,7 @@ epf_vnet_lhost_vdev_find_vqs(struct virtio_device *vdev, unsigned int nvqs,
 			continue;
 		}
 
-		vq = vring_create_virtqueue(qidx++, vq_size,
+		vq = vring_create_virtqueue(qidx++, virtio_queue_size,
 					    VIRTIO_PCI_VRING_ALIGN, vdev, true,
 					    false, ctx ? ctx[i] : false,
 					    epf_vnet_lhost_vdev_vq_notify,
@@ -783,9 +777,9 @@ epf_vnet_lhost_vdev_find_vqs(struct virtio_device *vdev, unsigned int nvqs,
 			goto err_del_vqs;
 		}
 
-		err = vringh_init_kern(vrh, vnet->virtio_features, vq_size,
-				       false, GFP_KERNEL, vring->desc,
-				       vring->avail, vring->used);
+		err = vringh_init_kern(vrh, vnet->virtio_features,
+				       virtio_queue_size, false, GFP_KERNEL,
+				       vring->desc, vring->avail, vring->used);
 		if (err) {
 			pr_err("failed to init vringh for vring %d\n", i);
 			goto err_del_vqs;
