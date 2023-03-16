@@ -132,7 +132,7 @@
 	status = "okay";
 };
 
-&pciec0 {
+&pciec0_ep {
 	pinctrl-0 = <&pcie0_pins>;
 	pinctrl-names = "default";
 	status = "okay";
