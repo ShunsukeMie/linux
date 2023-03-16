@@ -3,6 +3,25 @@
 #define __PCI_EPF_VIRTIO_H__
 
 #include <linux/sched.h>
+#include <linux/vringh.h>
+
+struct epf_virtio {
+	struct pci_epf *epf;
+	void __iomem *bar_base;
+	struct task_struct *negotiate_task;
+	struct epf_vringh **vrh;
+	size_t nvqs;
+	size_t vqsize;
+	u64 features;
+};
+
+struct epf_virtio *epf_virtio_alloc(struct pci_epf *epf, unsigned nvqs,
+				    size_t vqsize, u64 features);
+int epf_virtio_setup_pci(struct epf_virtio *evio, struct pci_epf_header *header,
+			 size_t bar_size);
+int epf_virtio_run_negotiator(struct epf_virtio *evio,
+			      void (*complete_callback)(void *arg),
+			      void *callback_arg);
 
 struct epf_vringh {
 	struct vringh vrh;
@@ -26,7 +45,39 @@ struct epf_virtio_qinfo {
 	u16 sel;
 };
 
-int epf_virtio_negotiate_qinfo(void __iomem *pci_cfg_base,
-			       struct epf_virtio_qinfo *qinfo, size_t nqinfo);
+inline static u8 epf_virtio_pcicfg_read8(struct epf_virtio *evio, size_t offset)
+{
+	return ioread8(evio->bar_base + offset);
+}
+
+inline static void epf_virtio_pcicfg_write8(struct epf_virtio *evio,
+					    size_t offset, u8 value)
+{
+	iowrite8(value, evio->bar_base + offset);
+}
+
+inline static u16 epf_virtio_pcicfg_read16(struct epf_virtio *evio,
+					   size_t offset)
+{
+	return ioread16(evio->bar_base + offset);
+}
+
+inline static void epf_virtio_pcicfg_write16(struct epf_virtio *evio,
+					     size_t offset, u16 value)
+{
+	iowrite16(value, evio->bar_base + offset);
+}
+
+inline static u32 epf_virtio_pcicfg_read32(struct epf_virtio *evio,
+					   size_t offset)
+{
+	return ioread32(evio->bar_base + offset);
+}
+
+inline static void epf_virtio_pcicfg_write32(struct epf_virtio *evio,
+					     size_t offset, u32 value)
+{
+	iowrite32(value, evio->bar_base + offset);
+}
 
 #endif /* __PCI_EPF_VIRTIO_H__ */

@@ -40,6 +40,7 @@ config PCI_EPF_VNTB
 
 config PCI_EPF_VIRTIO
 	tristate
+	depends on PCI_ENDPOINT
 	help
 	  A library to implement virtio device for pci endpoint function
 
@@ -55,3 +56,12 @@ config PCI_EPF_VNET
 	  show the virtio-net as pci device to PCIe Host side, and, another
 	  virtio-net device show to local machine. Those devices can communicate
 	  each other.
+
+config PCI_EPF_VCON
+	tristate "PCI Endpoint virtio-console driver"
+	depends on PCI_ENDPOINT
+	select PCI_EPF_VIRTIO
+	select VHOST_RING
+	select VHOST_IOMEM
+	help
+	  This is a help.

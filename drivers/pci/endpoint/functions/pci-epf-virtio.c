@@ -12,6 +12,208 @@
 
 #include "pci-epf-virtio.h"
 
+#define VIRTIO_PCI_LEGACY_CONFIG_BAR BAR_0
+static void __iomem *epf_virtio_alloc_bar(struct pci_epf *epf, size_t bar_size)
+{
+	const struct pci_epc_features *features;
+	struct pci_epf_bar *config_bar =
+		&epf->bar[VIRTIO_PCI_LEGACY_CONFIG_BAR];
+	void __iomem *cfg_base;
+	int err;
+
+	features = pci_epc_get_features(epf->epc, epf->func_no, epf->vfunc_no);
+	if (!features) {
+		pr_debug("Failed to get PCI EPC features\n");
+		return ERR_PTR(-EOPNOTSUPP);
+	}
+
+	if (features->bar_fixed_size[VIRTIO_PCI_LEGACY_CONFIG_BAR]) {
+		if (bar_size >
+		    features->bar_fixed_size[VIRTIO_PCI_LEGACY_CONFIG_BAR]) {
+			pr_debug("PCI BAR size is not enough\n");
+			return ERR_PTR(-ENOMEM);
+		}
+	}
+
+	config_bar->flags |= PCI_BASE_ADDRESS_MEM_TYPE_64;
+
+	cfg_base = pci_epf_alloc_space(epf, bar_size,
+				       VIRTIO_PCI_LEGACY_CONFIG_BAR,
+				       features->align, PRIMARY_INTERFACE);
+	if (!cfg_base)
+		return ERR_PTR(-ENOMEM);
+
+	err = pci_epc_set_bar(epf->epc, epf->func_no, epf->vfunc_no,
+			      config_bar);
+	if (err)
+		return ERR_PTR(err);
+
+	return cfg_base;
+}
+
+struct epf_virtio *epf_virtio_alloc(struct pci_epf *epf, unsigned nvqs,
+				    size_t vqsize, u64 features)
+{
+	struct epf_virtio *evio;
+
+	evio = kzalloc(sizeof(*evio), GFP_KERNEL);
+	if (!evio)
+		return ERR_PTR(-ENOMEM);
+
+	evio->epf = epf;
+	evio->nvqs = nvqs;
+	evio->vqsize = vqsize;
+	evio->features = features;
+
+	return evio;
+}
+EXPORT_SYMBOL_GPL(epf_virtio_alloc);
+
+int epf_virtio_setup_pci(struct epf_virtio *evio, struct pci_epf_header *header,
+			 size_t bar_size)
+{
+	int err;
+	void __iomem *bar;
+	struct pci_epf *epf = evio->epf;
+
+	err = pci_epc_write_header(epf->epc, epf->func_no, epf->vfunc_no,
+				   header);
+	if (err)
+		return err;
+
+	bar = epf_virtio_alloc_bar(epf, bar_size);
+	if (IS_ERR(bar))
+		return PTR_ERR(bar);
+
+	evio->bar_base = bar;
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(epf_virtio_setup_pci);
+
+static int epf_virtio_negotiate_qinfo(struct epf_virtio *evio)
+{
+	u32 pfn;
+	u16 sel;
+	int _qinfo_index = 0;
+	struct {
+		u32 pfn;
+		u16 sel;
+	} *_qinfo;
+	u16 default_sel = evio->nvqs;
+	int err;
+
+	if (!evio->bar_base)
+		return -EINVAL;
+
+	_qinfo = kmalloc_array(evio->nvqs, sizeof(*_qinfo), GFP_KERNEL);
+	if (!_qinfo)
+		return -ENOMEM;
+
+	evio->vrh = kmalloc_array(evio->nvqs, sizeof(evio->vrh[0]), GFP_KERNEL);
+	if (!evio->vrh) {
+		//TODO free(_qinfo); or goto
+		return -ENOMEM;
+	}
+
+	epf_virtio_pcicfg_write16(evio, VIRTIO_PCI_QUEUE_SEL, default_sel);
+
+	while (_qinfo_index < evio->nvqs) {
+		pfn = epf_virtio_pcicfg_read32(evio, VIRTIO_PCI_QUEUE_PFN);
+		if (pfn == 0)
+			continue;
+
+		epf_virtio_pcicfg_write32(evio, VIRTIO_PCI_QUEUE_PFN, 0);
+
+		sel = epf_virtio_pcicfg_read16(evio, VIRTIO_PCI_QUEUE_SEL);
+		if (sel == default_sel)
+			continue;
+
+		_qinfo[_qinfo_index].pfn = pfn;
+		_qinfo[_qinfo_index].sel = sel;
+		_qinfo_index++;
+	}
+
+	for (int i = 0; i < evio->nvqs; ++i) {
+		struct epf_vringh *vrh;
+		phys_addr_t pci_addr = (phys_addr_t)_qinfo[i].pfn
+				       << VIRTIO_PCI_QUEUE_ADDR_SHIFT;
+		vrh = epf_virtio_alloc_vringh(evio->epf, evio->features, pci_addr,
+					      evio->vqsize);
+		if (IS_ERR(vrh)) {
+			err = PTR_ERR(vrh);
+			goto err_free_epf_vringh;
+		}
+		if (_qinfo[i].sel >= evio->nvqs) {
+			// invalid queue selector;
+			err = -EIO;
+			goto err_free_epf_vringh;
+		}
+		evio->vrh[_qinfo[i].sel] = vrh;
+	}
+
+	kfree(_qinfo);
+
+	return 0;
+
+err_free_epf_vringh:
+	//TODO epf_virtio_free_vringh()
+
+	return err;
+}
+
+struct negotiator_param {
+	struct epf_virtio *evio;
+	void (*callback)(void *);
+	void *arg;
+};
+
+static int epf_virtio_reg_negotiator(void *data)
+{
+	struct negotiator_param *param = data;
+	struct epf_virtio *evio = param->evio;
+	int err;
+
+	err = epf_virtio_negotiate_qinfo(evio);
+	if (err) {
+		pr_info("failed to negotiate virtqueue info\n");
+		return err;
+	}
+
+	param->callback(param->arg);
+
+	return 0;
+}
+
+int epf_virtio_run_negotiator(struct epf_virtio *evio,
+			      void (*complete_callback)(void *arg),
+			      void *callback_arg)
+{
+	struct negotiator_param *thread_param;
+
+	thread_param = kmalloc(sizeof(*thread_param), GFP_KERNEL);
+	if (!thread_param) {
+		return -ENOMEM;
+	}
+
+	thread_param->evio = evio;
+	thread_param->callback = complete_callback;
+	thread_param->arg = callback_arg;
+
+	evio->negotiate_task = kthread_create(epf_virtio_reg_negotiator,
+					      thread_param,
+					      "epf-virtio/cfg_negotiator");
+	if (IS_ERR(evio->negotiate_task))
+		return PTR_ERR(evio->negotiate_task);
+
+	/* Change the thread priority to high for the polling. */
+	sched_set_fifo(evio->negotiate_task);
+	wake_up_process(evio->negotiate_task);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(epf_virtio_run_negotiator);
+
 struct epf_virtio_monitor_param {
 	void __iomem *queue_notify;
 	u16 notify_default;
@@ -164,103 +366,3 @@ void epf_virtio_free_vringh(struct pci_epf *epf, struct epf_vringh *evrh)
 	kfree(evrh);
 }
 EXPORT_SYMBOL_GPL(epf_virtio_free_vringh);
-
-int epf_virtio_negotiate_qinfo(void __iomem *pci_cfg_base,
-			       struct epf_virtio_qinfo *qinfo, size_t nqinfo)
-{
-	u32 __iomem *qpfn = pci_cfg_base + VIRTIO_PCI_QUEUE_PFN;
-	u16 __iomem *qsel = pci_cfg_base + VIRTIO_PCI_QUEUE_SEL;
-	u32 pfn;
-	u16 sel;
-	int _qinfo_index = 0;
-	struct {
-		u32 pfn;
-		u16 sel;
-	} *_qinfo;
-	u16 default_sel = nqinfo;
-
-	_qinfo = kmalloc_array(nqinfo, sizeof(*_qinfo), GFP_KERNEL);
-	if (!_qinfo)
-		return -ENOMEM;
-
-	iowrite16(default_sel, qsel);
-
-	while (_qinfo_index < nqinfo) {
-		pfn = ioread32(qpfn);
-		if (pfn == 0)
-			continue;
-
-		iowrite32(0, qpfn);
-
-		sel = ioread16(qsel);
-		if (sel == default_sel)
-			continue;
-
-		_qinfo[_qinfo_index].pfn = pfn;
-		_qinfo[_qinfo_index].sel = sel;
-		_qinfo_index++;
-	}
-
-	for (int i = 0; i < _qinfo_index; i++) {
-		qinfo[i].pci_addr = (phys_addr_t)_qinfo[i].pfn
-				    << VIRTIO_PCI_QUEUE_ADDR_SHIFT;
-		qinfo[i].sel = _qinfo[i].sel;
-	}
-
-	kfree(_qinfo);
-
-	return _qinfo_index;
-}
-EXPORT_SYMBOL_GPL(epf_virtio_negotiate_qinfo);
-
-#if 0
-int epf_vnet_rhost_negotiate_configs(struct epf_vnet *vnet,
-				     struct epf_virtio_qinfo *qinfo,
-				     size_t nqinfo)
-{
-	const u16 default_sel = epf_vnet_rhost_get_number_of_queues(vnet);
-	u32 __iomem *queue_pfn = vnet->rhost.cfg_base + VIRTIO_PCI_QUEUE_PFN;
-	u16 __iomem *queue_sel = vnet->rhost.cfg_base + VIRTIO_PCI_QUEUE_SEL;
-	u8 __iomem *pci_status = vnet->rhost.cfg_base + VIRTIO_PCI_STATUS;
-	u32 pfn;
-	u16 sel;
-	int _qinfo_index = 0;
-	struct {
-		u32 pfn;
-		u16 sel;
-	} *_qinfo;
-
-	_qinfo = kmalloc_array(nqinfo, sizeof(*_qinfo), GFP_KERNEL);
-	if (!_qinfo)
-		return -ENOMEM;
-
-	while (_qinfo_index < nqinfo) {
-		pfn = ioread32(queue_pfn);
-		if (pfn == 0)
-			continue;
-
-		iowrite32(0, queue_pfn);
-
-		sel = ioread16(queue_sel);
-		if (sel == default_sel)
-			continue;
-
-		_qinfo[_qinfo_index].pfn = pfn;
-		_qinfo[_qinfo_index].sel = sel;
-		_qinfo_index++;
-	}
-
-	while (!(ioread8(pci_status) & VIRTIO_CONFIG_S_DRIVER_OK))
-		;
-
-	for (int i = 0; i < _qinfo_index; i++) {
-		qinfo[i].pci_addr = (phys_addr_t)_qinfo[i].pfn
-				    << VIRTIO_PCI_QUEUE_ADDR_SHIFT;
-		qinfo[i].sel = _qinfo[i].sel;
-	}
-
-	kfree(_qinfo);
-
-	return _qinfo_index;
-}
-#endif
