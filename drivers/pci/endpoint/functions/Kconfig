@@ -60,3 +60,12 @@ config PCI_EPF_VNET_ROCE
 	depends on PCI_EPF_VNET
 	help
 	  This configuration enables to RDMA feature to PCI Endpoint virtio-net driver.
+
+config PCI_EPF_VCON
+	tristate "PCI Endpoint virito-console driver"
+	depends on PCI_ENDPOINT
+	select PCI_EPF_VIRTIO
+	select VHOST_RING
+	select VHOST_IOMEM
+	help
+	  this is a help text.
