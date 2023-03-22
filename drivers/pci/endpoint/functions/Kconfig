@@ -38,11 +38,6 @@ config PCI_EPF_VNTB
 
 	  If in doubt, say "N" to disable Endpoint NTB driver.
 
-config PCI_EPF_VIRTIO
-	tristate
-	help
-	  This is a util functions to impelment virtio device.
-
 config PCI_EPF_VNET
 	tristate "PCI Endpoint virtio-net driver"
 	depends on PCI_ENDPOINT
@@ -69,3 +64,8 @@ config PCI_EPF_VCON
 	select VHOST_IOMEM
 	help
 	  this is a help text.
+
+config PCI_EPF_VIRTIO
+	bool
+	help
+	  This is a util functions to impelment virtio device.
