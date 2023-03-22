@@ -14,7 +14,7 @@
 
 #include "pci-epf-virtio.h"
 
-static int virtio_queue_size = 0x100;
+static int virtio_queue_size = 0x400;
 module_param(virtio_queue_size, int, 0444);
 MODULE_PARM_DESC(virtio_queue_size, "A length of virtqueue");
 
@@ -487,7 +487,12 @@ static int epf_vnet_handle_roce_create_cq(struct epf_vnet *vnet,
 		goto done;
 	}
 
-	pr_info("cqe %d\n", ioread32(&cmd->cqe));
+	if (virtio_queue_size < ioread32(&cmd->cqe)) {
+		pr_err("virtqueue length not enough: < %d",
+		       ioread32(&cmd->cqe));
+		err = -EINVAL;
+		goto done;
+	}
 
 	ack = epf_vnet_epf_map_iov(vnet->epf, wiov, &wphys);
 	if (!ack) {
@@ -572,6 +577,7 @@ static int epf_vnet_handle_roce_get_dma_mr(struct epf_vnet *vnet,
 	if (!cmd)
 		return -EIO;
 
+	//TODO checkpdn
 	pr_info("pdn %d\n", ioread32(cmd));
 
 	ack = epf_vnet_epf_map_iov(vnet->epf, wiov, &wphys);
@@ -592,9 +598,9 @@ static int epf_vnet_handle_roce_get_dma_mr(struct epf_vnet *vnet,
 }
 
 static int epf_vnet_handle_roce_dereg_mr(struct epf_vnet *vnet,
-					struct virtio_net_ctrl_hdr *hdr,
-					struct vringh_kiov *riov,
-					struct vringh_kiov *wiov)
+					 struct virtio_net_ctrl_hdr *hdr,
+					 struct vringh_kiov *riov,
+					 struct vringh_kiov *wiov)
 {
 	return 0;
 }
