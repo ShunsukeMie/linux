@@ -406,10 +406,10 @@ static void epf_vnet_epf_unmap_iov(struct pci_epf *epf, struct vringh_kiov *iov,
 			   iov->iov[iov->i].iov_len);
 }
 
-static int epf_vnet_handle_roce_query_device(struct epf_vnet *vnet,
-					     struct virtio_net_ctrl_hdr *hdr,
-					     struct vringh_kiov *riov,
-					     struct vringh_kiov *wiov)
+static int epf_vnet_handle_rroce_query_device(struct epf_vnet *vnet,
+					      struct virtio_net_ctrl_hdr *hdr,
+					      struct vringh_kiov *riov,
+					      struct vringh_kiov *wiov)
 {
 	struct virtio_rdma_ack_query_device *ack;
 	phys_addr_t phys;
@@ -431,10 +431,10 @@ static int epf_vnet_handle_roce_query_device(struct epf_vnet *vnet,
 	return 0;
 }
 
-static int epf_vnet_handle_roce_query_port(struct epf_vnet *vnet,
-					   struct virtio_net_ctrl_hdr *hdr,
-					   struct vringh_kiov *riov,
-					   struct vringh_kiov *wiov)
+static int epf_vnet_handle_rroce_query_port(struct epf_vnet *vnet,
+					    struct virtio_net_ctrl_hdr *hdr,
+					    struct vringh_kiov *riov,
+					    struct vringh_kiov *wiov)
 {
 	struct virtio_rdma_ack_query_port *ack, ack_tmp;
 	phys_addr_t phys;
@@ -459,10 +459,10 @@ static int epf_vnet_handle_roce_query_port(struct epf_vnet *vnet,
 	return 0;
 }
 
-static int epf_vnet_handle_roce_create_cq(struct epf_vnet *vnet,
-					  struct virtio_net_ctrl_hdr *hdr,
-					  struct vringh_kiov *riov,
-					  struct vringh_kiov *wiov)
+static int epf_vnet_handle_rroce_create_cq(struct epf_vnet *vnet,
+					   struct virtio_net_ctrl_hdr *hdr,
+					   struct vringh_kiov *riov,
+					   struct vringh_kiov *wiov)
 {
 	struct virtio_rdma_cmd_create_cq __iomem *cmd;
 	struct virtio_rdma_ack_create_cq __iomem *ack;
@@ -510,18 +510,18 @@ done:
 	return err;
 }
 
-static int epf_vnet_handle_roce_destroy_cq(struct epf_vnet *vnet,
-					   struct virtio_net_ctrl_hdr *hdr,
-					   struct vringh_kiov *riov,
-					   struct vringh_kiov *wiov)
+static int epf_vnet_handle_rroce_destroy_cq(struct epf_vnet *vnet,
+					    struct virtio_net_ctrl_hdr *hdr,
+					    struct vringh_kiov *riov,
+					    struct vringh_kiov *wiov)
 {
 	return 0;
 }
 
-static int epf_vnet_handle_roce_create_pd(struct epf_vnet *vnet,
-					  struct virtio_net_ctrl_hdr *hdr,
-					  struct vringh_kiov *riov,
-					  struct vringh_kiov *wiov)
+static int epf_vnet_handle_rroce_create_pd(struct epf_vnet *vnet,
+					   struct virtio_net_ctrl_hdr *hdr,
+					   struct vringh_kiov *riov,
+					   struct vringh_kiov *wiov)
 {
 	struct virtio_rdma_ack_create_qp __iomem *ack;
 	phys_addr_t phys;
@@ -544,18 +544,18 @@ static int epf_vnet_handle_roce_create_pd(struct epf_vnet *vnet,
 	return 0;
 }
 
-static int epf_vnet_handle_roce_destry_pd(struct epf_vnet *vnet,
-					  struct virtio_net_ctrl_hdr *hdr,
-					  struct vringh_kiov *riov,
-					  struct vringh_kiov *wiov)
+static int epf_vnet_handle_rroce_destry_pd(struct epf_vnet *vnet,
+					   struct virtio_net_ctrl_hdr *hdr,
+					   struct vringh_kiov *riov,
+					   struct vringh_kiov *wiov)
 {
 	return 0;
 }
 
-static int epf_vnet_handle_roce_get_dma_mr(struct epf_vnet *vnet,
-					   struct virtio_net_ctrl_hdr *hdr,
-					   struct vringh_kiov *riov,
-					   struct vringh_kiov *wiov)
+static int epf_vnet_handle_rroce_get_dma_mr(struct epf_vnet *vnet,
+					    struct virtio_net_ctrl_hdr *hdr,
+					    struct vringh_kiov *riov,
+					    struct vringh_kiov *wiov)
 {
 	struct virtio_rdma_cmd_get_dma_mr __iomem *cmd;
 	struct virtio_rdma_ack_get_dma_mr __iomem *ack, tmp_ack;
@@ -597,18 +597,18 @@ static int epf_vnet_handle_roce_get_dma_mr(struct epf_vnet *vnet,
 	return 0;
 }
 
-static int epf_vnet_handle_roce_dereg_mr(struct epf_vnet *vnet,
-					 struct virtio_net_ctrl_hdr *hdr,
-					 struct vringh_kiov *riov,
-					 struct vringh_kiov *wiov)
+static int epf_vnet_handle_rroce_dereg_mr(struct epf_vnet *vnet,
+					  struct virtio_net_ctrl_hdr *hdr,
+					  struct vringh_kiov *riov,
+					  struct vringh_kiov *wiov)
 {
 	return 0;
 }
 
-static int epf_vnet_handle_roce_add_gid(struct epf_vnet *vnet,
-					struct virtio_net_ctrl_hdr *hdr,
-					struct vringh_kiov *riov,
-					struct vringh_kiov *wiov)
+static int epf_vnet_handle_rroce_add_gid(struct epf_vnet *vnet,
+					 struct virtio_net_ctrl_hdr *hdr,
+					 struct vringh_kiov *riov,
+					 struct vringh_kiov *wiov)
 {
 	struct virtio_rdma_cmd_add_gid __iomem *cmd, cmd_tmp;
 	int err = 0;
@@ -639,35 +639,35 @@ done:
 	return err;
 }
 
-static int epf_vnet_handle_roce_del_gid(struct epf_vnet *vnet,
-					struct virtio_net_ctrl_hdr *hdr,
-					struct vringh_kiov *riov,
-					struct vringh_kiov *wiov)
+static int epf_vnet_handle_rroce_del_gid(struct epf_vnet *vnet,
+					 struct virtio_net_ctrl_hdr *hdr,
+					 struct vringh_kiov *riov,
+					 struct vringh_kiov *wiov)
 {
 	return 0;
 }
 
-static const int (*epf_vnet_roce_cmd_handlers[])(struct epf_vnet *,
-						 struct virtio_net_ctrl_hdr *,
-						 struct vringh_kiov *,
-						 struct vringh_kiov *) = {
-	[VIRTIO_NET_CTRL_ROCE_QUERY_DEVICE] = epf_vnet_handle_roce_query_device,
-	[VIRTIO_NET_CTRL_ROCE_QUERY_PORT] = epf_vnet_handle_roce_query_port,
-	[VIRTIO_NET_CTRL_ROCE_CREATE_CQ] = epf_vnet_handle_roce_create_cq,
-	[VIRTIO_NET_CTRL_ROCE_DESTROY_CQ] = epf_vnet_handle_roce_destroy_cq,
-	[VIRTIO_NET_CTRL_ROCE_CREATE_PD] = epf_vnet_handle_roce_create_pd,
-	[VIRTIO_NET_CTRL_ROCE_DESTROY_PD] = epf_vnet_handle_roce_destry_pd,
-	[VIRTIO_NET_CTRL_ROCE_GET_DMA_MR] = epf_vnet_handle_roce_get_dma_mr,
+static const int (*epf_vnet_roce_rcmd_handlers[])(struct epf_vnet *,
+						  struct virtio_net_ctrl_hdr *,
+						  struct vringh_kiov *,
+						  struct vringh_kiov *) = {
+	[VIRTIO_NET_CTRL_ROCE_QUERY_DEVICE] = epf_vnet_handle_rroce_query_device,
+	[VIRTIO_NET_CTRL_ROCE_QUERY_PORT] = epf_vnet_handle_rroce_query_port,
+	[VIRTIO_NET_CTRL_ROCE_CREATE_CQ] = epf_vnet_handle_rroce_create_cq,
+	[VIRTIO_NET_CTRL_ROCE_DESTROY_CQ] = epf_vnet_handle_rroce_destroy_cq,
+	[VIRTIO_NET_CTRL_ROCE_CREATE_PD] = epf_vnet_handle_rroce_create_pd,
+	[VIRTIO_NET_CTRL_ROCE_DESTROY_PD] = epf_vnet_handle_rroce_destry_pd,
+	[VIRTIO_NET_CTRL_ROCE_GET_DMA_MR] = epf_vnet_handle_rroce_get_dma_mr,
 	[VIRTIO_NET_CTRL_ROCE_REG_USER_MR] = NULL,
-	[VIRTIO_NET_CTRL_ROCE_DEREG_MR] = epf_vnet_handle_roce_dereg_mr,
+	[VIRTIO_NET_CTRL_ROCE_DEREG_MR] = epf_vnet_handle_rroce_dereg_mr,
 	[VIRTIO_NET_CTRL_ROCE_CREATE_QP] = NULL,
 	[VIRTIO_NET_CTRL_ROCE_MODIFY_QP] = NULL,
 	[VIRTIO_NET_CTRL_ROCE_QUERY_QP] = NULL,
 	[VIRTIO_NET_CTRL_ROCE_DESTROY_QP] = NULL,
 	[VIRTIO_NET_CTRL_ROCE_CREATE_AH] = NULL,
 	[VIRTIO_NET_CTRL_ROCE_DESTROY_AH] = NULL,
-	[VIRTIO_NET_CTRL_ROCE_ADD_GID] = epf_vnet_handle_roce_add_gid,
-	[VIRTIO_NET_CTRL_ROCE_DEL_GID] = epf_vnet_handle_roce_del_gid,
+	[VIRTIO_NET_CTRL_ROCE_ADD_GID] = epf_vnet_handle_rroce_add_gid,
+	[VIRTIO_NET_CTRL_ROCE_DEL_GID] = epf_vnet_handle_rroce_del_gid,
 	[VIRTIO_NET_CTRL_ROCE_REQ_NOTIFY_CQ] = NULL
 };
 
@@ -736,7 +736,7 @@ static int epf_vnet_rhost_process_ctrlq_entry(struct epf_vnet *vnet)
 		break;
 #if defined(CONFIG_PCI_EPF_VNET_ROCE)
 	case VIRTIO_NET_CTRL_ROCE:
-		if (ARRAY_SIZE(epf_vnet_roce_cmd_handlers) < hdr->cmd) {
+		if (ARRAY_SIZE(epf_vnet_roce_rcmd_handlers) < hdr->cmd) {
 			err = -EIO;
 			pr_err("out of range\n");
 			iowrite8(VIRTIO_NET_ERR, ack);
@@ -744,15 +744,15 @@ static int epf_vnet_rhost_process_ctrlq_entry(struct epf_vnet *vnet)
 		}
 
 		// TODO finally remove this condition. it is for debug.
-		if (!epf_vnet_roce_cmd_handlers[hdr->cmd]) {
+		if (!epf_vnet_roce_rcmd_handlers[hdr->cmd]) {
 			pr_info("the roce cmd not yet implemented: %d\n",
 				hdr->cmd);
 			iowrite8(VIRTIO_NET_ERR, ack);
 			break;
 		}
 
-		err = epf_vnet_roce_cmd_handlers[hdr->cmd](vnet, hdr, riov,
-							   wiov);
+		err = epf_vnet_roce_rcmd_handlers[hdr->cmd](vnet, hdr, riov,
+							    wiov);
 		iowrite8(err ? VIRTIO_NET_ERR : VIRTIO_NET_OK, ack);
 		break;
 #endif /* define(CONFIG_PCI_EPF_VNET_ROCE) */
