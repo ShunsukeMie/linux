@@ -209,7 +209,7 @@ int epf_virtio_negotiate_qinfo(void __iomem *pci_cfg_base,
 
 	kfree(_qinfo);
 
-	return _qinfo_index;
+	return 0;
 }
 EXPORT_SYMBOL_GPL(epf_virtio_negotiate_qinfo);
 
