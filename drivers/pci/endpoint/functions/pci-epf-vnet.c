@@ -38,7 +38,8 @@ struct epf_vnet {
 		struct task_struct *notify_monitor_task;
 		struct workqueue_struct *tx_wq, *irq_wq, *ctl_wq;
 		struct work_struct tx_work, raise_irq_work, ctl_work;
-		struct epf_vringh *txvrh, *rxvrh, *ctlvrh;
+		struct epf_vringh *txvrh, *rxvrh, *ctlvrh, *rcqvrh, *rsqvrh,
+			*rrqvrh;
 		struct vringh_kiov tx_iov, rx_iov, ctl_riov, ctl_wiov;
 	} rhost;
 
@@ -262,11 +263,11 @@ static int epf_vnet_rhost_device_setup(void *data)
 		vnet->rhost.cfg_base + VIRTIO_PCI_QUEUE_NOTIFY;
 	const u16 notify_default = epf_vnet_get_nqueues(vnet);
 	int err;
-	int nqueues = epf_vnet_get_nqueues(vnet);;
+	int nqueues = epf_vnet_get_nqueues(vnet);
 	struct epf_virtio_qinfo *qinfo;
 	struct epf_vringh *vrh;
 
-	qinfo = kmalloc_array(nqueues, sizeof (*qinfo), GFP_KERNEL);
+	qinfo = kmalloc_array(nqueues, sizeof(*qinfo), GFP_KERNEL);
 	if (!qinfo)
 		return -ENOMEM;
 
@@ -300,6 +301,15 @@ static int epf_vnet_rhost_device_setup(void *data)
 			break;
 		case 2:
 			vnet->rhost.ctlvrh = vrh;
+			break;
+		case 3:
+			vnet->rhost.rcqvrh = vrh;
+			break;
+		case 4:
+			vnet->rhost.rsqvrh = vrh;
+			break;
+		case 5:
+			vnet->rhost.rrqvrh = vrh;
 			break;
 		default:
 			continue;
@@ -379,6 +389,44 @@ static void epf_vnet_rhost_raise_irq_handler(struct work_struct *work)
 			  PCI_EPC_IRQ_LEGACY, 0);
 }
 
+static void __iomem *epf_vnet_epf_map_iov(struct pci_epf *epf,
+					  struct vringh_iov *iov,
+					  phys_addr_t *phys)
+{
+	return pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
+				(unsigned long)iov->iov[iov->i].iov_base, phys,
+				iov->iov[iov->i].iov_len);
+}
+
+static void epf_vnet_epf_unmap_iov(struct pci_epf *epf, struct vringh_iov *iov,
+				   void __iomem *virt, phys_addr_t phys)
+{
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, phys, virt,
+			   iov->iov[iov->i].iov_len);
+}
+
+static const int (*epf_vnet_roce_cmd_handlers[])(
+	struct epf_vnet *, struct virtio_net_ctrl_hdr *hdr,
+	struct vringh_kiov *,
+	struct vringh_kiov *) = { [VIRTIO_NET_CTRL_ROCE_QUERY_DEVICE] = NULL,
+				  [VIRTIO_NET_CTRL_ROCE_QUERY_PORT] = NULL,
+				  [VIRTIO_NET_CTRL_ROCE_CREATE_CQ] = NULL,
+				  [VIRTIO_NET_CTRL_ROCE_DESTROY_CQ] = NULL,
+				  [VIRTIO_NET_CTRL_ROCE_CREATE_PD] = NULL,
+				  [VIRTIO_NET_CTRL_ROCE_DESTROY_PD] = NULL,
+				  [VIRTIO_NET_CTRL_ROCE_GET_DMA_MR] = NULL,
+				  [VIRTIO_NET_CTRL_ROCE_REG_USER_MR] = NULL,
+				  [VIRTIO_NET_CTRL_ROCE_DEREG_MR] = NULL,
+				  [VIRTIO_NET_CTRL_ROCE_CREATE_QP] = NULL,
+				  [VIRTIO_NET_CTRL_ROCE_MODIFY_QP] = NULL,
+				  [VIRTIO_NET_CTRL_ROCE_QUERY_QP] = NULL,
+				  [VIRTIO_NET_CTRL_ROCE_DESTROY_QP] = NULL,
+				  [VIRTIO_NET_CTRL_ROCE_CREATE_AH] = NULL,
+				  [VIRTIO_NET_CTRL_ROCE_DESTROY_AH] = NULL,
+				  [VIRTIO_NET_CTRL_ROCE_ADD_GID] = NULL,
+				  [VIRTIO_NET_CTRL_ROCE_DEL_GID] = NULL,
+				  [VIRTIO_NET_CTRL_ROCE_REQ_NOTIFY_CQ] = NULL };
+
 static int epf_vnet_rhost_process_ctrlq_entry(struct epf_vnet *vnet)
 {
 	struct vringh_kiov *riov = &vnet->rhost.ctl_riov;
@@ -386,6 +434,7 @@ static int epf_vnet_rhost_process_ctrlq_entry(struct epf_vnet *vnet)
 	struct vringh *vrh = &vnet->rhost.ctlvrh->vrh;
 	struct pci_epf *epf = vnet->epf;
 	struct virtio_net_ctrl_hdr *hdr;
+	virtio_net_ctrl_ack *ack;
 	int err;
 	u16 head;
 	size_t total_len, rlen, wlen;
@@ -418,6 +467,11 @@ static int epf_vnet_rhost_process_ctrlq_entry(struct epf_vnet *vnet)
 	}
 
 	hdr = rvirt;
+	ack = wvirt;
+
+	riov->i++;
+	wiov->i++;
+
 	class = ioread8(&hdr->class);
 	cmd = ioread8(&hdr->cmd);
 	switch (class) {
@@ -434,8 +488,29 @@ static int epf_vnet_rhost_process_ctrlq_entry(struct epf_vnet *vnet)
 		epf_vnet_rhost_clear_config16(vnet, VIRTIO_PCI_ISR,
 					      VIRTIO_PCI_ISR_CONFIG);
 
-		iowrite8(VIRTIO_NET_OK, wvirt);
+		iowrite8(VIRTIO_NET_OK, ack);
 		break;
+#if defined(CONFIG_PCI_EPF_VNET_ROCE)
+	case VIRTIO_NET_CTRL_ROCE:
+		if (ARRAY_SIZE(epf_vnet_roce_cmd_handlers) < hdr->cmd) {
+			err = -EIO;
+			pr_err("out of range\n");
+			iowrite8(VIRTIO_NET_ERR, ack);
+			break;
+		}
+
+		if (!epf_vnet_roce_cmd_handlers[hdr->cmd]) {
+			pr_info("the roce cmd not yet implemented: %d\n",
+				hdr->cmd);
+			iowrite8(VIRTIO_NET_ERR, ack);
+			break;
+		}
+
+		err = epf_vnet_roce_cmd_handlers[hdr->cmd](vnet, hdr, riov,
+							   wiov);
+		iowrite8(err ? VIRTIO_NET_OK : VIRTIO_NET_ERR, ack);
+		break;
+#endif /* define(CONFIG_PCI_EPF_VNET_ROCE) */
 	default:
 		pr_err("Found unsupported class in control queue: %d\n", class);
 		break;
@@ -1198,7 +1273,12 @@ static u16 epf_vnet_get_nqueues(struct epf_vnet *vnet)
 {
 	/* tx and rx queue pair and control queue. */
 	return vnet->vnet_cfg.max_virtqueue_pairs * 2 +
-	       !!(vnet->virtio_features & BIT(VIRTIO_NET_F_CTRL_VQ));
+			       !!(vnet->virtio_features &
+				  BIT(VIRTIO_NET_F_CTRL_VQ)) +
+			       (vnet->virtio_features &
+				BIT(VIRTIO_NET_F_ROCE)) ?
+		       3 :
+		       0;
 }
 
 static void epf_vnet_virtio_init(struct epf_vnet *vnet)
@@ -1214,7 +1294,7 @@ static void epf_vnet_virtio_init(struct epf_vnet *vnet)
 		BIT(VIRTIO_NET_F_GUEST_TSO6) | BIT(VIRTIO_NET_F_GUEST_ECN) |
 		BIT(VIRTIO_NET_F_GUEST_UFO) |
 		/* The control queue is just used for linkup announcement. */
-		BIT(VIRTIO_NET_F_CTRL_VQ);
+		BIT(VIRTIO_NET_F_CTRL_VQ) | BIT(VIRTIO_NET_F_ROCE);
 
 	vnet->vnet_cfg.max_virtqueue_pairs = 1;
 	vnet->vnet_cfg.status = 0;
