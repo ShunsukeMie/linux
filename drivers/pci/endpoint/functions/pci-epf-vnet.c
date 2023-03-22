@@ -18,11 +18,6 @@ static int virtio_queue_size = 0x100;
 module_param(virtio_queue_size, int, 0444);
 MODULE_PARM_DESC(virtio_queue_size, "A length of virtqueue");
 
-int epf_vnet_get_vq_size(void)
-{
-	return virtio_queue_size;
-}
-
 struct epf_vnet {
 	//TODO Should this variable be placed here?
 	struct pci_epf *epf;
@@ -174,7 +169,7 @@ static void epf_vnet_rhost_setup_configs(struct epf_vnet *vnet,
 	epf_vnet_rhost_set_config16(vnet, VIRTIO_PCI_QUEUE_PFN, 0);
 
 	epf_vnet_rhost_set_config16(vnet, VIRTIO_PCI_QUEUE_NUM,
-				    epf_vnet_get_vq_size());
+				    virtio_queue_size);
 	epf_vnet_rhost_set_config8(vnet, VIRTIO_PCI_STATUS, 0);
 	epf_vnet_rhost_memcpy_config(vnet, VIRTIO_PCI_CONFIG_OFF(false),
 				     &vnet->vnet_cfg, sizeof(vnet->vnet_cfg));
@@ -258,7 +253,7 @@ static int epf_vnet_rhost_device_setup(void *data)
 {
 	struct epf_vnet *vnet = data;
 	struct pci_epf *epf = vnet->epf;
-	const size_t vq_size = epf_vnet_get_vq_size();
+	const size_t vq_size = virtio_queue_size;
 	u16 __iomem *queue_notify =
 		vnet->rhost.cfg_base + VIRTIO_PCI_QUEUE_NOTIFY;
 	const u16 notify_default = epf_vnet_get_nqueues(vnet);
@@ -390,7 +385,7 @@ static void epf_vnet_rhost_raise_irq_handler(struct work_struct *work)
 }
 
 static void __iomem *epf_vnet_epf_map_iov(struct pci_epf *epf,
-					  struct vringh_iov *iov,
+					  struct vringh_kiov *iov,
 					  phys_addr_t *phys)
 {
 	return pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
@@ -508,7 +503,7 @@ static int epf_vnet_rhost_process_ctrlq_entry(struct epf_vnet *vnet)
 
 		err = epf_vnet_roce_cmd_handlers[hdr->cmd](vnet, hdr, riov,
 							   wiov);
-		iowrite8(err ? VIRTIO_NET_OK : VIRTIO_NET_ERR, ack);
+		iowrite8(err ? VIRTIO_NET_ERR : VIRTIO_NET_OK, ack);
 		break;
 #endif /* define(CONFIG_PCI_EPF_VNET_ROCE) */
 	default:
@@ -814,7 +809,7 @@ epf_vnet_lhost_vdev_find_vqs(struct virtio_device *vdev, unsigned int nvqs,
 			     struct irq_affinity *desc)
 {
 	struct epf_vnet *vnet = vdev_to_vnet(vdev);
-	const size_t vq_size = epf_vnet_get_vq_size();
+	const size_t vq_size = virtio_queue_size;
 	int i;
 	int err;
 	int qidx;
