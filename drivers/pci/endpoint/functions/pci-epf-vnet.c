@@ -18,6 +18,8 @@ static int virtio_queue_size = 0x100;
 module_param(virtio_queue_size, int, 0444);
 MODULE_PARM_DESC(virtio_queue_size, "A length of virtqueue");
 
+#define EPF_VNET_ROCE_GID_TBL_LEN 0x200
+
 struct epf_vnet {
 	//TODO Should this variable be placed here?
 	struct pci_epf *epf;
@@ -393,34 +395,64 @@ static void __iomem *epf_vnet_epf_map_iov(struct pci_epf *epf,
 				iov->iov[iov->i].iov_len);
 }
 
-static void epf_vnet_epf_unmap_iov(struct pci_epf *epf, struct vringh_iov *iov,
+static void epf_vnet_epf_unmap_iov(struct pci_epf *epf, struct vringh_kiov *iov,
 				   void __iomem *virt, phys_addr_t phys)
 {
 	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, phys, virt,
 			   iov->iov[iov->i].iov_len);
 }
 
-static const int (*epf_vnet_roce_cmd_handlers[])(
-	struct epf_vnet *, struct virtio_net_ctrl_hdr *hdr,
-	struct vringh_kiov *,
-	struct vringh_kiov *) = { [VIRTIO_NET_CTRL_ROCE_QUERY_DEVICE] = NULL,
-				  [VIRTIO_NET_CTRL_ROCE_QUERY_PORT] = NULL,
-				  [VIRTIO_NET_CTRL_ROCE_CREATE_CQ] = NULL,
-				  [VIRTIO_NET_CTRL_ROCE_DESTROY_CQ] = NULL,
-				  [VIRTIO_NET_CTRL_ROCE_CREATE_PD] = NULL,
-				  [VIRTIO_NET_CTRL_ROCE_DESTROY_PD] = NULL,
-				  [VIRTIO_NET_CTRL_ROCE_GET_DMA_MR] = NULL,
-				  [VIRTIO_NET_CTRL_ROCE_REG_USER_MR] = NULL,
-				  [VIRTIO_NET_CTRL_ROCE_DEREG_MR] = NULL,
-				  [VIRTIO_NET_CTRL_ROCE_CREATE_QP] = NULL,
-				  [VIRTIO_NET_CTRL_ROCE_MODIFY_QP] = NULL,
-				  [VIRTIO_NET_CTRL_ROCE_QUERY_QP] = NULL,
-				  [VIRTIO_NET_CTRL_ROCE_DESTROY_QP] = NULL,
-				  [VIRTIO_NET_CTRL_ROCE_CREATE_AH] = NULL,
-				  [VIRTIO_NET_CTRL_ROCE_DESTROY_AH] = NULL,
-				  [VIRTIO_NET_CTRL_ROCE_ADD_GID] = NULL,
-				  [VIRTIO_NET_CTRL_ROCE_DEL_GID] = NULL,
-				  [VIRTIO_NET_CTRL_ROCE_REQ_NOTIFY_CQ] = NULL };
+static int epf_vnet_handle_roce_query_port(struct epf_vnet *vnet,
+					   struct virtio_net_ctrl_hdr *hdr,
+					   struct vringh_kiov *riov,
+					   struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_ack_query_port *ack, ack_tmp;
+	phys_addr_t phys;
+
+	if (wiov->i >= wiov->used)
+		return -EINVAL;
+
+	if (wiov->iov[wiov->i].iov_len < sizeof(*ack))
+		return -EINVAL;
+
+	ack = epf_vnet_epf_map_iov(vnet->epf, wiov, &phys);
+	if (!ack)
+		return -EIO;
+
+	ack_tmp.gid_tbl_len = EPF_VNET_ROCE_GID_TBL_LEN;
+	ack_tmp.max_msg_sz = 0x800000; // TODO remove magic number
+
+	memcpy_toio(ack, &ack_tmp, sizeof(ack_tmp));
+
+	epf_vnet_epf_unmap_iov(vnet->epf, wiov, ack, phys);
+
+	return 0;
+}
+
+static const int (*epf_vnet_roce_cmd_handlers[])(struct epf_vnet *,
+						 struct virtio_net_ctrl_hdr *,
+						 struct vringh_kiov *,
+						 struct vringh_kiov *) = {
+	[VIRTIO_NET_CTRL_ROCE_QUERY_DEVICE] = NULL,
+	[VIRTIO_NET_CTRL_ROCE_QUERY_PORT] = epf_vnet_handle_roce_query_port,
+	[VIRTIO_NET_CTRL_ROCE_CREATE_CQ] = NULL,
+	[VIRTIO_NET_CTRL_ROCE_DESTROY_CQ] = NULL,
+	[VIRTIO_NET_CTRL_ROCE_CREATE_PD] = NULL,
+	[VIRTIO_NET_CTRL_ROCE_DESTROY_PD] = NULL,
+	[VIRTIO_NET_CTRL_ROCE_GET_DMA_MR] = NULL,
+	[VIRTIO_NET_CTRL_ROCE_REG_USER_MR] = NULL,
+	[VIRTIO_NET_CTRL_ROCE_DEREG_MR] = NULL,
+	[VIRTIO_NET_CTRL_ROCE_CREATE_QP] = NULL,
+	[VIRTIO_NET_CTRL_ROCE_MODIFY_QP] = NULL,
+	[VIRTIO_NET_CTRL_ROCE_QUERY_QP] = NULL,
+	[VIRTIO_NET_CTRL_ROCE_DESTROY_QP] = NULL,
+	[VIRTIO_NET_CTRL_ROCE_CREATE_AH] = NULL,
+	[VIRTIO_NET_CTRL_ROCE_DESTROY_AH] = NULL,
+	[VIRTIO_NET_CTRL_ROCE_ADD_GID] = NULL,
+	[VIRTIO_NET_CTRL_ROCE_DEL_GID] = NULL,
+	[VIRTIO_NET_CTRL_ROCE_REQ_NOTIFY_CQ] = NULL
+};
 
 static int epf_vnet_rhost_process_ctrlq_entry(struct epf_vnet *vnet)
 {
@@ -494,6 +526,7 @@ static int epf_vnet_rhost_process_ctrlq_entry(struct epf_vnet *vnet)
 			break;
 		}
 
+		// TODO finally remove this condition. it is for debug.
 		if (!epf_vnet_roce_cmd_handlers[hdr->cmd]) {
 			pr_info("the roce cmd not yet implemented: %d\n",
 				hdr->cmd);
