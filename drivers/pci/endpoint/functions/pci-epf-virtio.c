@@ -204,7 +204,9 @@ int epf_virtio_negotiate_qinfo(void __iomem *pci_cfg_base,
 	for (int i = 0; i < _qinfo_index; i++) {
 		qinfo[i].pci_addr = (phys_addr_t)_qinfo[i].pfn
 				    << VIRTIO_PCI_QUEUE_ADDR_SHIFT;
-		qinfo[i].sel = _qinfo[i].sel;
+		//TODO
+// 		qinfo[i].sel = _qinfo[i].sel;
+		qinfo[i].sel = i;
 	}
 
 	kfree(_qinfo);
