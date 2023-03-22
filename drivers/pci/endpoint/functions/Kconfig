@@ -43,7 +43,7 @@ config PCI_EPF_VIRTIO
 	help
 	  This is a util functions to impelment virtio device.
 
-menuconfig PCI_EPF_VNET
+config PCI_EPF_VNET
 	tristate "PCI Endpoint virtio-net driver"
 	depends on PCI_ENDPOINT
 	select VHOST_RING
@@ -56,7 +56,7 @@ menuconfig PCI_EPF_VNET
 	  each other.
 
 config PCI_EPF_VNET_ROCE
-	tristate "Support RoCE feature"
+	bool "Support RoCE feature"
 	depends on PCI_EPF_VNET
 	help
 	  This configuration enables to RDMA feature to PCI Endpoint virtio-net driver.
