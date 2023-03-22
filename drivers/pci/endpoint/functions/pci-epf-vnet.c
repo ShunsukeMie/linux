@@ -262,18 +262,18 @@ static int epf_vnet_rhost_device_setup(void *data)
 		vnet->rhost.cfg_base + VIRTIO_PCI_QUEUE_NOTIFY;
 	const u16 notify_default = epf_vnet_get_nqueues(vnet);
 	int err;
-	int nqueues;
-	struct epf_virtio_qinfo qinfo[3];
+	int nqueues = epf_vnet_get_nqueues(vnet);;
+	struct epf_virtio_qinfo *qinfo;
 	struct epf_vringh *vrh;
 
-	nqueues = epf_virtio_negotiate_qinfo(vnet->rhost.cfg_base, qinfo, 3);
-	if (nqueues < 0) {
+	qinfo = kmalloc_array(nqueues, sizeof (*qinfo), GFP_KERNEL);
+	if (!qinfo)
+		return -ENOMEM;
+
+	err = epf_virtio_negotiate_qinfo(vnet->rhost.cfg_base, qinfo, nqueues);
+	if (err < 0) {
 		pr_err("failed to negoticate configs with driver\n");
-		return nqueues;
-	}
-	if (nqueues < 3) {
-		pr_debug("detect few queues.");
-		return -EIO;
+		goto err_free_qinfo;
 	}
 
 	/* Polling phase is finished. This thread backs to normal priority. */
@@ -327,6 +327,8 @@ err_free_epf_vringh:
 	epf_virtio_free_vringh(epf, vnet->rhost.ctlvrh);
 	epf_virtio_free_vringh(epf, vnet->rhost.rxvrh);
 	epf_virtio_free_vringh(epf, vnet->rhost.txvrh);
+err_free_qinfo:
+	kfree(qinfo);
 
 	return err;
 }
