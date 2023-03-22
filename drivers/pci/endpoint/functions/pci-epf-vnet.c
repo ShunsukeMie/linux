@@ -260,7 +260,7 @@ static int epf_vnet_rhost_device_setup(void *data)
 		vnet->rhost.cfg_base + VIRTIO_PCI_QUEUE_NOTIFY;
 	const u16 notify_default = epf_vnet_get_nqueues(vnet);
 	int err;
-	int nqueues = epf_vnet_get_nqueues(vnet);
+	u16 nqueues = epf_vnet_get_nqueues(vnet);
 	struct epf_virtio_qinfo *qinfo;
 	struct epf_vringh *vrh;
 
