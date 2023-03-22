@@ -1302,13 +1302,9 @@ static const struct pci_epf_device_id epf_vnet_ids[] = {
 static u16 epf_vnet_get_nqueues(struct epf_vnet *vnet)
 {
 	/* tx and rx queue pair and control queue. */
-	return vnet->vnet_cfg.max_virtqueue_pairs * 2 +
-			       !!(vnet->virtio_features &
-				  BIT(VIRTIO_NET_F_CTRL_VQ)) +
-			       (vnet->virtio_features &
-				BIT(VIRTIO_NET_F_ROCE)) ?
-		       3 :
-		       0;
+	return (vnet->vnet_cfg.max_virtqueue_pairs * 2) +
+	       (!!(vnet->virtio_features & BIT(VIRTIO_NET_F_CTRL_VQ))) +
+	       (!!(vnet->virtio_features & BIT(VIRTIO_NET_F_ROCE)) * 3);
 }
 
 static void epf_vnet_virtio_init(struct epf_vnet *vnet)
