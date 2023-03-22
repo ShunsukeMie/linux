@@ -541,6 +541,7 @@ static int epf_vnet_rhost_process_ctrlq_entry(struct epf_vnet *vnet)
 #endif /* define(CONFIG_PCI_EPF_VNET_ROCE) */
 	default:
 		pr_err("Found unsupported class in control queue: %d\n", class);
+		iowrite8(VIRTIO_NET_ERR, ack);
 		break;
 	}
 
@@ -728,6 +729,7 @@ static int epf_vnet_lhost_process_ctrlq_entry(struct epf_vnet *vnet)
 		break;
 	default:
 		pr_debug("Found not supported class: %d\n", hdr->class);
+		*ack = VIRTIO_NET_ERR;
 		err = -EIO;
 	}
 
