@@ -172,7 +172,7 @@ static void epf_vcon_notify_callback(void *param)
 	struct vringh_kiov *riov = &vcon->riov;
 	struct vringh_kiov *wiov = &vcon->wiov;
 	struct vringh *wvrh = &vcon->txvrh->vrh;
-// 	struct vringh *rvrh = &vcon->rxvrh->vrh;
+	struct vringh *rvrh = &vcon->rxvrh->vrh;
 	struct pci_epf *epf = vcon->epf;
 	int err;
 	u16 rhead, whead;
@@ -180,76 +180,13 @@ static void epf_vcon_notify_callback(void *param)
 	void __iomem *rvirt, *wvirt;
 	phys_addr_t rphys, wphys;
 
-
-	pr_info("notify callback\n");
-#if 0
-	while (true) {
-		err = vringh_getdesc(rvrh, riov, wiov, &rhead);
-		if (err < 0) {
-			pr_info("%d: failed to get vring desc\n", __LINE__);
-			return;
-		} else if (!err) {
-			pr_info("%d: empty\n", __LINE__);
-			return;
-		}
-
-		pr_info("succeeded: r: %ld w: %ld\n", vringh_kiov_length(riov), vringh_kiov_length(wiov));
-		if (!vringh_kiov_length(riov)) {
-			pr_info("r: no data\n");
-			continue;
-		}
-
-		rlen = riov->iov[riov->i].iov_len;
-		rvirt = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
-				(u64)riov->iov[riov->i].iov_base, &rphys,
-				rlen);
-		if (IS_ERR(rvirt)) {
-			pr_info("failed to map to access the rx data\n");
-			continue;
-		}
-
-// 		err = vringh_getdesc(rvrh, NULL, wiov, &whead);
-// 		if (err < 0) {
-// 			pr_info("%d: failed to get vring desc\n", __LINE__);
-// 			return;
-// 		} else  if(!err) {
-// 			pr_info("%d: emprty\n", __LINE__);
-// 			return;
-// 		}
-// 		if (!vringh_kiov_length(wiov)) {
-// 			pr_info("w: no buf\n");
-// 			continue;
-// 		}_
-// 
-// 		wlen = wiov->iov[wiov->i].iov_len;
-// 		wvirt = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
-// 				(u64)wiov->iov[wiov->i].iov_base, &wphys,
-// 				wlen);
-// 		if (IS_ERR(wvirt)) {
-// 			pr_info("failed to map to access the echo back\n");
-// 			return;
-// 		}
-// 
-// 		// echo back
-// 		iowrite8(ioread8(rvirt), wvirt);
-// 
-		vringh_complete(rvrh, rhead, rlen);
-// 		vringh_complete(rvrh, whead, wlen);
-
-		pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, rphys, rvirt,
-				rlen);
-		pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, wphys, wvirt,
-				wlen);
-		pr_info("done\n");
-	}
-#else
 	err = vringh_getdesc(wvrh, wiov, NULL, &whead);
-	if (err <= 0) {
-		pr_info("failed to get vring desc\n");
+	if (err < 0) {
+		pr_err("failed to get tx vring desc\n");
+		return;
+	} else if (!err) {
 		return;
 	}
-
-	pr_info("succeeded: %ld\n", vringh_kiov_length(riov));
 
 	wlen = wiov->iov[wiov->i].iov_len;
 	wvirt = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
@@ -260,10 +197,38 @@ static void epf_vcon_notify_callback(void *param)
 		return;
 	}
 
-	for(int i=0; i< wlen; i++) {
-		pr_info("0x%x\n", ((u8*)wvirt)[i]);
+	err = vringh_getdesc(rvrh, NULL, riov, &rhead);
+	if (err < 0) {
+		pr_err("failed to get rx vring desc\n");
+		return;
+	} else if (!err) {
+		return;
 	}
-#endif
+
+	rlen = riov->iov[riov->i].iov_len;
+	rvirt = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
+				 (u64)riov->iov[riov->i].iov_base, &rphys,
+				 rlen);
+	if (IS_ERR(rvirt)) {
+		pr_info("failed to map to access the rx tata\n");
+		return;
+	}
+
+	{
+		char *buf = kzalloc(wlen + 1, GFP_KERNEL);
+		memcpy_fromio(buf, wvirt, wlen);
+		pr_info("dump: %s\n", buf);
+		memcpy_toio(rvirt, buf, wlen);
+		kfree(buf);
+	}
+
+	vringh_complete(rvrh, rhead, wlen);
+	vringh_complete(wvrh, whead, wlen);
+
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, rphys, rvirt,
+			   rlen);
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, wphys, wvirt,
+			   wlen);
 }
 
 static int epf_vcon_device_setup(void *data)
@@ -274,15 +239,15 @@ static int epf_vcon_device_setup(void *data)
 	u16 __iomem *queue_notify = vcon->cfg_base + VIRTIO_PCI_QUEUE_NOTIFY;
 	const u16 notify_default = EPF_VCON_NQUEUES;
 	int err;
-	int nqueues;
+	int nqueues = EPF_VCON_NQUEUES;
 	struct epf_virtio_qinfo qinfo[EPF_VCON_NQUEUES];
 	struct epf_vringh *vrh;
 
-	nqueues = epf_virtio_negotiate_qinfo(vcon->cfg_base, qinfo,
+	err = epf_virtio_negotiate_qinfo(vcon->cfg_base, qinfo,
 					     EPF_VCON_NQUEUES);
-	if (nqueues < 0) {
+	if (err < 0) {
 		pr_err("failed to negoticate configs with driver\n");
-		return nqueues;
+		return err;
 	}
 
 	/* Polling phase is finished. This thread backs to normal priority. */
@@ -435,4 +400,3 @@ module_exit(epf_vcon_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Shunsuke Mie <mie@igel.co.jp>");
-
