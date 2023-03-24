@@ -20,6 +20,10 @@ MODULE_PARM_DESC(virtio_queue_size, "A length of virtqueue");
 
 #define EPF_VNET_ROCE_GID_TBL_LEN 0x200
 
+struct epf_vnet_roce {
+	u32 npd;
+};
+
 struct epf_vnet {
 	//TODO Should this variable be placed here?
 	struct pci_epf *epf;
@@ -59,6 +63,7 @@ struct epf_vnet {
 
 #if defined(CONFIG_PCI_EPF_VNET_ROCE)
 	struct virtio_rdma_ack_query_device roce_attr;
+	struct epf_vnet_roce rroce, lroce;
 #endif
 };
 
@@ -997,7 +1002,7 @@ static int epf_vnet_handle_lroce_create_pd(struct epf_vnet *vnet,
 
 	ack = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
 
-	ack->pdn = 1;
+	ack->pdn = vnet->lroce.npd++;;
 
 	return 0;
 }
