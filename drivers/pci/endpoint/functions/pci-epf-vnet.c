@@ -22,6 +22,8 @@ MODULE_PARM_DESC(virtio_queue_size, "A length of virtqueue");
 
 struct epf_vnet_roce {
 	u32 npd;
+	u32 nmr;
+	u32 ncq;
 };
 
 struct epf_vnet {
@@ -46,7 +48,8 @@ struct epf_vnet {
 
 	struct {
 		struct virtqueue *rxvq, *txvq, *ctlvq, *rcqvq, *rsqvq, *rrqvq;
-		struct vringh txvrh, rxvrh, ctlvrh, rcqvrh, rsqvrh, rrqvrh;
+		struct vringh txvrh, rxvrh, ctlvrh, rcqvrh[2], rsqvrh[2],
+			rrqvrh[2];
 		struct vringh_kiov tx_iov, rx_iov, ctl_riov, ctl_wiov, rcq_iov,
 			rsq_iov, rrq_iov;
 		struct virtio_device vdev;
@@ -259,6 +262,7 @@ static void epf_vnet_rhost_notify_callback(void *param)
 
 	queue_work(vnet->rhost.tx_wq, &vnet->rhost.tx_work);
 	queue_work(vnet->rhost.ctl_wq, &vnet->rhost.ctl_work);
+	epf_vnet_rhost_raise_config_irq(vnet);
 }
 
 static int epf_vnet_rhost_device_setup(void *data)
@@ -473,7 +477,7 @@ static int epf_vnet_handle_rroce_create_cq(struct epf_vnet *vnet,
 	struct virtio_rdma_cmd_create_cq __iomem *cmd;
 	struct virtio_rdma_ack_create_cq __iomem *ack;
 	phys_addr_t rphys, wphys;
-	int err;
+	int err = 0;
 
 	if (riov->i >= riov->used)
 		return -EINVAL;
@@ -507,7 +511,7 @@ static int epf_vnet_handle_rroce_create_cq(struct epf_vnet *vnet,
 	}
 
 	// TODO change this dummy data.
-	iowrite32(0, &ack->cqn);
+	iowrite32(vnet->rroce.ncq++, &ack->cqn);
 
 done:
 	epf_vnet_epf_unmap_iov(vnet->epf, riov, cmd, rphys);
@@ -591,7 +595,7 @@ static int epf_vnet_handle_rroce_get_dma_mr(struct epf_vnet *vnet,
 		return -EIO;
 
 	//TODO
-	tmp_ack.mrn = 0;
+	tmp_ack.mrn = vnet->rroce.nmr++;
 	tmp_ack.lkey = 0;
 	tmp_ack.rkey = 0;
 
@@ -601,6 +605,51 @@ static int epf_vnet_handle_rroce_get_dma_mr(struct epf_vnet *vnet,
 	epf_vnet_epf_unmap_iov(vnet->epf, wiov, ack, wphys);
 
 	return 0;
+}
+
+static int epf_vnet_handle_rroce_user_mr(struct epf_vnet *vnet,
+					 struct virtio_net_ctrl_hdr *hdr,
+					 struct vringh_kiov *riov,
+					 struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_cmd_reg_user_mr __iomem *cmd;
+	struct virtio_rdma_ack_reg_user_mr __iomem *ack, tmp_ack;
+	phys_addr_t rphys, wphys;
+	int err = 0;
+
+	if (riov->i >= riov->used)
+		return -EINVAL;
+
+	if (riov->iov[riov->i].iov_len < sizeof(*cmd))
+		return -EINVAL;
+
+	if (wiov->i >= wiov->used)
+		return -EINVAL;
+
+	if (wiov->iov[wiov->i].iov_len < sizeof(*ack))
+		return -EINVAL;
+
+	cmd = epf_vnet_epf_map_iov(vnet->epf, riov, &rphys);
+	if (!cmd)
+		return -EIO;
+
+	ack = epf_vnet_epf_map_iov(vnet->epf, wiov, &wphys);
+	if (!ack) {
+		err = -EIO;
+		goto err_unmap;
+	}
+
+	tmp_ack.lkey = 0;
+	tmp_ack.rkey = 0;
+	tmp_ack.mrn = vnet->rroce.nmr++;
+
+	memcpy_toio(ack, &tmp_ack, sizeof(tmp_ack));
+
+err_unmap:
+	epf_vnet_epf_unmap_iov(vnet->epf, riov, cmd, rphys);
+	epf_vnet_epf_unmap_iov(vnet->epf, wiov, ack, wphys);
+
+	return err;
 }
 
 static int epf_vnet_handle_rroce_dereg_mr(struct epf_vnet *vnet,
@@ -664,7 +713,7 @@ static const int (*epf_vnet_roce_rcmd_handlers[])(struct epf_vnet *,
 	[VIRTIO_NET_CTRL_ROCE_CREATE_PD] = epf_vnet_handle_rroce_create_pd,
 	[VIRTIO_NET_CTRL_ROCE_DESTROY_PD] = epf_vnet_handle_rroce_destry_pd,
 	[VIRTIO_NET_CTRL_ROCE_GET_DMA_MR] = epf_vnet_handle_rroce_get_dma_mr,
-	[VIRTIO_NET_CTRL_ROCE_REG_USER_MR] = NULL,
+	[VIRTIO_NET_CTRL_ROCE_REG_USER_MR] = epf_vnet_handle_rroce_user_mr,
 	[VIRTIO_NET_CTRL_ROCE_DEREG_MR] = epf_vnet_handle_rroce_dereg_mr,
 	[VIRTIO_NET_CTRL_ROCE_CREATE_QP] = NULL,
 	[VIRTIO_NET_CTRL_ROCE_MODIFY_QP] = NULL,
@@ -751,8 +800,8 @@ static int epf_vnet_rhost_process_ctrlq_entry(struct epf_vnet *vnet)
 
 		// TODO finally remove this condition. it is for debug.
 		if (!epf_vnet_roce_rcmd_handlers[hdr->cmd]) {
-			pr_info("the roce cmd not yet implemented: %d\n",
-				hdr->cmd);
+			pr_info("%s the roce cmd not yet implemented: %d\n",
+				__func__, hdr->cmd);
 			iowrite8(VIRTIO_NET_ERR, ack);
 			break;
 		}
@@ -974,7 +1023,7 @@ static int epf_vnet_handle_lroce_create_cq(struct epf_vnet *vnet,
 
 	ack = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
 
-	ack->cqn = 0;
+	ack->cqn = vnet->lroce.ncq++;
 
 	return 0;
 }
@@ -1002,7 +1051,7 @@ static int epf_vnet_handle_lroce_create_pd(struct epf_vnet *vnet,
 
 	ack = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
 
-	ack->pdn = vnet->lroce.npd++;;
+	ack->pdn = vnet->lroce.npd++;
 
 	return 0;
 }
@@ -1041,7 +1090,36 @@ static int epf_vnet_handle_lroce_get_dma_mr(struct epf_vnet *vnet,
 
 	ack->lkey = 0;
 	ack->rkey = 0;
-	ack->mrn = 0;
+	ack->mrn = vnet->lroce.nmr++;
+
+	return 0;
+}
+
+static int epf_vnet_handle_lroce_reg_user_mr(struct epf_vnet *vnet,
+					     struct virtio_net_ctrl_hdr *hdr,
+					     struct vringh_kiov *riov,
+					     struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_cmd_reg_user_mr *cmd;
+	struct virtio_rdma_ack_reg_user_mr *ack;
+
+	if (riov->i >= riov->used)
+		return -EINVAL;
+
+	if (riov->iov[riov->i].iov_len < sizeof(*cmd))
+		return -EINVAL;
+
+	if (wiov->i >= wiov->used)
+		return -EINVAL;
+
+	if (wiov->iov[wiov->i].iov_len < sizeof(*ack))
+		return -EINVAL;
+
+	ack = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
+
+	ack->lkey = 0;
+	ack->rkey = 0;
+	ack->mrn = vnet->lroce.nmr++;
 
 	return 0;
 }
@@ -1201,7 +1279,7 @@ static const int (*epf_vnet_roce_lcmd_handlers[])(struct epf_vnet *,
 	[VIRTIO_NET_CTRL_ROCE_CREATE_PD] = epf_vnet_handle_lroce_create_pd,
 	[VIRTIO_NET_CTRL_ROCE_DESTROY_PD] = epf_vnet_handle_lroce_destry_pd,
 	[VIRTIO_NET_CTRL_ROCE_GET_DMA_MR] = epf_vnet_handle_lroce_get_dma_mr,
-	[VIRTIO_NET_CTRL_ROCE_REG_USER_MR] = NULL,
+	[VIRTIO_NET_CTRL_ROCE_REG_USER_MR] = epf_vnet_handle_lroce_reg_user_mr,
 	[VIRTIO_NET_CTRL_ROCE_DEREG_MR] = epf_vnet_handle_lroce_dereg_mr,
 	[VIRTIO_NET_CTRL_ROCE_CREATE_QP] = epf_vnet_handle_lroce_create_qp,
 	[VIRTIO_NET_CTRL_ROCE_MODIFY_QP] = epf_vnet_handle_lroce_modify_qp,
@@ -1271,8 +1349,8 @@ static int epf_vnet_lhost_process_ctrlq_entry(struct epf_vnet *vnet)
 
 		// TODO finally remove this condition. it is for debug.
 		if (!epf_vnet_roce_lcmd_handlers[hdr->cmd]) {
-			pr_info("the roce cmd not yet implemented: %d\n",
-				hdr->cmd);
+			pr_info("%s the roce cmd not yet implemented: %d\n",
+				__func__, hdr->cmd);
 			*ack = VIRTIO_NET_ERR;
 			break;
 		}
@@ -1386,10 +1464,15 @@ static bool epf_vnet_lhost_vdev_vq_notify(struct virtqueue *vq)
 		epf_vnet_lhost_process_ctrlq_entry(vnet);
 		break;
 	case 3: // rdma completion queue
+		pr_info_ratelimited("%s:%d notify completion\n", __func__,
+				    __LINE__);
 		break;
 	case 4: // rdma senq queue
+		pr_info_ratelimited("%s:%d notify send\n", __func__, __LINE__);
 		break;
 	case 5: // rdma receive queue
+		pr_info_ratelimited("%s:%d notify receve\n", __func__,
+				    __LINE__);
 		break;
 	default:
 		return false;
@@ -1433,6 +1516,7 @@ epf_vnet_lhost_vdev_find_vqs(struct virtio_device *vdev, unsigned int nvqs,
 		vqs[i] = vq;
 		vring = virtqueue_get_vring(vq);
 
+		//TODO Fix this case lists. it cannot extend easily.
 		switch (i) {
 		case 0: // rx
 			vrh = &vnet->lhost.rxvrh;
@@ -1447,15 +1531,27 @@ epf_vnet_lhost_vdev_find_vqs(struct virtio_device *vdev, unsigned int nvqs,
 			vnet->lhost.ctlvq = vq;
 			break;
 		case 3:
-			vrh = &vnet->lhost.rcqvrh;
+			vrh = &vnet->lhost.rcqvrh[0];
 			vnet->lhost.rcqvq = vq;
 			break;
 		case 4:
-			vrh = &vnet->lhost.rsqvrh;
-			vnet->lhost.rsqvq = vq;
+			vrh = &vnet->lhost.rcqvrh[1];
+			vnet->lhost.rcqvq = vq;
 			break;
 		case 5:
-			vrh = &vnet->lhost.rrqvrh;
+			vrh = &vnet->lhost.rsqvrh[0];
+			vnet->lhost.rsqvq = vq;
+			break;
+		case 6:
+			vrh = &vnet->lhost.rrqvrh[0];
+			vnet->lhost.rrqvq = vq;
+			break;
+		case 7:
+			vrh = &vnet->lhost.rsqvrh[1];
+			vnet->lhost.rsqvq = vq;
+			break;
+		case 8:
+			vrh = &vnet->lhost.rrqvrh[1];
 			vnet->lhost.rrqvq = vq;
 			break;
 		default:
@@ -1877,10 +1973,20 @@ static const struct pci_epf_device_id epf_vnet_ids[] = {
 
 static u16 epf_vnet_get_nqueues(struct epf_vnet *vnet)
 {
+	u16 rdma_qps =
+		vnet->vnet_cfg.max_rdma_qps * 2 + vnet->vnet_cfg.max_rdma_cqs;
+
+	pr_info("%s %d\n", __func__,
+		(vnet->vnet_cfg.max_virtqueue_pairs *
+		 2) + (!!(vnet->virtio_features & BIT(VIRTIO_NET_F_CTRL_VQ))) +
+			rdma_qps);
+	// 		   (vnet->virtio_features & BIT(VIRTIO_NET_F_ROCE)) ? rdma_qps : 0);
+
 	/* tx and rx queue pair and control queue. */
 	return (vnet->vnet_cfg.max_virtqueue_pairs * 2) +
 	       (!!(vnet->virtio_features & BIT(VIRTIO_NET_F_CTRL_VQ))) +
-	       (!!(vnet->virtio_features & BIT(VIRTIO_NET_F_ROCE)) * 3);
+	       rdma_qps;
+	// 		   (vnet->virtio_features & BIT(VIRTIO_NET_F_ROCE)) ? rdma_qps : 0;
 }
 
 static void epf_vnet_virtio_init(struct epf_vnet *vnet)
@@ -1903,8 +2009,8 @@ static void epf_vnet_virtio_init(struct epf_vnet *vnet)
 	vnet->vnet_cfg.mtu = PAGE_SIZE;
 
 #if defined(CONFIG_PCI_EPF_VNET_ROCE)
-	vnet->vnet_cfg.max_rdma_qps = 1;
-	vnet->vnet_cfg.max_rdma_cqs = 1;
+	vnet->vnet_cfg.max_rdma_qps = 2;
+	vnet->vnet_cfg.max_rdma_cqs = 2;
 
 	vnet->roce_attr.max_mr_size = 1 << 30;
 	vnet->roce_attr.page_size_cap = 0xfffff000;
