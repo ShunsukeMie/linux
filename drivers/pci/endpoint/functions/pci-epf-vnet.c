@@ -42,8 +42,8 @@ struct epf_vnet {
 		struct task_struct *notify_monitor_task;
 		struct workqueue_struct *tx_wq, *irq_wq, *ctl_wq;
 		struct work_struct tx_work, raise_irq_work, ctl_work;
-		struct epf_vringh *txvrh, *rxvrh, *ctlvrh, *rcqvrh[4], *rsqvrh[2],
-			*rrqvrh[2];
+		struct epf_vringh *txvrh, *rxvrh, *ctlvrh, *rcqvrh[4],
+			*rsqvrh[2], *rrqvrh[2];
 		struct vringh_kiov tx_iov, rx_iov, ctl_riov, ctl_wiov;
 	} rhost;
 
@@ -1530,15 +1530,14 @@ static bool epf_vnet_lhost_vdev_vq_notify(struct virtqueue *vq)
 		epf_vnet_lhost_process_ctrlq_entry(vnet);
 		break;
 	case 3: // rdma completion queue
-		pr_info_ratelimited("%s:%d notify completion\n", __func__,
-				    __LINE__);
-		break;
 	case 4: // rdma senq queue
-		pr_info_ratelimited("%s:%d notify send\n", __func__, __LINE__);
-		break;
 	case 5: // rdma receive queue
-		pr_info_ratelimited("%s:%d notify receve\n", __func__,
-				    __LINE__);
+	case 6: // rdma receive queue
+	case 7: // rdma receive queue
+	case 8: // rdma receive queue
+	case 9: // rdma receive queue
+	case 10: // rdma receive queue
+		pr_info_ratelimited("notify %d\n", vq->index);
 		break;
 	default:
 		return false;
