@@ -11,6 +11,7 @@
 #include <linux/virtio_pci.h>
 #include <linux/virtio_ring.h>
 #include <linux/vringh.h>
+#include <linux/bitmap.h>
 
 #include "pci-epf-virtio.h"
 
@@ -19,12 +20,39 @@ module_param(virtio_queue_size, int, 0444);
 MODULE_PARM_DESC(virtio_queue_size, "A length of virtqueue");
 
 #define EPF_VNET_ROCE_GID_TBL_LEN 0x200
+#define EPF_VNET_ROCE_MAX_RDMA_CQS 4
+#define EPF_VNET_ROCE_MAX_RDMA_QPS 2
+
+static int epf_vnet_roce_alloc_idx(unsigned long *bitmap, const size_t max)
+{
+	int idx;
+
+	idx = bitmap_find_free_region(bitmap, max,
+				      0);
+	if (idx < 0)
+		return idx;
+
+	bitmap_set(bitmap, idx, 1);
+
+	return idx;
+}
+
+static int epf_vnet_roce_release_idx(unsigned long *bitmap, const size_t max, int idx)
+{
+	if (idx >= max)
+		return -EINVAL;
+
+	bitmap_clear(bitmap, idx, 1);
+
+	return 0;
+}
 
 struct epf_vnet_roce {
 	u32 npd;
 	u32 nmr;
-	u32 ncq;
 	u32 nqp;
+	DECLARE_BITMAP(qp_bmap, EPF_VNET_ROCE_MAX_RDMA_QPS);
+	DECLARE_BITMAP(cq_bmap, EPF_VNET_ROCE_MAX_RDMA_CQS);
 };
 
 struct epf_vnet {
@@ -494,6 +522,7 @@ static int epf_vnet_handle_rroce_create_cq(struct epf_vnet *vnet,
 	struct virtio_rdma_ack_create_cq __iomem *ack;
 	phys_addr_t rphys, wphys;
 	int err = 0;
+	int idx;
 
 	if (riov->i >= riov->used)
 		return -EINVAL;
@@ -522,12 +551,18 @@ static int epf_vnet_handle_rroce_create_cq(struct epf_vnet *vnet,
 
 	ack = epf_vnet_epf_map_iov(vnet->epf, wiov, &wphys);
 	if (!ack) {
-		goto done;
 		err = -EIO;
+		goto done;
+	}
+
+	idx = epf_vnet_roce_alloc_idx(vnet->rroce.cq_bmap, EPF_VNET_ROCE_MAX_RDMA_CQS);
+	if (idx < 0) {
+		err = idx;
+		goto done;
 	}
 
 	// TODO change this dummy data.
-	iowrite32(vnet->rroce.ncq++, &ack->cqn);
+	iowrite32(idx, &ack->cqn);
 
 done:
 	epf_vnet_epf_unmap_iov(vnet->epf, riov, cmd, rphys);
@@ -541,7 +576,28 @@ static int epf_vnet_handle_rroce_destroy_cq(struct epf_vnet *vnet,
 					    struct vringh_kiov *riov,
 					    struct vringh_kiov *wiov)
 {
-	return 0;
+	struct virtio_rdma_cmd_destroy_cq *cmd;
+	phys_addr_t phys;
+	int err;
+
+	if (riov->i >= riov->used)
+		return -EINVAL;
+
+	if (riov->iov[riov->i].iov_len < sizeof(*cmd))
+		return -EINVAL;
+
+	cmd = epf_vnet_epf_map_iov(vnet->epf, riov, &phys);
+	if (!cmd) {
+		err = -EIO;
+		goto done;
+	}
+
+	err = epf_vnet_roce_release_idx(vnet->rroce.cq_bmap, EPF_VNET_ROCE_MAX_RDMA_CQS, ioread32(&cmd->cqn));
+
+done:
+	epf_vnet_epf_unmap_iov(vnet->epf, riov, cmd, phys);
+
+	return err;
 }
 
 static int epf_vnet_handle_rroce_create_pd(struct epf_vnet *vnet,
@@ -685,6 +741,7 @@ static int epf_vnet_handle_rroce_create_qp(struct epf_vnet *vnet,
 	struct virtio_rdma_ack_create_qp __iomem *ack;
 	phys_addr_t rphys, wphys;
 	int err = 0;
+	int idx;
 
 	if (riov->i >= riov->used)
 		return -EINVAL;
@@ -708,6 +765,12 @@ static int epf_vnet_handle_rroce_create_qp(struct epf_vnet *vnet,
 		goto err_unmap;
 	}
 
+	idx = epf_vnet_roce_alloc_idx(vnet->rroce.qp_bmap, EPF_VNET_ROCE_MAX_RDMA_QPS);
+	if (idx < 0) {
+		err = idx;
+		goto err_unmap;
+	}
+
 	iowrite32(vnet->rroce.nqp++, &ack->qpn);
 
 err_unmap:
@@ -715,6 +778,14 @@ err_unmap:
 	epf_vnet_epf_unmap_iov(vnet->epf, wiov, ack, wphys);
 
 	return err;
+}
+
+static int epf_vnet_handle_rroce_modify_qp(struct epf_vnet *vnet,
+					 struct virtio_net_ctrl_hdr *hdr,
+					 struct vringh_kiov *riov,
+					 struct vringh_kiov *wiov)
+{
+	return 0;
 }
 
 static int epf_vnet_handle_rroce_add_gid(struct epf_vnet *vnet,
@@ -781,7 +852,7 @@ static const int (*epf_vnet_roce_rcmd_handlers[])(struct epf_vnet *,
 	[VIRTIO_NET_CTRL_ROCE_REG_USER_MR] = epf_vnet_handle_rroce_user_mr,
 	[VIRTIO_NET_CTRL_ROCE_DEREG_MR] = epf_vnet_handle_rroce_dereg_mr,
 	[VIRTIO_NET_CTRL_ROCE_CREATE_QP] = epf_vnet_handle_rroce_create_qp,
-	[VIRTIO_NET_CTRL_ROCE_MODIFY_QP] = NULL,
+	[VIRTIO_NET_CTRL_ROCE_MODIFY_QP] = epf_vnet_handle_rroce_modify_qp,
 	[VIRTIO_NET_CTRL_ROCE_QUERY_QP] = NULL,
 	[VIRTIO_NET_CTRL_ROCE_DESTROY_QP] = NULL,
 	[VIRTIO_NET_CTRL_ROCE_CREATE_AH] = NULL,
@@ -1072,6 +1143,7 @@ static int epf_vnet_handle_lroce_create_cq(struct epf_vnet *vnet,
 {
 	struct virtio_rdma_cmd_create_cq *cmd;
 	struct virtio_rdma_ack_create_cq *ack;
+	int idx;
 
 	if (riov->i >= riov->used)
 		return -EINVAL;
@@ -1089,7 +1161,11 @@ static int epf_vnet_handle_lroce_create_cq(struct epf_vnet *vnet,
 
 	ack = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
 
-	ack->cqn = vnet->lroce.ncq++;
+	idx = epf_vnet_roce_alloc_idx(vnet->lroce.cq_bmap, EPF_VNET_ROCE_MAX_RDMA_CQS);
+	if (idx < 0)
+		return idx;
+
+	ack->cqn = idx;
 
 	return 0;
 }
@@ -1099,7 +1175,17 @@ static int epf_vnet_handle_lroce_destroy_cq(struct epf_vnet *vnet,
 					    struct vringh_kiov *riov,
 					    struct vringh_kiov *wiov)
 {
-	return 0;
+	struct virtio_rdma_cmd_destroy_cq *cmd;
+
+	if (riov->i >= riov->used)
+		return -EINVAL;
+
+	if (riov->iov[riov->i].iov_len < sizeof(*cmd))
+		return -EINVAL;
+
+	cmd = phys_to_virt((unsigned long)riov->iov[riov->i].iov_base);
+
+	return epf_vnet_roce_release_idx(vnet->lroce.cq_bmap, EPF_VNET_ROCE_MAX_RDMA_CQS, cmd->cqn);
 }
 
 static int epf_vnet_handle_lroce_create_pd(struct epf_vnet *vnet,
@@ -1205,6 +1291,7 @@ static int epf_vnet_handle_lroce_create_qp(struct epf_vnet *vnet,
 {
 	struct virtio_rdma_cmd_create_qp *cmd;
 	struct virtio_rdma_ack_create_qp *ack;
+	int idx;
 
 	if (riov->i >= riov->used)
 		return -EINVAL;
@@ -1232,7 +1319,11 @@ static int epf_vnet_handle_lroce_create_qp(struct epf_vnet *vnet,
 		return -EIO;
 	}
 
-	ack->qpn = vnet->lroce.nqp++;
+	idx = epf_vnet_roce_alloc_idx(vnet->lroce.qp_bmap, EPF_VNET_ROCE_MAX_RDMA_QPS);
+	if (idx < 0)
+		return idx;
+
+	ack->qpn = idx;
 
 	return 0;
 }
@@ -2082,8 +2173,8 @@ static void epf_vnet_virtio_init(struct epf_vnet *vnet)
 	vnet->vnet_cfg.mtu = PAGE_SIZE;
 
 #if defined(CONFIG_PCI_EPF_VNET_ROCE)
-	vnet->vnet_cfg.max_rdma_qps = 2;
-	vnet->vnet_cfg.max_rdma_cqs = 4;
+	vnet->vnet_cfg.max_rdma_qps = EPF_VNET_ROCE_MAX_RDMA_QPS;
+	vnet->vnet_cfg.max_rdma_cqs = EPF_VNET_ROCE_MAX_RDMA_CQS;
 
 	vnet->roce_attr.max_mr_size = 1 << 30;
 	vnet->roce_attr.page_size_cap = 0xfffff000;
