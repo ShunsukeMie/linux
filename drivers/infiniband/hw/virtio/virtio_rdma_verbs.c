@@ -1150,6 +1150,11 @@ static int virtio_rdma_mmap(struct ib_ucontext *ctx,
 				     page_to_pfn(virt_to_page(
 				     virtqueue_get_vring(entry->queue)->desc)),
 				     vq_size, vma->vm_page_prot);
+		if (rc) {
+			pr_warn("remap_pfn_range failed: %lu, %zu\n",
+				vma->vm_pgoff, size);
+			goto out;
+		}
 
 		// user buffer
 		rc = remap_pfn_range(vma, vma->vm_start + vq_size,
