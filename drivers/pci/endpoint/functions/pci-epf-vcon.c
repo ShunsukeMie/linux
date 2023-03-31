@@ -7,8 +7,117 @@
 #include <linux/virtio_console.h>
 #include <linux/virtio_pci.h>
 #include <linux/kthread.h>
+#include <linux/virtio.h>
+#include <linux/virtio_ring.h>
 
 #include "pci-epf-virtio.h"
+
+static void *epf_virtio_load_from_vrh(struct pci_epf *epf, struct vringh *vrh,
+				      struct vringh_kiov *iov, size_t *len)
+{
+	int err;
+	u16 head;
+	size_t rlen;
+	void __iomem *virt;
+	phys_addr_t phys;
+	void *buf;
+
+	err = vringh_getdesc(vrh, iov, NULL, &head);
+	if (err <= 0) {
+		return ERR_PTR(err);
+	}
+
+	rlen = iov->iov[iov->i].iov_len;
+	virt = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
+				(u64)iov->iov[iov->i].iov_base, &phys, rlen);
+	if (IS_ERR(virt))
+		return virt;
+
+	buf = kmalloc(rlen, GFP_KERNEL);
+	if (!buf) {
+		buf = ERR_PTR(-ENOMEM);
+		goto done;
+	}
+
+	memcpy_fromio(buf, virt, rlen);
+
+	*len = rlen;
+
+done:
+	vringh_complete(vrh, head, rlen);
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, phys, virt,
+			   rlen);
+
+	return buf;
+}
+
+static int virtio_store_to_vrh(struct vringh *vrh,
+				   struct vringh_kiov *iov, const void *buf,
+				   size_t len)
+{
+	int err;
+	u16 head;
+	size_t rlen;
+	void __iomem *virt;
+
+	err = vringh_getdesc(vrh, NULL, iov, &head);
+	if (err <= 0)
+		return err;
+
+	rlen = iov->iov[iov->i].iov_len;
+	if (len > rlen) {
+		// Split transfer is not supported yet.
+		return -EIO;
+	}
+
+	virt = phys_to_virt((u64)iov->iov[iov->i].iov_base);
+
+	memcpy(virt, buf, len);
+
+	vringh_complete(vrh, head, len);
+
+	return 1;
+}
+
+static int epf_virtio_store_to_vrh(struct pci_epf *epf, struct vringh *vrh,
+				   struct vringh_kiov *iov, const void *buf,
+				   size_t len)
+{
+	int err;
+	u16 head;
+	size_t rlen;
+	void __iomem *virt;
+	phys_addr_t phys;
+
+	err = vringh_getdesc(vrh, NULL, iov, &head);
+	if (err < 0) {
+		return err;
+	} else if (!err) {
+		pr_debug("disc doesn't remain\n");
+		return 0;
+	}
+
+	rlen = iov->iov[iov->i].iov_len;
+	if (len > rlen) {
+		// Split transfer is not supported yet.
+		pr_info("buffer is too small\n");
+		return -EIO;
+	}
+
+	virt = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
+				(u64)iov->iov[iov->i].iov_base, &phys, len);
+	if (IS_ERR(virt)) {
+		pr_info("failed to map to access the rx data\n");
+		return PTR_ERR(virt);
+	}
+
+	memcpy_toio(virt, buf, len);
+
+	vringh_complete(vrh, head, len);
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, phys, virt,
+			   len);
+	return 1;
+}
 
 struct epf_vcon {
 	struct pci_epf *epf;
@@ -18,7 +127,21 @@ struct epf_vcon {
 	struct vringh_kiov tx_iov, rx_iov;
 	struct epf_vringh *txvrh, *rxvrh;
 	struct vringh_kiov riov, wiov;
+
+	struct work_struct raise_irq_work;
+	struct work_struct xmit_to_remote;
+
+	struct virtio_device vdev;
+
+	struct vringh lhost_vrhs[2];
+	struct virtqueue *lhost_vqs[2];
+	struct vringh_kiov lhost_iovs[2];
 };
+
+static inline struct epf_vcon *vdev_to_vcon(struct virtio_device *vdev)
+{
+	return container_of(vdev, struct epf_vcon, vdev);
+}
 
 static struct pci_epf_header epf_vcon_pci_header = {
 	.vendorid = PCI_VENDOR_ID_REDHAT_QUMRANET,
@@ -169,66 +292,28 @@ err_free_space:
 static void epf_vcon_notify_callback(void *param)
 {
 	struct epf_vcon *vcon = param;
-	struct vringh_kiov *riov = &vcon->riov;
-	struct vringh_kiov *wiov = &vcon->wiov;
-	struct vringh *wvrh = &vcon->txvrh->vrh;
-	struct vringh *rvrh = &vcon->rxvrh->vrh;
-	struct pci_epf *epf = vcon->epf;
+	void *buf;
+	size_t len;
 	int err;
-	u16 rhead, whead;
-	size_t rlen, wlen;
-	void __iomem *rvirt, *wvirt;
-	phys_addr_t rphys, wphys;
 
-	err = vringh_getdesc(wvrh, wiov, NULL, &whead);
+	buf = epf_virtio_load_from_vrh(vcon->epf, &vcon->txvrh->vrh,
+				       &vcon->wiov, &len);
+	if (IS_ERR(buf)) {
+		pr_err("Failed to load\n");
+		return;
+	}
+
+	// send to local
+	err = virtio_store_to_vrh(&vcon->lhost_vrhs[0],
+				&vcon->lhost_iovs[0], buf, len);
 	if (err < 0) {
-		pr_err("failed to get tx vring desc\n");
-		return;
-	} else if (!err) {
+		pr_debug("Failed to store: %d\n", err);
 		return;
 	}
 
-	wlen = wiov->iov[wiov->i].iov_len;
-	wvirt = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
-				 (u64)wiov->iov[wiov->i].iov_base, &wphys,
-				 wlen);
-	if (IS_ERR(wvirt)) {
-		pr_info("failed to map to access the rx data\n");
-		return;
-	}
+	vring_interrupt(0, vcon->lhost_vqs[0]);
 
-	err = vringh_getdesc(rvrh, NULL, riov, &rhead);
-	if (err < 0) {
-		pr_err("failed to get rx vring desc\n");
-		return;
-	} else if (!err) {
-		return;
-	}
-
-	rlen = riov->iov[riov->i].iov_len;
-	rvirt = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
-				 (u64)riov->iov[riov->i].iov_base, &rphys,
-				 rlen);
-	if (IS_ERR(rvirt)) {
-		pr_info("failed to map to access the rx tata\n");
-		return;
-	}
-
-	{
-		char *buf = kzalloc(wlen + 1, GFP_KERNEL);
-		memcpy_fromio(buf, wvirt, wlen);
-		pr_info("dump: %s\n", buf);
-		memcpy_toio(rvirt, buf, wlen);
-		kfree(buf);
-	}
-
-	vringh_complete(rvrh, rhead, wlen);
-	vringh_complete(wvrh, whead, wlen);
-
-	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, rphys, rvirt,
-			   rlen);
-	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, wphys, wvirt,
-			   wlen);
+	kfree(buf);
 }
 
 static int epf_vcon_device_setup(void *data)
@@ -244,7 +329,7 @@ static int epf_vcon_device_setup(void *data)
 	struct epf_vringh *vrh;
 
 	err = epf_virtio_negotiate_qinfo(vcon->cfg_base, qinfo,
-					     EPF_VCON_NQUEUES);
+					 EPF_VCON_NQUEUES);
 	if (err < 0) {
 		pr_err("failed to negoticate configs with driver\n");
 		return err;
@@ -310,6 +395,51 @@ static int epf_vcon_spawn_device_setup_task(struct epf_vcon *vcon)
 	return 0;
 }
 
+static void *virtio_load_from_vrh(struct vringh *vrh,
+				      struct vringh_kiov *iov, size_t *len);
+static void epf_vcon_xmit(struct work_struct *work)
+{
+	struct epf_vcon *vcon =
+		container_of(work, struct epf_vcon, xmit_to_remote);
+	size_t size;
+	void *buf;
+	int err;
+
+	buf = virtio_load_from_vrh(&vcon->lhost_vrhs[1], &vcon->lhost_iovs[1], &size);
+// 	buf = epf_virtio_load_from_vrh(vcon->epf, &vcon->lhost_vrhs[1], &vcon->lhost_iovs[1], &size);
+	if (IS_ERR(buf)) {
+		pr_info("failed to load: %ld\n", PTR_ERR(buf));
+		return;
+	}
+
+	err = virtio_store_to_vrh(&vcon->lhost_vrhs[1], &vcon->lhost_iovs[1], " ", 1);
+	if (err < 0) {
+		pr_err("failed ack\n");
+	}
+
+	err = epf_virtio_store_to_vrh(vcon->epf, &vcon->rxvrh->vrh, &vcon->riov, buf, size);
+	if (err < 0) {
+		pr_info("failed to store: %d\n", err);
+		return;
+	}
+
+	kfree(buf);
+
+	if (!schedule_work(&vcon->raise_irq_work))
+		pr_err("failed to enqueue irq work\n");
+
+}
+
+static void epf_vcon_raise_irq_handler(struct work_struct *work)
+{
+	struct epf_vcon *vcon =
+		container_of(work, struct epf_vcon, raise_irq_work);
+	struct pci_epf *epf = vcon->epf;
+
+	pci_epc_raise_irq(epf->epc, epf->func_no, epf->vfunc_no,
+			  PCI_EPC_IRQ_LEGACY, 0);
+}
+
 static int epf_vcon_rhost_setup(struct epf_vcon *vcon)
 {
 	struct pci_epf *epf = vcon->epf;
@@ -328,6 +458,215 @@ static int epf_vcon_rhost_setup(struct epf_vcon *vcon)
 	if (err)
 		return err;
 
+	INIT_WORK(&vcon->raise_irq_work, epf_vcon_raise_irq_handler);
+	INIT_WORK(&vcon->xmit_to_remote, epf_vcon_xmit);
+
+	return 0;
+}
+
+static u64 epf_vcon_vdev_get_features(struct virtio_device *vdev)
+{
+	return 0;
+}
+
+static int epf_vcon_vdev_finalize_features(struct virtio_device *vdev)
+{
+	return 0;
+}
+
+static void epf_vcon_vdev_get_config(struct virtio_device *vdev,
+				     unsigned int offset, void *buf,
+				     unsigned int len)
+{
+}
+
+static void epf_vcon_vdev_set_config(struct virtio_device *vdev,
+				     unsigned int offset, const void *buf,
+				     unsigned int len)
+{
+}
+
+static u8 epf_vcon_vdev_get_status(struct virtio_device *vdev)
+{
+	return 0;
+}
+
+static void epf_vcon_vdev_set_status(struct virtio_device *vdev, u8 status)
+{
+}
+
+static void epf_vcon_vdev_reset(struct virtio_device *vdev)
+{
+}
+
+static void *virtio_load_from_vrh(struct vringh *vrh,
+				      struct vringh_kiov *iov, size_t *len)
+{
+	int err;
+	u16 head;
+	size_t rlen;
+	void __iomem *virt;
+	void *buf;
+
+	err = vringh_getdesc(vrh, iov, NULL, &head);
+	if (err <= 0) {
+		return ERR_PTR(err);
+	}
+
+	rlen = iov->iov[iov->i].iov_len;
+	virt = phys_to_virt((u64)iov->iov[iov->i].iov_base);
+	if (IS_ERR(virt))
+		return virt;
+
+	buf = kmalloc(rlen, GFP_KERNEL);
+	if (!buf) {
+		buf = ERR_PTR(-ENOMEM);
+		goto done;
+	}
+
+	memcpy_fromio(buf, virt, rlen);
+
+	*len = rlen;
+
+done:
+	vringh_complete(vrh, head, rlen);
+	return buf;
+}
+
+static bool epf_vcon_vdev_vq_notify(struct virtqueue *vq)
+{
+	struct epf_vcon *vcon = vdev_to_vcon(vq->vdev);
+	void *buf;
+	size_t size;
+	int err;
+
+	switch (vq->index) {
+	case 0:
+		break;
+	case 1:
+		buf = virtio_load_from_vrh(&vcon->lhost_vrhs[1], &vcon->lhost_iovs[1], &size);
+		if (IS_ERR(buf)) {
+			pr_info("failed to load: %ld\n", PTR_ERR(buf));
+			return true;
+		}
+		// ack to local
+		err = epf_virtio_store_to_vrh(vcon->epf, &vcon->lhost_vrhs[1], &vcon->lhost_iovs[1], " ", 1);
+		if (err < 0) {
+			pr_err("failed ack: %d\n", err);
+			return true;
+		}
+		err = epf_virtio_store_to_vrh(vcon->epf, &vcon->rxvrh->vrh, &vcon->riov, buf, size);
+		if (err < 0) {
+			pr_info("failed to store: %d\n", err);
+			return true;
+		}
+
+		kfree(buf);
+		schedule_work(&vcon->raise_irq_work);
+
+		break;
+	default:
+		return false;
+	}
+
+	return true;
+}
+
+static int epf_vcon_vdev_find_vqs(struct virtio_device *vdev, unsigned int nvqs,
+				  struct virtqueue *vqs[],
+				  vq_callback_t *callback[],
+				  const char *const names[], const bool *ctx,
+				  struct irq_affinity *desc)
+{
+#if 1
+	struct epf_vcon *vcon = vdev_to_vcon(vdev);
+	int err;
+	int qidx, i;
+	const size_t vq_size = epf_vcon_get_vq_size();
+
+	if (nvqs > 2)
+		return -EINVAL;
+
+	for (qidx = 0, i = 0; i < nvqs; i++) {
+		struct virtqueue *vq;
+		struct vring *vring;
+		// 		struct vringh *vrh;
+
+		if (!names[i]) {
+			vqs[i] = NULL;
+			continue;
+		}
+
+		vq = vring_create_virtqueue(qidx++, vq_size,
+					    VIRTIO_PCI_VRING_ALIGN, vdev, true,
+					    false, ctx ? ctx[i] : false,
+					    epf_vcon_vdev_vq_notify,
+					    callback[i], names[i]);
+		if (!vq) {
+			err = -ENOMEM;
+			goto err_del_vqs;
+		}
+
+		vqs[i] = vq;
+		vcon->lhost_vqs[i] = vq;
+
+		vring = virtqueue_get_vring(vq);
+		err = vringh_init_kern(&vcon->lhost_vrhs[i], 0, vq_size, false,
+				       GFP_KERNEL, vring->desc, vring->avail,
+				       vring->used);
+		if (err) {
+			pr_err("failed to init vringh for vring %d\n", i);
+			goto err_del_vqs;
+		}
+
+		vringh_kiov_init(&vcon->lhost_iovs[i], NULL, 0);
+	}
+
+#endif
+	return 0;
+
+err_del_vqs:
+	for (; i >= 0; i--) {
+		if (!names[i])
+			continue;
+
+		if (!vqs[i])
+			continue;
+
+		vring_del_virtqueue(vqs[i]);
+	}
+	return err;
+}
+
+static void epf_vcon_vdev_del_vqs(struct virtio_device *vdev)
+{
+}
+
+static const struct virtio_config_ops epf_vcon_vdev_config_ops = {
+	.get_features = epf_vcon_vdev_get_features,
+	.finalize_features = epf_vcon_vdev_finalize_features,
+	.get = epf_vcon_vdev_get_config,
+	.set = epf_vcon_vdev_set_config,
+	.get_status = epf_vcon_vdev_get_status,
+	.set_status = epf_vcon_vdev_set_status,
+	.reset = epf_vcon_vdev_reset,
+	.find_vqs = epf_vcon_vdev_find_vqs,
+	.del_vqs = epf_vcon_vdev_del_vqs,
+};
+
+static int epf_vcon_setup_lhost(struct virtio_device *vdev, struct device* parent)
+{
+	int err;
+
+	vdev->dev.parent = parent;
+	vdev->config = &epf_vcon_vdev_config_ops;
+	vdev->id.vendor = PCI_VENDOR_ID_REDHAT_QUMRANET;
+	vdev->id.device = VIRTIO_ID_CONSOLE;
+
+	err = register_virtio_device(vdev);
+	if (err)
+		return err;
+
 	return 0;
 }
 
@@ -337,6 +676,10 @@ static int epf_vcon_bind(struct pci_epf *epf)
 	struct epf_vcon *vcon = epf_get_drvdata(epf);
 
 	err = epf_vcon_rhost_setup(vcon);
+	if (err)
+		return err;
+
+	err = epf_vcon_setup_lhost(&vcon->vdev, vcon->epf->epc->dev.parent);
 	if (err)
 		return err;
 
@@ -383,11 +726,13 @@ static int __init epf_vcon_init(void)
 {
 	int err;
 
+#if 1
 	err = pci_epf_register_driver(&epf_vcon_drv);
 	if (err) {
 		pr_err("Failed to regsiter epf virtio console function\n");
 		return err;
 	}
+#endif
 
 	return 0;
 }
