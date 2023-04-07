@@ -151,7 +151,7 @@ static void epf_vcon_cleanup_common(struct epf_vcon *vcon)
 
 static void epf_vcon_qnotify_callback(void *param)
 {
-	struct epf_vcon *vcon = (struct epf_vcon *)param;
+	struct epf_vcon *vcon = param;
 
 	queue_work(vcon->task_wq, &vcon->rx_work);
 }
@@ -337,7 +337,7 @@ static int epf_vcon_vdev_find_vqs(struct virtio_device *vdev, unsigned int nvqs,
 		vcon->vdev_vqs[i] = vq;
 
 		vring = virtqueue_get_vring(vq);
-		err = vringh_init_kern(&vcon->vdev_vrhs[i], 0,
+		err = vringh_init_kern(&vcon->vdev_vrhs[i], vcon->features,
 				       virtio_queue_size, false, GFP_KERNEL,
 				       vring->desc, vring->avail, vring->used);
 		if (err) {
