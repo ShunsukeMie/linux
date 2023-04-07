@@ -188,6 +188,7 @@ int epf_virtio_init(struct epf_virtio *evio, struct pci_epf_header *hdr,
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(epf_virtio_init);
 
 /**
  * epf_virtio_final - finalize struct epf_virtio. it frees bar and memories
@@ -202,6 +203,7 @@ void epf_virtio_final(struct epf_virtio *evio)
 
 	kfree(evio->vrhs);
 }
+EXPORT_SYMBOL_GPL(epf_virtio_final);
 
 static int epf_virtio_negotiate_vq(struct epf_virtio *evio)
 {
@@ -282,6 +284,8 @@ static void epf_virtio_monitor_qnotify(struct epf_virtio *evio)
 	const u16 qn_default = evio->nvq;
 	u16 tmp;
 
+	/* Since there is no way to synchronize between the host and EP functions,
+	 * it is possible to miss multiple notifications.  */
 	while (evio->running) {
 		tmp = epf_virtio_cfg_read16(evio, VIRTIO_PCI_QUEUE_NOTIFY);
 		if (tmp == qn_default)
@@ -339,6 +343,7 @@ int epf_virtio_launch_bgtask(struct epf_virtio *evio)
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(epf_virtio_launch_bgtask);
 
 /**
  * epf_virtio_terminate_bgtask - shutdown a device emulation kthread.
@@ -350,6 +355,7 @@ void epf_virtio_terminate_bgtask(struct epf_virtio *evio)
 
 	kthread_stop(evio->bgtask);
 }
+EXPORT_SYMBOL_GPL(epf_virtio_terminate_bgtask);
 
 /**
  * epf_virtio_reset - reset virtio status
@@ -364,6 +370,7 @@ int epf_virtio_reset(struct epf_virtio *evio)
 
 	return epf_virtio_launch_bgtask(evio);
 }
+EXPORT_SYMBOL_GPL(epf_virtio_reset);
 
 /**
  * epf_virtio_vrh_memcpy - copy a data with CPU between remote and local vring.
@@ -448,3 +455,6 @@ int epf_virtio_vrh_memcpy(struct epf_virtio *evio, struct vringh *svrh,
 
 	return 1;
 }
+EXPORT_SYMBOL_GPL(epf_virtio_vrh_memcpy);
+
+MODULE_LICENSE("GPL");

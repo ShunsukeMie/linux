@@ -38,11 +38,18 @@ config PCI_EPF_VNTB
 
 	  If in doubt, say "N" to disable Endpoint NTB driver.
 
+config PCI_EPF_VIRTIO
+	tristate "PCI virtio Endpoint function helpers"
+	depends on PCI_ENDPOINT
+	select VHOST_IOMEM
+	help
+	  This is helper
+
 config PCI_EPF_VCON
 	tristate "PCI Endpoint virito-console driver"
 	depends on PCI_ENDPOINT
-	select VHOST_IOMEM
 	select VHOST_RING
+	select PCI_EPF_VIRTIO
 	help
 	  this is a help text.
 
@@ -50,7 +57,6 @@ config PCI_EPF_VNET
 	tristate "PCI Endpoint virtio-net driver"
 	depends on PCI_ENDPOINT
 	select VHOST_RING
-	select VHOST_IOMEM
 	select PCI_EPF_VIRTIO
 	help
 	  PCIe Endpoint virtio-net function implementation. This module enables to

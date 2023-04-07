@@ -32,7 +32,9 @@ struct epf_virtio {
 	/* Virtual address of pci configuration space */
 	void __iomem *bar;
 
-	/* Callback function and parameter for queue notifcation */
+	/* Callback function and parameter for queue notifcation
+	 * Note: PCI EP function cannot detect qnotify accurately, therefore this
+	 * callback function should check all of virtqueue's changes. */
 	void (*qn_callback)(void *);
 	void *qn_param;
 
@@ -66,6 +68,14 @@ DEFINE_EPF_VIRTIO_CFG_READ(32)
 DEFINE_EPF_VIRTIO_CFG_WRITE(8);
 DEFINE_EPF_VIRTIO_CFG_WRITE(16);
 DEFINE_EPF_VIRTIO_CFG_WRITE(32);
+
+static inline void epf_virtio_cfg_memcpy_toio(struct epf_virtio *evio, size_t offset,
+				       void *buf, size_t len)
+{
+	void __iomem *base = evio->bar + offset;
+
+	memcpy_toio(base, buf, len);
+}
 
 int epf_virtio_init(struct epf_virtio *evio, struct pci_epf_header *hdr,
 		    size_t bar_size);
