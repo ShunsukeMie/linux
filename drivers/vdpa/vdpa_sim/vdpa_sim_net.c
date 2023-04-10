@@ -70,13 +70,13 @@ static void vdpasim_net_complete(struct vdpasim_virtqueue *vq, size_t len)
 	/* Make sure data is wrote before advancing index */
 	smp_wmb();
 
-	vringh_complete_iotlb(&vq->vring, vq->head, len);
+	vringh_complete(&vq->vring, vq->head, len);
 
 	/* Make sure used is visible before rasing the interrupt. */
 	smp_wmb();
 
 	local_bh_disable();
-	if (vringh_need_notify_iotlb(&vq->vring) > 0)
+	if (vringh_need_notify(&vq->vring) > 0)
 		vringh_notify(&vq->vring);
 	local_bh_enable();
 }
@@ -110,7 +110,7 @@ static virtio_net_ctrl_ack vdpasim_handle_ctrl_mac(struct vdpasim *vdpasim,
 
 	switch (cmd) {
 	case VIRTIO_NET_CTRL_MAC_ADDR_SET:
-		read = vringh_iov_pull_iotlb(&cvq->vring, &cvq->in_iov,
+		read = vringh_iov_pull(&cvq->vring, &cvq->in_iov,
 					     vio_config->mac, ETH_ALEN);
 		if (read == ETH_ALEN)
 			status = VIRTIO_NET_OK;
@@ -139,14 +139,14 @@ static void vdpasim_handle_cvq(struct vdpasim *vdpasim)
 		return;
 
 	while (true) {
-		err = vringh_getdesc_iotlb(&cvq->vring, &cvq->in_iov,
+		err = vringh_getdesc(&cvq->vring, &cvq->in_iov,
 					   &cvq->out_iov,
-					   &cvq->head, GFP_ATOMIC);
+					   &cvq->head);
 		if (err <= 0)
 			break;
 
 		++requests;
-		read = vringh_iov_pull_iotlb(&cvq->vring, &cvq->in_iov, &ctrl,
+		read = vringh_iov_pull(&cvq->vring, &cvq->in_iov, &ctrl,
 					     sizeof(ctrl));
 		if (read != sizeof(ctrl)) {
 			++errors;
@@ -169,9 +169,9 @@ static void vdpasim_handle_cvq(struct vdpasim *vdpasim)
 		/* Make sure data is wrote before advancing index */
 		smp_wmb();
 
-		write = vringh_iov_push_iotlb(&cvq->vring, &cvq->out_iov,
+		write = vringh_iov_push(&cvq->vring, &cvq->out_iov,
 					      &status, sizeof(status));
-		vringh_complete_iotlb(&cvq->vring, cvq->head, write);
+		vringh_complete(&cvq->vring, cvq->head, write);
 		vringh_kiov_cleanup(&cvq->in_iov);
 		vringh_kiov_cleanup(&cvq->out_iov);
 
@@ -215,8 +215,8 @@ static void vdpasim_net_work(struct vdpasim *vdpasim)
 		goto out;
 
 	while (true) {
-		err = vringh_getdesc_iotlb(&txq->vring, &txq->out_iov, NULL,
-					   &txq->head, GFP_ATOMIC);
+		err = vringh_getdesc(&txq->vring, &txq->out_iov, NULL,
+					   &txq->head);
 		if (err <= 0) {
 			if (err)
 				++tx_errors;
@@ -224,7 +224,7 @@ static void vdpasim_net_work(struct vdpasim *vdpasim)
 		}
 
 		++tx_pkts;
-		read = vringh_iov_pull_iotlb(&txq->vring, &txq->out_iov,
+		read = vringh_iov_pull(&txq->vring, &txq->out_iov,
 					     vdpasim->buffer,
 					     PAGE_SIZE);
 
@@ -236,15 +236,15 @@ static void vdpasim_net_work(struct vdpasim *vdpasim)
 			continue;
 		}
 
-		err = vringh_getdesc_iotlb(&rxq->vring, NULL, &rxq->in_iov,
-					   &rxq->head, GFP_ATOMIC);
+		err = vringh_getdesc(&rxq->vring, NULL, &rxq->in_iov,
+					   &rxq->head);
 		if (err <= 0) {
 			++rx_overruns;
 			vdpasim_net_complete(txq, 0);
 			break;
 		}
 
-		write = vringh_iov_push_iotlb(&rxq->vring, &rxq->in_iov,
+		write = vringh_iov_push(&rxq->vring, &rxq->in_iov,
 					      vdpasim->buffer, read);
 		if (write <= 0) {
 			++rx_errors;
