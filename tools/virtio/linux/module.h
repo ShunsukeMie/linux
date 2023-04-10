@@ -5,3 +5,4 @@
 	static __attribute__((unused)) const char *__MODULE_LICENSE_name = \
 		__MODULE_LICENSE_value
 
+struct device;
