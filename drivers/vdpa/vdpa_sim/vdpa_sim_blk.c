@@ -88,8 +88,8 @@ static bool vdpasim_blk_handle_req(struct vdpasim *vdpasim,
 	u32 type;
 	int ret;
 
-	ret = vringh_getdesc_iotlb(&vq->vring, &vq->out_iov, &vq->in_iov,
-				   &vq->head, GFP_ATOMIC);
+	ret = vringh_getdesc(&vq->vring, &vq->out_iov, &vq->in_iov,
+				   &vq->head);
 	if (ret != 1)
 		return false;
 
@@ -111,7 +111,7 @@ static bool vdpasim_blk_handle_req(struct vdpasim *vdpasim,
 
 	to_pull = vringh_kiov_length(&vq->out_iov);
 
-	bytes = vringh_iov_pull_iotlb(&vq->vring, &vq->out_iov, &hdr,
+	bytes = vringh_iov_pull(&vq->vring, &vq->out_iov, &hdr,
 				      sizeof(hdr));
 	if (bytes != sizeof(hdr)) {
 		dev_dbg(&vdpasim->vdpa.dev, "request out header too short\n");
@@ -143,12 +143,12 @@ static bool vdpasim_blk_handle_req(struct vdpasim *vdpasim,
 			break;
 		}
 
-		bytes = vringh_iov_push_iotlb(&vq->vring, &vq->in_iov,
+		bytes = vringh_iov_push(&vq->vring, &vq->in_iov,
 					      vdpasim->buffer + offset,
 					      to_push);
 		if (bytes < 0) {
 			dev_dbg(&vdpasim->vdpa.dev,
-				"vringh_iov_push_iotlb() error: %zd offset: 0x%llx len: 0x%zx\n",
+				"vringh_iov_push() error: %zd offset: 0x%llx len: 0x%zx\n",
 				bytes, offset, to_push);
 			status = VIRTIO_BLK_S_IOERR;
 			break;
@@ -165,12 +165,12 @@ static bool vdpasim_blk_handle_req(struct vdpasim *vdpasim,
 			break;
 		}
 
-		bytes = vringh_iov_pull_iotlb(&vq->vring, &vq->out_iov,
+		bytes = vringh_iov_pull(&vq->vring, &vq->out_iov,
 					      vdpasim->buffer + offset,
 					      to_pull);
 		if (bytes < 0) {
 			dev_dbg(&vdpasim->vdpa.dev,
-				"vringh_iov_pull_iotlb() error: %zd offset: 0x%llx len: 0x%zx\n",
+				"vringh_iov_pull() error: %zd offset: 0x%llx len: 0x%zx\n",
 				bytes, offset, to_pull);
 			status = VIRTIO_BLK_S_IOERR;
 			break;
@@ -178,12 +178,12 @@ static bool vdpasim_blk_handle_req(struct vdpasim *vdpasim,
 		break;
 
 	case VIRTIO_BLK_T_GET_ID:
-		bytes = vringh_iov_push_iotlb(&vq->vring, &vq->in_iov,
+		bytes = vringh_iov_push(&vq->vring, &vq->in_iov,
 					      vdpasim_blk_id,
 					      VIRTIO_BLK_ID_BYTES);
 		if (bytes < 0) {
 			dev_dbg(&vdpasim->vdpa.dev,
-				"vringh_iov_push_iotlb() error: %zd\n", bytes);
+				"vringh_iov_push() error: %zd\n", bytes);
 			status = VIRTIO_BLK_S_IOERR;
 			break;
 		}
@@ -208,11 +208,11 @@ static bool vdpasim_blk_handle_req(struct vdpasim *vdpasim,
 			break;
 		}
 
-		bytes = vringh_iov_pull_iotlb(&vq->vring, &vq->out_iov, &range,
+		bytes = vringh_iov_pull(&vq->vring, &vq->out_iov, &range,
 					      to_pull);
 		if (bytes < 0) {
 			dev_dbg(&vdpasim->vdpa.dev,
-				"vringh_iov_pull_iotlb() error: %zd offset: 0x%llx len: 0x%zx\n",
+				"vringh_iov_pull() error: %zd offset: 0x%llx len: 0x%zx\n",
 				bytes, offset, to_pull);
 			status = VIRTIO_BLK_S_IOERR;
 			break;
@@ -268,7 +268,7 @@ err_status:
 		vringh_kiov_advance(&vq->in_iov, to_push - pushed);
 
 	/* Last byte is the status */
-	bytes = vringh_iov_push_iotlb(&vq->vring, &vq->in_iov, &status, 1);
+	bytes = vringh_iov_push(&vq->vring, &vq->in_iov, &status, 1);
 	if (bytes != 1)
 		goto err;
 
@@ -280,7 +280,7 @@ err_status:
 	handled = true;
 
 err:
-	vringh_complete_iotlb(&vq->vring, vq->head, pushed);
+	vringh_complete(&vq->vring, vq->head, pushed);
 
 	return handled;
 }
@@ -310,7 +310,7 @@ static void vdpasim_blk_work(struct vdpasim *vdpasim)
 			smp_wmb();
 
 			local_bh_disable();
-			if (vringh_need_notify_iotlb(&vq->vring) > 0)
+			if (vringh_need_notify(&vq->vring) > 0)
 				vringh_notify(&vq->vring);
 			local_bh_enable();
 
