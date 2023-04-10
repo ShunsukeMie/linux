@@ -102,10 +102,10 @@ static void vdpasim_queue_ready(struct vdpasim *vdpasim, unsigned int idx)
 
 	if (use_va && vdpasim->mm_bound) {
 		vringh_init_iotlb_va(&vq->vring, vdpasim->features, vq->num,
-				     true, desc, avail, used);
+				     true, GFP_ATOMIC, desc, avail, used);
 	} else {
 		vringh_init_iotlb(&vq->vring, vdpasim->features, vq->num,
-				  true, desc, avail, used);
+				  true, GFP_ATOMIC, desc, avail, used);
 	}
 
 	vq->vring.last_avail_idx = last_avail_idx;
@@ -133,7 +133,7 @@ static void vdpasim_vq_reset(struct vdpasim *vdpasim,
 	vq->cb = NULL;
 	vq->private = NULL;
 	vringh_init_iotlb(&vq->vring, vdpasim->dev_attr.supported_features,
-			  VDPASIM_QUEUE_MAX, false, NULL, NULL, NULL);
+			  VDPASIM_QUEUE_MAX, false, GFP_ATOMIC, NULL, NULL, NULL);
 
 	vq->vring.notify = NULL;
 }
