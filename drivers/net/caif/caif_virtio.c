@@ -265,18 +265,17 @@ static int cfv_rx_poll(struct napi_struct *napi, int quota)
 		 */
 		if (riov->i == riov->used) {
 			if (cfv->ctx.head != USHRT_MAX) {
-				vringh_complete_kern(cfv->vr_rx,
+				vringh_complete(cfv->vr_rx,
 						     cfv->ctx.head,
 						     0);
 				cfv->ctx.head = USHRT_MAX;
 			}
 
-			err = vringh_getdesc_kern(
+			err = vringh_getdesc(
 				cfv->vr_rx,
 				riov,
 				NULL,
-				&cfv->ctx.head,
-				GFP_ATOMIC);
+				&cfv->ctx.head);
 
 			if (err <= 0)
 				goto exit;
@@ -317,9 +316,9 @@ exit:
 
 		/* Really out of packets? (stolen from virtio_net)*/
 		napi_complete(napi);
-		if (unlikely(!vringh_notify_enable_kern(cfv->vr_rx)) &&
+		if (unlikely(!vringh_notify_enable(cfv->vr_rx)) &&
 		    napi_schedule_prep(napi)) {
-			vringh_notify_disable_kern(cfv->vr_rx);
+			vringh_notify_disable(cfv->vr_rx);
 			__napi_schedule(napi);
 		}
 		break;
@@ -329,7 +328,7 @@ exit:
 		dev_kfree_skb(skb);
 		/* Stop NAPI poll on OOM, we hope to be polled later */
 		napi_complete(napi);
-		vringh_notify_enable_kern(cfv->vr_rx);
+		vringh_notify_enable(cfv->vr_rx);
 		break;
 
 	default:
@@ -337,12 +336,12 @@ exit:
 		netdev_warn(cfv->ndev, "Bad ring, disable device\n");
 		cfv->ndev->stats.rx_dropped = riov->used - riov->i;
 		napi_complete(napi);
-		vringh_notify_disable_kern(cfv->vr_rx);
+		vringh_notify_disable(cfv->vr_rx);
 		netif_carrier_off(cfv->ndev);
 		break;
 	}
 out:
-	if (rxcnt && vringh_need_notify_kern(cfv->vr_rx) > 0)
+	if (rxcnt && vringh_need_notify(cfv->vr_rx) > 0)
 		vringh_notify(cfv->vr_rx);
 	return rxcnt;
 }
@@ -352,7 +351,7 @@ static void cfv_recv(struct virtio_device *vdev, struct vringh *vr_rx)
 	struct cfv_info *cfv = vdev->priv;
 
 	++cfv->stats.rx_kicks;
-	vringh_notify_disable_kern(cfv->vr_rx);
+	vringh_notify_disable(cfv->vr_rx);
 	napi_schedule(&cfv->napi);
 }
 
@@ -460,7 +459,7 @@ static int cfv_netdev_close(struct net_device *netdev)
 	/* Disable interrupts, queues and NAPI polling */
 	netif_carrier_off(netdev);
 	virtqueue_disable_cb(cfv->vq_tx);
-	vringh_notify_disable_kern(cfv->vr_rx);
+	vringh_notify_disable(cfv->vr_rx);
 	napi_disable(&cfv->napi);
 
 	/* Release any TX buffers on both used and available rings */
