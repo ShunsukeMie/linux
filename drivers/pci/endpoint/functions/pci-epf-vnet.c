@@ -10,6 +10,7 @@
 #include <linux/virtio_pci.h>
 #include <linux/virtio_ring.h>
 #include <linux/dmaengine.h>
+#include <rdma/ib_verbs.h>
 
 #include "pci-epf-virtio.h"
 
@@ -46,6 +47,9 @@ struct epf_vnet {
 #define EPF_VNET_INIT_COMPLETE_EP_FUNC BIT(1)
 	u8 initialized;
 	bool enable_edma;
+
+#define EPF_VNET_ROCE_GID_TBL_LEN 512
+	union ib_gid roce_gid_tbl[EPF_VNET_ROCE_GID_TBL_LEN];
 };
 
 static inline struct epf_vnet *vdev_to_vnet(struct virtio_device *vdev)
@@ -53,11 +57,22 @@ static inline struct epf_vnet *vdev_to_vnet(struct virtio_device *vdev)
 	return container_of(vdev, struct epf_vnet, vdev);
 }
 
+/* TODO This nvq is fixed value so I can use cache */
 static u16 epf_vnet_get_nvq(struct epf_vnet *vnet)
 {
-	/* tx and rx queue pair and control queue. */
-	return vnet->vnet_cfg.max_virtqueue_pairs * 2 +
-	       !!(vnet->features & BIT(VIRTIO_NET_F_CTRL_VQ));
+	u16 nvq;
+
+	nvq = vnet->vnet_cfg.max_virtqueue_pairs * 2;
+
+	if (vnet->features & BIT(VIRTIO_NET_F_CTRL_VQ))
+		nvq++;
+
+	if (vnet->features & BIT(VIRTIO_NET_F_ROCE)) {
+		nvq += vnet->vnet_cfg.max_rdma_qps * 2;
+		nvq += vnet->vnet_cfg.max_rdma_cqs;
+	}
+
+	return nvq;
 }
 
 static void epf_vnet_qnotify_callback(void *param)
@@ -405,6 +420,8 @@ static void epf_vnet_ep_ctrl_handler(struct work_struct *work)
 
 		iowrite8(VIRTIO_NET_OK, wvirt);
 		break;
+	case VIRTIO_NET_CTRL_ROCE:
+		break;
 	default:
 		pr_err("Found unsupported class in control queue: %d\n", class);
 		break;
@@ -445,6 +462,91 @@ static void epf_vnet_vdev_announce_linkup(struct epf_vnet *vnet)
 	virtio_config_changed(&vnet->vdev);
 }
 
+static int epf_vnet_vdev_handle_roce_query_device(struct epf_vnet *vnet,
+						  struct vringh_kiov *riov,
+						  struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_ack_query_device *ack;
+
+	ack = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
+
+	ack->device_cap_flags = VIRTIO_IB_DEVICE_RC_RNR_NAK_GEN;
+	ack->max_mr_size = 1 << 30;
+	ack->page_size_cap = 0xfffff000;
+	ack->hw_ver = 0xdeafbeef;
+	ack->max_qp_wr = virtio_queue_size;
+	ack->max_send_sge = 32;
+	ack->max_recv_sge = 32;
+	ack->max_sge_rd = 32;
+	ack->max_cqe = virtio_queue_size;
+	ack->max_mr = 100;
+	ack->max_pd = 100;
+	ack->max_qp_rd_atom = 128;
+	ack->max_qp_init_rd_atom = 128;
+	ack->max_ah = 100;
+
+	return 0;
+}
+
+static int epf_vnet_vdev_handle_roce_query_port(struct epf_vnet *vnet,
+						struct vringh_kiov *riov,
+						struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_ack_query_port *ack;
+
+	ack = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
+	ack->gid_tbl_len = EPF_VNET_ROCE_GID_TBL_LEN;
+	ack->max_msg_sz = 0x800000;
+
+	return 0;
+}
+
+static int epf_vnet_vdev_handle_roce_add_gid(struct epf_vnet *vnet,
+					     struct vringh_kiov *riov,
+					     struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_cmd_add_gid *cmd;
+
+	cmd = phys_to_virt((unsigned long)riov->iov[riov->i].iov_base);
+	if (cmd->index >= EPF_VNET_ROCE_GID_TBL_LEN)
+		return -EINVAL;
+
+	memcpy(vnet->roce_gid_tbl[cmd->index].raw, cmd->gid, sizeof(cmd->gid));
+
+	return 0;
+}
+
+static int epf_vnet_vdev_handle_roce_del_gid(struct epf_vnet *vnet,
+					     struct vringh_kiov *riov,
+					     struct vringh_kiov *wiov)
+{
+	return 0;
+}
+
+static int (*virtio_rdma_vdev_cmd_handler[])(struct epf_vnet *vnet,
+					     struct vringh_kiov *riov,
+					     struct vringh_kiov *wiov) = {
+	[VIRTIO_NET_CTRL_ROCE_QUERY_DEVICE] =
+		epf_vnet_vdev_handle_roce_query_device,
+	[VIRTIO_NET_CTRL_ROCE_QUERY_PORT] = epf_vnet_vdev_handle_roce_query_port,
+// 	[VIRTIO_NET_CTRL_ROCE_CREATE_CQ],
+// 	[VIRTIO_NET_CTRL_ROCE_DESTROY_CQ],
+// 	[VIRTIO_NET_CTRL_ROCE_CREATE_PD],
+// 	[VIRTIO_NET_CTRL_ROCE_DESTROY_PD],
+// 	[VIRTIO_NET_CTRL_ROCE_GET_DMA_MR],
+// 	[VIRTIO_NET_CTRL_ROCE_REG_USER_MR],
+// 	[VIRTIO_NET_CTRL_ROCE_DEREG_MR],
+// 	[VIRTIO_NET_CTRL_ROCE_CREATE_QP],
+// 	[VIRTIO_NET_CTRL_ROCE_MODIFY_QP],
+// 	[VIRTIO_NET_CTRL_ROCE_QUERY_QP],
+// 	[VIRTIO_NET_CTRL_ROCE_DESTROY_QP],
+// 	[VIRTIO_NET_CTRL_ROCE_CREATE_AH],
+// 	[VIRTIO_NET_CTRL_ROCE_DESTROY_AH],
+	[VIRTIO_NET_CTRL_ROCE_ADD_GID] = epf_vnet_vdev_handle_roce_add_gid,
+	[VIRTIO_NET_CTRL_ROCE_DEL_GID] = epf_vnet_vdev_handle_roce_del_gid,
+	[VIRTIO_NET_CTRL_ROCE_REQ_NOTIFY_CQ] = NULL,
+};
+
 static void epf_vnet_vdev_ctrl_handler(struct work_struct *work)
 {
 	struct epf_vnet *vnet =
@@ -481,6 +583,9 @@ static void epf_vnet_vdev_ctrl_handler(struct work_struct *work)
 	hdr = phys_to_virt((unsigned long)riov.iov[riov.i].iov_base);
 	ack = phys_to_virt((unsigned long)wiov.iov[wiov.i].iov_base);
 
+	riov.i++;
+	wiov.i++;
+
 	switch (hdr->class) {
 	case VIRTIO_NET_CTRL_ANNOUNCE:
 		if (hdr->cmd != VIRTIO_NET_CTRL_ANNOUNCE_ACK) {
@@ -490,6 +595,25 @@ static void epf_vnet_vdev_ctrl_handler(struct work_struct *work)
 
 		epf_vnet_vdev_cfg_clear_status(vnet, VIRTIO_NET_S_ANNOUNCE);
 		*ack = VIRTIO_NET_OK;
+		break;
+	case VIRTIO_NET_CTRL_ROCE:
+		if (ARRAY_SIZE(virtio_rdma_vdev_cmd_handler) < hdr->cmd) {
+			err = -EIO;
+			pr_debug("found invalid command\n");
+			break;
+		}
+		// TODO this is for debug, finally should be deleted.
+		if (!virtio_rdma_vdev_cmd_handler[hdr->cmd]) {
+			pr_info("A handler for cmd %d is not yet implemented\n",
+				hdr->cmd);
+			err = -ENOTSUPP;
+			*ack = VIRTIO_NET_ERR;
+			break;
+		}
+
+		err = virtio_rdma_vdev_cmd_handler[hdr->cmd](vnet, &riov,
+							     &wiov);
+		*ack = err ? VIRTIO_NET_ERR : VIRTIO_NET_OK;
 		break;
 	default:
 		pr_debug("Found not supported class: %d\n", hdr->class);
@@ -527,10 +651,12 @@ static int epf_vnet_setup_common(struct epf_vnet *vnet)
 		BIT(VIRTIO_NET_F_GUEST_TSO6) | BIT(VIRTIO_NET_F_GUEST_ECN) |
 		BIT(VIRTIO_NET_F_GUEST_UFO) |
 		/* The control queue is just used for linkup announcement. */
-		BIT(VIRTIO_NET_F_CTRL_VQ);
+		BIT(VIRTIO_NET_F_CTRL_VQ) | BIT(VIRTIO_NET_F_ROCE);
 
 	vnet->vnet_cfg.max_virtqueue_pairs = 1;
 	vnet->vnet_cfg.status = 0;
+	vnet->vnet_cfg.max_rdma_qps = 1;
+	vnet->vnet_cfg.max_rdma_cqs = 1;
 	// 	vnet->vnet_cfg.mtu = PAGE_SIZE;
 
 	memcpy(&vnet->vdev_vnet_cfg, &vnet->vnet_cfg, sizeof(vnet->vnet_cfg));
