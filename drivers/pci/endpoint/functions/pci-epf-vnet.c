@@ -42,6 +42,8 @@ struct epf_vnet {
 	struct workqueue_struct *task_wq;
 	struct work_struct raise_irq_work, rx_work, tx_work;
 	struct work_struct vdev_ctrl_work, ep_ctrl_work;
+	/* for RDMA */
+	struct work_struct vdev_roce_rx_work;
 
 #define EPF_VNET_INIT_COMPLETE_VDEV BIT(0)
 #define EPF_VNET_INIT_COMPLETE_EP_FUNC BIT(1)
@@ -187,6 +189,9 @@ enum {
 	VNET_VIRTQUEUE_RX,
 	VNET_VIRTQUEUE_TX,
 	VNET_VIRTQUEUE_CTRL,
+	VNET_VIRTQUEUE_RDMA_XX1,
+	VNET_VIRTQUEUE_RDMA_XX2,
+	VNET_VIRTQUEUE_RDMA_RX,
 };
 
 struct epf_vnet_dma_done_param {
@@ -843,6 +848,14 @@ static void epf_vnet_raise_irq_handler(struct work_struct *work)
 			  PCI_EPC_IRQ_INTX, 0);
 }
 
+static void epf_vnet_vdev_roce_rx_handler(struct work_struct *work)
+{
+	// 	struct epf_vnet *vnet =
+	// 		container_of(work, struct epf_vnet, vdev_roce_rx_work);
+
+	pr_info("Should operate a receive work request\n");
+}
+
 static int epf_vnet_setup_common(struct epf_vnet *vnet)
 {
 	vnet->features =
@@ -877,6 +890,8 @@ static int epf_vnet_setup_common(struct epf_vnet *vnet)
 	INIT_WORK(&vnet->ep_ctrl_work, epf_vnet_ep_ctrl_handler);
 	INIT_WORK(&vnet->vdev_ctrl_work, epf_vnet_vdev_ctrl_handler);
 	INIT_WORK(&vnet->raise_irq_work, epf_vnet_raise_irq_handler);
+
+	INIT_WORK(&vnet->vdev_roce_rx_work, epf_vnet_vdev_roce_rx_handler);
 
 	return 0;
 }
@@ -974,6 +989,9 @@ static bool epf_vnet_vdev_vq_notify(struct virtqueue *vq)
 		break;
 	case VNET_VIRTQUEUE_CTRL:
 		queue_work(vnet->task_wq, &vnet->vdev_ctrl_work);
+		break;
+	case VNET_VIRTQUEUE_RDMA_RX:
+		queue_work(vnet->task_wq, &vnet->vdev_roce_rx_work);
 		break;
 	default:
 		pr_info("Found unsupported notify for vq %d\n", vq->index);
