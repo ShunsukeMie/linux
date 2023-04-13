@@ -14,7 +14,7 @@
 
 #include "pci-epf-virtio.h"
 
-static int virtio_queue_size = 0x100;
+static int virtio_queue_size = 0x400;
 module_param(virtio_queue_size, int, 0444);
 MODULE_PARM_DESC(virtio_queue_size, "A length of virtqueue");
 
@@ -50,6 +50,7 @@ struct epf_vnet {
 
 #define EPF_VNET_ROCE_GID_TBL_LEN 512
 	union ib_gid roce_gid_tbl[EPF_VNET_ROCE_GID_TBL_LEN];
+	unsigned npd, nmr, ncq;
 };
 
 static inline struct epf_vnet *vdev_to_vnet(struct virtio_device *vdev)
@@ -501,6 +502,80 @@ static int epf_vnet_vdev_handle_roce_query_port(struct epf_vnet *vnet,
 	return 0;
 }
 
+static int epf_vnet_vdev_handle_roce_create_cq(struct epf_vnet *vnet,
+					       struct vringh_kiov *riov,
+					       struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_cmd_create_cq *cmd;
+	struct virtio_rdma_ack_create_cq *ack;
+
+	cmd = phys_to_virt((unsigned long)riov->iov[riov->i].iov_base);
+
+	pr_info("%s create cq: cqe %d\n", __func__, cmd->cqe);
+
+	ack = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
+	ack->cqn = vnet->ncq++;
+
+	return 0;
+}
+
+static int epf_vnet_vdev_handle_roce_destroy_cq(struct epf_vnet *vnet,
+						struct vringh_kiov *riov,
+						struct vringh_kiov *wiov)
+{
+	return 0;
+}
+
+static int epf_vnet_vdev_handle_roce_create_pd(struct epf_vnet *vnet,
+					       struct vringh_kiov *riov,
+					       struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_ack_create_pd *ack;
+
+	ack = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
+
+	ack->pdn = vnet->npd++;
+
+	return 0;
+}
+
+static int epf_vnet_vdev_handle_roce_destroy_pd(struct epf_vnet *vnet,
+						struct vringh_kiov *riov,
+						struct vringh_kiov *wiov)
+{
+	return 0;
+}
+
+static int epf_vnet_vdev_handle_roce_dma_mr(struct epf_vnet *vnet,
+					    struct vringh_kiov *riov,
+					    struct vringh_kiov *wiov)
+{
+	// 	struct virtio_rdma_cmd_get_dma_mr *cmd;
+	struct virtio_rdma_ack_get_dma_mr *ack;
+
+	ack = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
+
+	ack->lkey = 0;
+	ack->rkey = 0;
+	ack->mrn = vnet->nmr++;
+
+	return 0;
+}
+
+// static int epf_vnet_vdev_handle_roce_user_mr(struct epf_vnet *vnet,
+// 					     struct vringh_kiov *riov,
+// 					     struct vringh_kiov *wiov)
+// {
+// 	return 0;
+// }
+
+static int epf_vnet_vdev_handle_roce_dereg_mr(struct epf_vnet *vnet,
+					      struct vringh_kiov *riov,
+					      struct vringh_kiov *wiov)
+{
+	return 0;
+}
+
 static int epf_vnet_vdev_handle_roce_add_gid(struct epf_vnet *vnet,
 					     struct vringh_kiov *riov,
 					     struct vringh_kiov *wiov)
@@ -529,19 +604,19 @@ static int (*virtio_rdma_vdev_cmd_handler[])(struct epf_vnet *vnet,
 	[VIRTIO_NET_CTRL_ROCE_QUERY_DEVICE] =
 		epf_vnet_vdev_handle_roce_query_device,
 	[VIRTIO_NET_CTRL_ROCE_QUERY_PORT] = epf_vnet_vdev_handle_roce_query_port,
-// 	[VIRTIO_NET_CTRL_ROCE_CREATE_CQ],
-// 	[VIRTIO_NET_CTRL_ROCE_DESTROY_CQ],
-// 	[VIRTIO_NET_CTRL_ROCE_CREATE_PD],
-// 	[VIRTIO_NET_CTRL_ROCE_DESTROY_PD],
-// 	[VIRTIO_NET_CTRL_ROCE_GET_DMA_MR],
-// 	[VIRTIO_NET_CTRL_ROCE_REG_USER_MR],
-// 	[VIRTIO_NET_CTRL_ROCE_DEREG_MR],
-// 	[VIRTIO_NET_CTRL_ROCE_CREATE_QP],
-// 	[VIRTIO_NET_CTRL_ROCE_MODIFY_QP],
-// 	[VIRTIO_NET_CTRL_ROCE_QUERY_QP],
-// 	[VIRTIO_NET_CTRL_ROCE_DESTROY_QP],
-// 	[VIRTIO_NET_CTRL_ROCE_CREATE_AH],
-// 	[VIRTIO_NET_CTRL_ROCE_DESTROY_AH],
+	[VIRTIO_NET_CTRL_ROCE_CREATE_CQ] = epf_vnet_vdev_handle_roce_create_cq,
+	[VIRTIO_NET_CTRL_ROCE_DESTROY_CQ] = epf_vnet_vdev_handle_roce_destroy_cq,
+	[VIRTIO_NET_CTRL_ROCE_CREATE_PD] = epf_vnet_vdev_handle_roce_create_pd,
+	[VIRTIO_NET_CTRL_ROCE_DESTROY_PD] = epf_vnet_vdev_handle_roce_destroy_pd,
+	[VIRTIO_NET_CTRL_ROCE_GET_DMA_MR] = epf_vnet_vdev_handle_roce_dma_mr,
+	// 	[VIRTIO_NET_CTRL_ROCE_REG_USER_MR] = epf_vnet_vdev_handle_roce_user_mr,
+	[VIRTIO_NET_CTRL_ROCE_DEREG_MR] = epf_vnet_vdev_handle_roce_dereg_mr,
+	// 	[VIRTIO_NET_CTRL_ROCE_CREATE_QP],
+	// 	[VIRTIO_NET_CTRL_ROCE_MODIFY_QP],
+	// 	[VIRTIO_NET_CTRL_ROCE_QUERY_QP],
+	// 	[VIRTIO_NET_CTRL_ROCE_DESTROY_QP],
+	// 	[VIRTIO_NET_CTRL_ROCE_CREATE_AH],
+	// 	[VIRTIO_NET_CTRL_ROCE_DESTROY_AH],
 	[VIRTIO_NET_CTRL_ROCE_ADD_GID] = epf_vnet_vdev_handle_roce_add_gid,
 	[VIRTIO_NET_CTRL_ROCE_DEL_GID] = epf_vnet_vdev_handle_roce_del_gid,
 	[VIRTIO_NET_CTRL_ROCE_REQ_NOTIFY_CQ] = NULL,
