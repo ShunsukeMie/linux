@@ -191,6 +191,7 @@ enum {
 	VNET_VIRTQUEUE_CTRL,
 	VNET_VIRTQUEUE_RDMA_XX1,
 	VNET_VIRTQUEUE_RDMA_XX2,
+	VNET_VIRTQUEUE_RDMA_XX3,
 	VNET_VIRTQUEUE_RDMA_RX,
 };
 
@@ -567,12 +568,27 @@ static int epf_vnet_vdev_handle_roce_dma_mr(struct epf_vnet *vnet,
 	return 0;
 }
 
-// static int epf_vnet_vdev_handle_roce_user_mr(struct epf_vnet *vnet,
-// 					     struct vringh_kiov *riov,
-// 					     struct vringh_kiov *wiov)
-// {
-// 	return 0;
-// }
+static int epf_vnet_vdev_handle_roce_reg_user_mr(struct epf_vnet *vnet,
+						 struct vringh_kiov *riov,
+						 struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_cmd_reg_user_mr *cmd;
+	struct virtio_rdma_ack_reg_user_mr *ack;
+
+	cmd = phys_to_virt((unsigned long)riov->iov[riov->i].iov_base);
+
+	pr_info("%s: pdn: %d, aflag %x, addr 0x%llx, size 0x%llx, npages %d\n",
+		__func__, cmd->pdn, cmd->access_flags, cmd->virt_addr,
+		cmd->length, cmd->npages);
+
+	ack = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
+
+	ack->lkey = 0;
+	ack->rkey = 0;
+	ack->mrn = vnet->nmr++;
+
+	return 0;
+}
 
 static int epf_vnet_vdev_handle_roce_dereg_mr(struct epf_vnet *vnet,
 					      struct vringh_kiov *riov,
@@ -743,7 +759,8 @@ static int (*virtio_rdma_vdev_cmd_handler[])(struct epf_vnet *vnet,
 	[VIRTIO_NET_CTRL_ROCE_CREATE_PD] = epf_vnet_vdev_handle_roce_create_pd,
 	[VIRTIO_NET_CTRL_ROCE_DESTROY_PD] = epf_vnet_vdev_handle_roce_destroy_pd,
 	[VIRTIO_NET_CTRL_ROCE_GET_DMA_MR] = epf_vnet_vdev_handle_roce_dma_mr,
-	// 	[VIRTIO_NET_CTRL_ROCE_REG_USER_MR] = epf_vnet_vdev_handle_roce_user_mr,
+	[VIRTIO_NET_CTRL_ROCE_REG_USER_MR] =
+		epf_vnet_vdev_handle_roce_reg_user_mr,
 	[VIRTIO_NET_CTRL_ROCE_DEREG_MR] = epf_vnet_vdev_handle_roce_dereg_mr,
 	[VIRTIO_NET_CTRL_ROCE_CREATE_QP] = epf_vnet_vdev_handle_roce_create_qp,
 	[VIRTIO_NET_CTRL_ROCE_MODIFY_QP] = epf_vnet_vdev_handle_roce_modify_qp,
@@ -873,8 +890,9 @@ static int epf_vnet_setup_common(struct epf_vnet *vnet)
 
 	vnet->vnet_cfg.max_virtqueue_pairs = 1;
 	vnet->vnet_cfg.status = 0;
-	vnet->vnet_cfg.max_rdma_qps = 1;
-	vnet->vnet_cfg.max_rdma_cqs = 1;
+	/* GSI is used 1 qps and cq */
+	vnet->vnet_cfg.max_rdma_qps = 2;
+	vnet->vnet_cfg.max_rdma_cqs = 2;
 	// 	vnet->vnet_cfg.mtu = PAGE_SIZE;
 
 	memcpy(&vnet->vdev_vnet_cfg, &vnet->vnet_cfg, sizeof(vnet->vnet_cfg));
