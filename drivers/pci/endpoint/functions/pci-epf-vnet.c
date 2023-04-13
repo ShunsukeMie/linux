@@ -605,6 +605,92 @@ static int epf_vnet_vdev_handle_roce_create_qp(struct epf_vnet *vnet,
 	return 0;
 }
 
+static int epf_vnet_vdev_handle_roce_modify_qp(struct epf_vnet *vnet,
+					       struct vringh_kiov *riov,
+					       struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_cmd_modify_qp *cmd;
+
+	cmd = phys_to_virt((unsigned long)riov->iov[riov->i].iov_base);
+
+	pr_info("%s: modify qp: qpn %d, mask %x\n", __func__, cmd->qpn,
+		cmd->attr_mask);
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_STATE) {
+		pr_info("change qp state: %x -> %x\n", cmd->cur_qp_state,
+			cmd->qp_state);
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_CUR_STATE) {
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_ACCESS_FLAGS) {
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_QKEY) {
+		pr_info("set queue key 0x%x\n", cmd->qkey);
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_AV) {
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_PATH_MTU) {
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_TIMEOUT) {
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_RETRY_CNT) {
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_RNR_RETRY) {
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_RQ_PSN) {
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_MAX_QP_RD_ATOMIC) {
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_MIN_RNR_TIMER) {
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_SQ_PSN) {
+		pr_info("set psn for sq: %d\n", cmd->sq_psn);
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_MAX_DEST_RD_ATOMIC) {
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_CAP) {
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_DEST_QPN) {
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_RATE_LIMIT) {
+		goto err_out;
+	}
+
+	return 0;
+
+err_out:
+	return 1;
+}
+
 static int epf_vnet_vdev_handle_roce_destroy_qp(struct epf_vnet *vnet,
 						struct vringh_kiov *riov,
 						struct vringh_kiov *wiov)
@@ -655,7 +741,7 @@ static int (*virtio_rdma_vdev_cmd_handler[])(struct epf_vnet *vnet,
 	// 	[VIRTIO_NET_CTRL_ROCE_REG_USER_MR] = epf_vnet_vdev_handle_roce_user_mr,
 	[VIRTIO_NET_CTRL_ROCE_DEREG_MR] = epf_vnet_vdev_handle_roce_dereg_mr,
 	[VIRTIO_NET_CTRL_ROCE_CREATE_QP] = epf_vnet_vdev_handle_roce_create_qp,
-	// 	[VIRTIO_NET_CTRL_ROCE_MODIFY_QP],
+	[VIRTIO_NET_CTRL_ROCE_MODIFY_QP] = epf_vnet_vdev_handle_roce_modify_qp,
 	// 	[VIRTIO_NET_CTRL_ROCE_QUERY_QP],
 	[VIRTIO_NET_CTRL_ROCE_DESTROY_QP] = epf_vnet_vdev_handle_roce_destroy_qp,
 	// 	[VIRTIO_NET_CTRL_ROCE_CREATE_AH],
