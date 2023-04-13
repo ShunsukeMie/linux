@@ -976,6 +976,7 @@ static bool epf_vnet_vdev_vq_notify(struct virtqueue *vq)
 		queue_work(vnet->task_wq, &vnet->vdev_ctrl_work);
 		break;
 	default:
+		pr_info("Found unsupported notify for vq %d\n", vq->index);
 		return false;
 	}
 
@@ -993,8 +994,11 @@ static int epf_vnet_vdev_find_vqs(struct virtio_device *vdev, unsigned int nvqs,
 	int err;
 	int qidx;
 
-	if (nvqs > epf_vnet_get_nvq(vnet))
+	if (nvqs > epf_vnet_get_nvq(vnet)) {
+		pr_info("Number of queue is too much: %d > %d\n", nvqs,
+			epf_vnet_get_nvq(vnet));
 		return -EINVAL;
+	}
 
 	for (qidx = 0, i = 0; i < nvqs; i++) {
 		struct virtqueue *vq;
