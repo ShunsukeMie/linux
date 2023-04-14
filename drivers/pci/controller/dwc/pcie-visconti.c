@@ -29,9 +29,6 @@ struct visconti_pcie {
 	void __iomem *ulreg_base;
 	void __iomem *smu_base;
 	void __iomem *mpu_base;
-	struct clk *refclk;
-	struct clk *coreclk;
-	struct clk *auxclk;
 };
 
 #define PCIE_UL_REG_S_PCIE_MODE		0x00F4
@@ -198,6 +195,21 @@ static int visconti_pcie_host_init(struct dw_pcie_rp *pp)
 	int err;
 	u32 val;
 
+	if (!pcie->pci.core_clks[DW_PCIE_REF_CLK].clk) {
+		dev_err(pci->dev, "Missing ref clock source\n");
+		return -ENOENT;
+	}
+
+	if (!pcie->pci.core_clks[DW_PCIE_CORE_CLK].clk) {
+		dev_err(pci->dev, "Missing core clock source\n");
+		return -ENOENT;
+	}
+
+	if (!pcie->pci.core_clks[DW_PCIE_AUX_CLK].clk) {
+		dev_err(pci->dev, "Missing aux clock source\n");
+		return -ENOENT;
+	}
+
 	visconti_smu_writel(pcie,
 			    PISMU_CKON_PCIE_AUX_CLK | PISMU_CKON_PCIE_MSTR_ACLK,
 			    PISMU_CKON_PCIE);
@@ -242,8 +254,6 @@ static const struct dw_pcie_host_ops visconti_pcie_host_ops = {
 static int visconti_get_resources(struct platform_device *pdev,
 				  struct visconti_pcie *pcie)
 {
-	struct device *dev = &pdev->dev;
-
 	pcie->ulreg_base = devm_platform_ioremap_resource_byname(pdev, "ulreg");
 	if (IS_ERR(pcie->ulreg_base))
 		return PTR_ERR(pcie->ulreg_base);
@@ -255,21 +265,6 @@ static int visconti_get_resources(struct platform_device *pdev,
 	pcie->mpu_base = devm_platform_ioremap_resource_byname(pdev, "mpu");
 	if (IS_ERR(pcie->mpu_base))
 		return PTR_ERR(pcie->mpu_base);
-
-	pcie->refclk = devm_clk_get(dev, "ref");
-	if (IS_ERR(pcie->refclk))
-		return dev_err_probe(dev, PTR_ERR(pcie->refclk),
-				     "Failed to get ref clock\n");
-
-	pcie->coreclk = devm_clk_get(dev, "core");
-	if (IS_ERR(pcie->coreclk))
-		return dev_err_probe(dev, PTR_ERR(pcie->coreclk),
-				     "Failed to get core clock\n");
-
-	pcie->auxclk = devm_clk_get(dev, "aux");
-	if (IS_ERR(pcie->auxclk))
-		return dev_err_probe(dev, PTR_ERR(pcie->auxclk),
-				     "Failed to get aux clock\n");
 
 	return 0;
 }
@@ -303,6 +298,8 @@ static int visconti_pcie_probe(struct platform_device *pdev)
 	pci = &pcie->pci;
 	pci->dev = dev;
 	pci->ops = &dw_pcie_ops;
+
+	dw_pcie_cap_set(pci, REQ_RES);
 
 	ret = visconti_get_resources(pdev, pcie);
 	if (ret)
