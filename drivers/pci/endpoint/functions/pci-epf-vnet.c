@@ -861,7 +861,7 @@ static void epf_vnet_vdev_roce_rx_handler(struct work_struct *work)
 static int epf_vnet_setup_common(struct epf_vnet *vnet)
 {
 	vnet->features =
-		BIT(VIRTIO_F_ACCESS_PLATFORM) | //BIT(VIRTIO_NET_F_MTU) |
+// 		BIT(VIRTIO_F_ACCESS_PLATFORM) | //BIT(VIRTIO_NET_F_MTU) |
 		BIT(VIRTIO_NET_F_STATUS) |
 		/* Following features are to skip any of checking and offloading, Like a
 		 * transmission between virtual machines on same system. Details are on
