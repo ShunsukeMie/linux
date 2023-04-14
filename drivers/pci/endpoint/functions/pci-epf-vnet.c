@@ -11,6 +11,7 @@
 #include <linux/virtio_ring.h>
 #include <linux/dmaengine.h>
 #include <rdma/ib_verbs.h>
+#include <rdma/virtio_rdma_abi.h>
 
 #include "pci-epf-virtio.h"
 
@@ -71,8 +72,8 @@ static u16 epf_vnet_get_nvq(struct epf_vnet *vnet)
 		nvq++;
 
 	if (vnet->features & BIT(VIRTIO_NET_F_ROCE)) {
-		nvq += vnet->vnet_cfg.max_rdma_qps * 2;
 		nvq += vnet->vnet_cfg.max_rdma_cqs;
+		nvq += vnet->vnet_cfg.max_rdma_qps * 2;
 	}
 
 	return nvq;
@@ -189,10 +190,15 @@ enum {
 	VNET_VIRTQUEUE_RX,
 	VNET_VIRTQUEUE_TX,
 	VNET_VIRTQUEUE_CTRL,
-	VNET_VIRTQUEUE_RDMA_XX1,
-	VNET_VIRTQUEUE_RDMA_XX2,
-	VNET_VIRTQUEUE_RDMA_XX3,
-	VNET_VIRTQUEUE_RDMA_RX,
+	VNET_VIRTQUEUE_RDMA_CQ1,
+	VNET_VIRTQUEUE_RDMA_CQ2,
+	VNET_VIRTQUEUE_RDMA_CQ3,
+	VNET_VIRTQUEUE_RDMA_SQ0, // SGI
+	VNET_VIRTQUEUE_RDMA_RQ0,
+	VNET_VIRTQUEUE_RDMA_SQ1, // GSI
+	VNET_VIRTQUEUE_RDMA_RQ1,
+	VNET_VIRTQUEUE_RDMA_SQ2, // for user
+	VNET_VIRTQUEUE_RDMA_RQ2,
 };
 
 struct epf_vnet_dma_done_param {
@@ -518,6 +524,8 @@ static int epf_vnet_vdev_handle_roce_create_cq(struct epf_vnet *vnet,
 	cmd = phys_to_virt((unsigned long)riov->iov[riov->i].iov_base);
 
 	pr_info("%s create cq: cqe %d\n", __func__, cmd->cqe);
+	if (cmd->cqe > virtio_queue_size)
+		return 1;
 
 	ack = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
 	ack->cqn = vnet->ncq++;
@@ -612,16 +620,14 @@ static int epf_vnet_vdev_handle_roce_create_qp(struct epf_vnet *vnet,
 
 	switch (cmd->qp_type) {
 	case VIRTIO_IB_QPT_GSI:
+		ack->qpn = 1;
 		break;
 	case VIRTIO_IB_QPT_UD:
-		break;
-	case VIRTIO_IB_QPT_RC:
+		ack->qpn = 2 + vnet->nqp++;
 		break;
 	default:
 		return -ENOTSUPP;
 	}
-
-	ack->qpn = vnet->nqp++;
 
 	return 0;
 }
@@ -712,6 +718,115 @@ err_out:
 	return 1;
 }
 
+static int epf_vnet_vdev_handle_roce_query_qp(struct epf_vnet *vnet,
+						struct vringh_kiov *riov,
+						struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_cmd_query_qp *cmd;
+	struct virtio_rdma_ack_query_qp *ack;
+
+	cmd = phys_to_virt((unsigned long)riov->iov[riov->i].iov_base);
+
+	pr_info("query qp: qpn %d, mask %x\n", cmd->qpn, cmd->attr_mask);
+
+	ack = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_STATE) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_STATE);
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_CUR_STATE) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_CUR_STATE);
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_ACCESS_FLAGS) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_ACCESS_FLAGS);
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_QKEY) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_QKEY);
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_AV) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_AV);
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_PATH_MTU) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_PATH_MTU);
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_TIMEOUT) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_TIMEOUT);
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_RETRY_CNT) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_RETRY_CNT);
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_RNR_RETRY) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_RNR_RETRY);
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_RQ_PSN) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_RQ_PSN);
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_MAX_QP_RD_ATOMIC) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_MAX_QP_RD_ATOMIC);
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_MIN_RNR_TIMER) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_MIN_RNR_TIMER);
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_SQ_PSN) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_SQ_PSN);
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_MAX_DEST_RD_ATOMIC) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_MAX_DEST_RD_ATOMIC);
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_CAP) {
+		pr_info("qp cap 0x%x\n", VIRTIO_IB_QP_CAP);
+		// TODO these are temporary and should be updated.
+		ack->cap.max_send_wr = 100;
+		ack->cap.max_send_sge = 32;
+		ack->cap.max_inline_data = 32 * sizeof (struct virtio_rdma_sge);
+		ack->cap.max_recv_wr = 100;
+		ack->cap.max_recv_sge = 32;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_DEST_QPN) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_DEST_QPN);
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_RATE_LIMIT) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_RATE_LIMIT);
+		goto err_out;
+	}
+
+	return 0;
+
+err_out:
+	return 1;
+}
+
 static int epf_vnet_vdev_handle_roce_destroy_qp(struct epf_vnet *vnet,
 						struct vringh_kiov *riov,
 						struct vringh_kiov *wiov)
@@ -764,7 +879,7 @@ static int (*virtio_rdma_vdev_cmd_handler[])(struct epf_vnet *vnet,
 	[VIRTIO_NET_CTRL_ROCE_DEREG_MR] = epf_vnet_vdev_handle_roce_dereg_mr,
 	[VIRTIO_NET_CTRL_ROCE_CREATE_QP] = epf_vnet_vdev_handle_roce_create_qp,
 	[VIRTIO_NET_CTRL_ROCE_MODIFY_QP] = epf_vnet_vdev_handle_roce_modify_qp,
-	// 	[VIRTIO_NET_CTRL_ROCE_QUERY_QP],
+	[VIRTIO_NET_CTRL_ROCE_QUERY_QP] = epf_vnet_vdev_handle_roce_query_qp,
 	[VIRTIO_NET_CTRL_ROCE_DESTROY_QP] = epf_vnet_vdev_handle_roce_destroy_qp,
 	// 	[VIRTIO_NET_CTRL_ROCE_CREATE_AH],
 	// 	[VIRTIO_NET_CTRL_ROCE_DESTROY_AH],
@@ -891,8 +1006,8 @@ static int epf_vnet_setup_common(struct epf_vnet *vnet)
 	vnet->vnet_cfg.max_virtqueue_pairs = 1;
 	vnet->vnet_cfg.status = 0;
 	/* GSI is used 1 qps and cq */
-	vnet->vnet_cfg.max_rdma_qps = 2;
-	vnet->vnet_cfg.max_rdma_cqs = 2;
+	vnet->vnet_cfg.max_rdma_qps = 3;
+	vnet->vnet_cfg.max_rdma_cqs = 3;
 	// 	vnet->vnet_cfg.mtu = PAGE_SIZE;
 
 	memcpy(&vnet->vdev_vnet_cfg, &vnet->vnet_cfg, sizeof(vnet->vnet_cfg));
@@ -1008,7 +1123,7 @@ static bool epf_vnet_vdev_vq_notify(struct virtqueue *vq)
 	case VNET_VIRTQUEUE_CTRL:
 		queue_work(vnet->task_wq, &vnet->vdev_ctrl_work);
 		break;
-	case VNET_VIRTQUEUE_RDMA_RX:
+	case VNET_VIRTQUEUE_RDMA_RQ1:
 		queue_work(vnet->task_wq, &vnet->vdev_roce_rx_work);
 		break;
 	default:
@@ -1028,7 +1143,6 @@ static int epf_vnet_vdev_find_vqs(struct virtio_device *vdev, unsigned int nvqs,
 	struct epf_vnet *vnet = vdev_to_vnet(vdev);
 	int i;
 	int err;
-	int qidx;
 
 	if (nvqs > epf_vnet_get_nvq(vnet)) {
 		pr_info("Number of queue is too much: %d > %d\n", nvqs,
@@ -1036,7 +1150,7 @@ static int epf_vnet_vdev_find_vqs(struct virtio_device *vdev, unsigned int nvqs,
 		return -EINVAL;
 	}
 
-	for (qidx = 0, i = 0; i < nvqs; i++) {
+	for (i = 0; i < nvqs; i++) {
 		struct virtqueue *vq;
 		const struct vring *vring;
 
@@ -1045,7 +1159,7 @@ static int epf_vnet_vdev_find_vqs(struct virtio_device *vdev, unsigned int nvqs,
 			continue;
 		}
 
-		vq = vring_create_virtqueue(qidx++, virtio_queue_size,
+		vq = vring_create_virtqueue(i, virtio_queue_size,
 					    VIRTIO_PCI_VRING_ALIGN, vdev, true,
 					    false, ctx ? ctx[i] : false,
 					    epf_vnet_vdev_vq_notify,
