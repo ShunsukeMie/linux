@@ -407,6 +407,7 @@ static int epf_vnet_vdev_handle_roce_destroy_cq(struct epf_vnet *vnet,
 						struct vringh_kiov *riov,
 						struct vringh_kiov *wiov)
 {
+	vnet->ncq--;
 	return 0;
 }
 
@@ -427,6 +428,7 @@ static int epf_vnet_vdev_handle_roce_destroy_pd(struct epf_vnet *vnet,
 						struct vringh_kiov *riov,
 						struct vringh_kiov *wiov)
 {
+	vnet->npd--;
 	return 0;
 }
 
@@ -472,6 +474,7 @@ static int epf_vnet_vdev_handle_roce_dereg_mr(struct epf_vnet *vnet,
 					      struct vringh_kiov *riov,
 					      struct vringh_kiov *wiov)
 {
+	vnet->nmr--;
 	return 0;
 }
 
@@ -701,6 +704,7 @@ static int epf_vnet_vdev_handle_roce_destroy_qp(struct epf_vnet *vnet,
 						struct vringh_kiov *riov,
 						struct vringh_kiov *wiov)
 {
+	vnet->nqp--;
 	return 0;
 }
 
