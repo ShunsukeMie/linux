@@ -774,8 +774,8 @@ err_out:
 }
 
 static int epf_vnet_vdev_handle_roce_query_qp(struct epf_vnet *vnet,
-						struct vringh_kiov *riov,
-						struct vringh_kiov *wiov)
+					      struct vringh_kiov *riov,
+					      struct vringh_kiov *wiov)
 {
 	struct virtio_rdma_cmd_query_qp *cmd;
 	struct virtio_rdma_ack_query_qp *ack;
@@ -837,7 +837,8 @@ static int epf_vnet_vdev_handle_roce_query_qp(struct epf_vnet *vnet,
 	}
 
 	if (cmd->attr_mask & VIRTIO_IB_QP_MAX_QP_RD_ATOMIC) {
-		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_MAX_QP_RD_ATOMIC);
+		pr_info("not yet implemented 0x%x",
+			VIRTIO_IB_QP_MAX_QP_RD_ATOMIC);
 		goto err_out;
 	}
 
@@ -852,7 +853,8 @@ static int epf_vnet_vdev_handle_roce_query_qp(struct epf_vnet *vnet,
 	}
 
 	if (cmd->attr_mask & VIRTIO_IB_QP_MAX_DEST_RD_ATOMIC) {
-		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_MAX_DEST_RD_ATOMIC);
+		pr_info("not yet implemented 0x%x",
+			VIRTIO_IB_QP_MAX_DEST_RD_ATOMIC);
 		goto err_out;
 	}
 
@@ -861,7 +863,7 @@ static int epf_vnet_vdev_handle_roce_query_qp(struct epf_vnet *vnet,
 		// TODO these are temporary and should be updated.
 		ack->cap.max_send_wr = 100;
 		ack->cap.max_send_sge = 32;
-		ack->cap.max_inline_data = 32 * sizeof (struct virtio_rdma_sge);
+		ack->cap.max_inline_data = 32 * sizeof(struct virtio_rdma_sge);
 		ack->cap.max_recv_wr = 100;
 		ack->cap.max_recv_sge = 32;
 	}
