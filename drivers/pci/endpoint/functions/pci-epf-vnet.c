@@ -178,7 +178,8 @@ static int epf_vnet_setup_ep_func(struct epf_vnet *vnet, struct pci_epf *epf)
 	evio->ic_callback = epf_vnet_ep_init_complete;
 	evio->ic_param = vnet;
 
-	err = epf_virtio_init(evio, &epf_vnet_pci_header, 0);
+	err = epf_virtio_init(evio, &epf_vnet_pci_header,
+			      sizeof(vnet->vnet_cfg));
 	if (err)
 		goto err_cleanup_kiov;
 
@@ -387,6 +388,29 @@ static void epf_vnet_tx_handler(struct work_struct *work)
 	} while (ret > 0);
 }
 
+static int (*virtio_rdma_ep_cmd_handler[])(struct epf_vnet *vnet,
+					   struct vringh_kiov *riov,
+					   struct vringh_kiov *wiov) = {
+	// 	[VIRTIO_NET_CTRL_ROCE_QUERY_DEVICE]
+	// 	[VIRTIO_NET_CTRL_ROCE_QUERY_PORT]
+	// 	[VIRTIO_NET_CTRL_ROCE_CREATE_CQ]
+	// 	[VIRTIO_NET_CTRL_ROCE_DESTROY_CQ]
+	// 	[VIRTIO_NET_CTRL_ROCE_CREATE_PD]
+	// 	[VIRTIO_NET_CTRL_ROCE_DESTROY_PD]
+	// 	[VIRTIO_NET_CTRL_ROCE_GET_DMA_MR]
+	// 	[VIRTIO_NET_CTRL_ROCE_REG_USER_MR]
+	// 	[VIRTIO_NET_CTRL_ROCE_DEREG_MR]
+	// 	[VIRTIO_NET_CTRL_ROCE_CREATE_QP]
+	// 	[VIRTIO_NET_CTRL_ROCE_MODIFY_QP]
+	// 	[VIRTIO_NET_CTRL_ROCE_QUERY_QP]
+	// 	[VIRTIO_NET_CTRL_ROCE_DESTROY_QP]
+	// 	[VIRTIO_NET_CTRL_ROCE_CREATE_AH]
+	// 	[VIRTIO_NET_CTRL_ROCE_DESTROY_AH]
+	// 	[VIRTIO_NET_CTRL_ROCE_ADD_GID]
+	// 	[VIRTIO_NET_CTRL_ROCE_DEL_GID]
+	[VIRTIO_NET_CTRL_ROCE_REQ_NOTIFY_CQ] = NULL
+};
+
 static void epf_vnet_ep_ctrl_handler(struct work_struct *work)
 {
 	struct epf_vnet *vnet =
@@ -402,6 +426,7 @@ static void epf_vnet_ep_ctrl_handler(struct work_struct *work)
 	u8 class, cmd;
 	void __iomem *rvirt, *wvirt;
 	phys_addr_t rphys, wphys;
+	virtio_net_ctrl_ack __iomem *ack;
 
 	vringh_kiov_init(&riov, NULL, 0);
 	vringh_kiov_init(&wiov, NULL, 0);
@@ -427,6 +452,10 @@ static void epf_vnet_ep_ctrl_handler(struct work_struct *work)
 		err = PTR_ERR(wvirt);
 		goto err_unmap_command;
 	}
+	ack = wvirt;
+
+	riov.i++;
+	wiov.i++;
 
 	hdr = rvirt;
 	class = ioread8(&hdr->class);
@@ -445,9 +474,25 @@ static void epf_vnet_ep_ctrl_handler(struct work_struct *work)
 		epf_virtio_cfg_clear16(evio, VIRTIO_PCI_ISR,
 				       VIRTIO_PCI_ISR_CONFIG);
 
-		iowrite8(VIRTIO_NET_OK, wvirt);
+		iowrite8(VIRTIO_NET_OK, ack);
 		break;
 	case VIRTIO_NET_CTRL_ROCE:
+		if (ARRAY_SIZE(virtio_rdma_ep_cmd_handler) < hdr->cmd) {
+			err = -EIO;
+			pr_debug("found invalid command\n");
+			break;
+		}
+		// TODO this is for debug, finally should be deleted.
+		if (!virtio_rdma_ep_cmd_handler[hdr->cmd]) {
+			pr_info("A handler for cmd %d is not yet implemented\n",
+				hdr->cmd);
+			err = -ENOTSUPP;
+			iowrite8(VIRTIO_NET_ERR, ack);
+			break;
+		}
+
+		err = virtio_rdma_ep_cmd_handler[hdr->cmd](vnet, &riov, &wiov);
+		iowrite8(err ? VIRTIO_NET_ERR : VIRTIO_NET_OK, ack);
 		break;
 	default:
 		pr_err("Found unsupported class in control queue: %d\n", class);
