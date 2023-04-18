@@ -291,6 +291,15 @@ enum dw_pcie_core_rst {
 	DW_PCIE_NUM_CORE_RSTS
 };
 
+struct dw_pcie_outbound_atu {
+	u64 cpu_addr;
+	u64 pci_addr;
+	u64 size;
+	int index;
+	int type;
+	u8 func_no;
+};
+
 struct dw_pcie_host_ops {
 	int (*host_init)(struct dw_pcie_rp *pp);
 	void (*host_deinit)(struct dw_pcie_rp *pp);
