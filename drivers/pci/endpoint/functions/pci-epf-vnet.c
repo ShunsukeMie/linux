@@ -1206,6 +1206,9 @@ static bool epf_vnet_vdev_vq_notify(struct virtqueue *vq)
 	case VNET_VIRTQUEUE_RDMA_RQ1:
 		queue_work(vnet->task_wq, &vnet->vdev_roce_rx_work);
 		break;
+	case VNET_VIRTQUEUE_RDMA_RQ2:
+		queue_work(vnet->task_wq, &vnet->vdev_roce_rx_work);
+		break;
 	default:
 		pr_info("Found unsupported notify for vq %d\n", vq->index);
 		return false;
