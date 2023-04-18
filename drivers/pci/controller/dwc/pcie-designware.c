@@ -540,19 +540,10 @@ int dw_pcie_prog_outbound_atu(struct dw_pcie *pci, int index, int type,
 	return __dw_pcie_prog_outbound_atu(pci, &atu);
 }
 
-int dw_pcie_prog_ep_outbound_atu(struct dw_pcie *pci, u8 func_no, int index,
-				 int type, u64 cpu_addr, u64 pci_addr,
-				 u64 size)
+int dw_pcie_prog_ep_outbound_atu(struct dw_pcie *pci,
+				 struct dw_pcie_outbound_atu *atu)
 {
-	struct dw_pcie_outbound_atu atu = { 0 };
-
-	atu.func_no = func_no;
-	atu.index = index;
-	atu.type = type;
-	atu.cpu_addr = cpu_addr;
-	atu.pci_addr = pci_addr;
-	atu.size = size;
-	return __dw_pcie_prog_outbound_atu(pci, &atu);
+	return __dw_pcie_prog_outbound_atu(pci, atu);
 }
 
 static inline u32 dw_pcie_readl_atu_ib(struct dw_pcie *pci, u32 index, u32 reg)
