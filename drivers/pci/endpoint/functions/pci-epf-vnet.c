@@ -19,6 +19,8 @@ static int virtio_queue_size = 0x400;
 module_param(virtio_queue_size, int, 0444);
 MODULE_PARM_DESC(virtio_queue_size, "A length of virtqueue");
 
+struct epf_vnet_rdma_pd;
+
 struct epf_vnet {
 	/* virtio feature and configurations for virtio-net. It is commonly used
 	 * local and remote. */
@@ -53,7 +55,19 @@ struct epf_vnet {
 
 #define EPF_VNET_ROCE_GID_TBL_LEN 512
 	union ib_gid roce_gid_tbl[EPF_VNET_ROCE_GID_TBL_LEN];
-	unsigned npd, nmr, ncq, nqp;
+	unsigned nmr, ncq, nqp;
+
+	struct kmem_cache *pd_slab;
+
+#define EPF_VNET_RDMA_MAX_AH 32
+#define EPF_VNET_RDMA_MAX_MR 32
+#define EPF_VNET_RDMA_MAX_PD 32
+	struct virtio_rdma_ack_query_device rdma_attr;
+	struct epf_vnet_rdma_pd *pds[EPF_VNET_RDMA_MAX_PD];
+};
+
+struct epf_vnet_rdma_pd {
+	int pdn;
 };
 
 static inline struct epf_vnet *vdev_to_vnet(struct virtio_device *vdev)
@@ -483,20 +497,7 @@ static int epf_vnet_vdev_handle_roce_query_device(struct epf_vnet *vnet,
 
 	ack = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
 
-	ack->device_cap_flags = VIRTIO_IB_DEVICE_RC_RNR_NAK_GEN;
-	ack->max_mr_size = 1 << 30;
-	ack->page_size_cap = 0xfffff000;
-	ack->hw_ver = 0xdeafbeef;
-	ack->max_qp_wr = virtio_queue_size;
-	ack->max_send_sge = 32;
-	ack->max_recv_sge = 32;
-	ack->max_sge_rd = 32;
-	ack->max_cqe = virtio_queue_size;
-	ack->max_mr = 100;
-	ack->max_pd = 100;
-	ack->max_qp_rd_atom = 128;
-	ack->max_qp_init_rd_atom = 128;
-	ack->max_ah = 100;
+	memcpy(ack, &vnet->rdma_attr, sizeof(vnet->rdma_attr));
 
 	return 0;
 }
@@ -541,15 +542,63 @@ static int epf_vnet_vdev_handle_roce_destroy_cq(struct epf_vnet *vnet,
 	return 0;
 }
 
+static int epf_vnet_init_pd(struct epf_vnet_rdma_pd *pd)
+{
+	//TODO
+	return 0;
+}
+
+static int epf_vnet_vdev_alloc_pd(struct epf_vnet *vnet)
+{
+	int err;
+	struct epf_vnet_rdma_pd *pd;
+
+	for (int i = 0; i < EPF_VNET_RDMA_MAX_PD; i++) {
+		if (vnet->pds[i])
+			continue;
+
+		pd = kmem_cache_alloc(vnet->pd_slab, GFP_KERNEL);
+
+		err = epf_vnet_init_pd(pd);
+		if (err)
+			return err;
+
+		vnet->pds[i] = pd;
+
+		return i;
+	}
+
+	return -ENOENT;
+}
+
+static int epf_vnet_vdev_dealloc_pd(struct epf_vnet *vnet, int pdi)
+{
+	if (pdi >= EPF_VNET_RDMA_MAX_PD)
+		return -EINVAL;
+
+	if (!vnet->pds[pdi])
+		return -EINVAL;
+
+	kmem_cache_free(vnet->pd_slab, vnet->pds[pdi]);
+	vnet->pds[pdi] = NULL;
+
+	return 0;
+}
+
 static int epf_vnet_vdev_handle_roce_create_pd(struct epf_vnet *vnet,
 					       struct vringh_kiov *riov,
 					       struct vringh_kiov *wiov)
 {
 	struct virtio_rdma_ack_create_pd *ack;
+	int pdn;
 
 	ack = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
 
-	ack->pdn = vnet->npd++;
+	pdn = epf_vnet_vdev_alloc_pd(vnet);
+	if (pdn < 0)
+		return pdn;
+
+	ack->pdn = pdn;
 
 	return 0;
 }
@@ -558,8 +607,11 @@ static int epf_vnet_vdev_handle_roce_destroy_pd(struct epf_vnet *vnet,
 						struct vringh_kiov *riov,
 						struct vringh_kiov *wiov)
 {
-	vnet->npd--;
-	return 0;
+	struct virtio_rdma_cmd_destroy_pd *cmd;
+
+	cmd = phys_to_virt((unsigned long)riov->iov[riov->i].iov_base);
+
+	return epf_vnet_vdev_dealloc_pd(vnet, cmd->pdn);
 }
 
 static int epf_vnet_vdev_handle_roce_dma_mr(struct epf_vnet *vnet,
@@ -1029,6 +1081,28 @@ static int epf_vnet_setup_common(struct epf_vnet *vnet)
 	INIT_WORK(&vnet->raise_irq_work, epf_vnet_raise_irq_handler);
 
 	INIT_WORK(&vnet->vdev_roce_rx_work, epf_vnet_vdev_roce_rx_handler);
+
+	vnet->pd_slab = kmem_cache_create(
+		"pci-epf-vnet/pd", sizeof(struct epf_vnet_rdma_pd), 0, 0, NULL);
+	if (IS_ERR(vnet->pd_slab))
+		return PTR_ERR(vnet->pd_slab);
+
+	// *1 There is no resone for the value.
+	vnet->rdma_attr.device_cap_flags = 0;
+	vnet->rdma_attr.max_mr_size = 1 << 30;
+	vnet->rdma_attr.page_size_cap = 0xfffff000;
+	vnet->rdma_attr.hw_ver = 0xdeafbeaf;
+	vnet->rdma_attr.max_qp_wr = virtio_queue_size;
+	vnet->rdma_attr.max_send_sge = 32; // *1
+	vnet->rdma_attr.max_recv_sge = 32; // *1
+	vnet->rdma_attr.max_sge_rd = 32; // *1
+	vnet->rdma_attr.max_cqe = virtio_queue_size;
+	vnet->rdma_attr.max_mr = EPF_VNET_RDMA_MAX_MR;
+	vnet->rdma_attr.max_pd = EPF_VNET_RDMA_MAX_PD;
+	vnet->rdma_attr.max_qp_rd_atom = 32; // *1
+	vnet->rdma_attr.max_qp_init_rd_atom = 32; // *1
+	vnet->rdma_attr.max_ah = EPF_VNET_RDMA_MAX_AH;
+	vnet->rdma_attr.local_ca_ack_delay = 15;
 
 	return 0;
 }
