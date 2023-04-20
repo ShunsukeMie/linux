@@ -487,7 +487,147 @@ static int epf_vnet_ep_handle_query_qp(struct epf_vnet *vnet,
 {
 	struct virtio_rdma_cmd_query_qp *cmd;
 	struct virtio_rdma_ack_query_qp *ack;
-	return 0;
+	struct epf_virtio *evio = &vnet->evio;
+	struct pci_epf *epf = evio->epf;
+	size_t clen, alen;
+	int err = 0;
+	phys_addr_t cphys, aphys;
+	u32 attr_mask;
+
+	clen = riov->iov[riov->i].iov_len;
+	cmd = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
+			       (u64)wiov->iov[riov->i].iov_base, &cphys, clen);
+	if (IS_ERR(cmd))
+		return PTR_ERR(cmd);
+
+	alen = wiov->iov[wiov->i].iov_len;
+	ack = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
+			       (u64)wiov->iov[wiov->i].iov_base, &aphys, alen);
+	if (IS_ERR(ack)) {
+		err = PTR_ERR(ack);
+		goto unmap_cmd;
+	}
+
+	ioread32(&cmd->qpn);
+	attr_mask = ioread32(&cmd->attr_mask);
+
+	if (attr_mask & VIRTIO_IB_QP_STATE) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_STATE);
+		err = 1;
+		goto out;
+	}
+
+	if (attr_mask & VIRTIO_IB_QP_CUR_STATE) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_CUR_STATE);
+		err = 1;
+		goto out;
+	}
+
+	if (attr_mask & VIRTIO_IB_QP_ACCESS_FLAGS) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_ACCESS_FLAGS);
+		err = 1;
+		goto out;
+	}
+
+	if (attr_mask & VIRTIO_IB_QP_QKEY) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_QKEY);
+		err = 1;
+		goto out;
+	}
+
+	if (attr_mask & VIRTIO_IB_QP_AV) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_AV);
+		err = 1;
+		goto out;
+	}
+
+	if (attr_mask & VIRTIO_IB_QP_PATH_MTU) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_PATH_MTU);
+		err = 1;
+		goto out;
+	}
+
+	if (attr_mask & VIRTIO_IB_QP_TIMEOUT) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_TIMEOUT);
+		err = 1;
+		goto out;
+	}
+
+	if (attr_mask & VIRTIO_IB_QP_RETRY_CNT) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_RETRY_CNT);
+		err = 1;
+		goto out;
+	}
+
+	if (attr_mask & VIRTIO_IB_QP_RNR_RETRY) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_RNR_RETRY);
+		err = 1;
+		goto out;
+	}
+
+	if (attr_mask & VIRTIO_IB_QP_RQ_PSN) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_RQ_PSN);
+		err = 1;
+		goto out;
+	}
+
+	if (attr_mask & VIRTIO_IB_QP_MAX_QP_RD_ATOMIC) {
+		pr_info("not yet implemented 0x%x",
+			VIRTIO_IB_QP_MAX_QP_RD_ATOMIC);
+		err = 1;
+		goto out;
+	}
+
+	if (attr_mask & VIRTIO_IB_QP_MIN_RNR_TIMER) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_MIN_RNR_TIMER);
+		err = 1;
+		goto out;
+	}
+
+	if (attr_mask & VIRTIO_IB_QP_SQ_PSN) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_SQ_PSN);
+		err = 1;
+		goto out;
+	}
+
+	if (attr_mask & VIRTIO_IB_QP_MAX_DEST_RD_ATOMIC) {
+		pr_info("not yet implemented 0x%x",
+			VIRTIO_IB_QP_MAX_DEST_RD_ATOMIC);
+		err = 1;
+		goto out;
+	}
+
+	if (attr_mask & VIRTIO_IB_QP_CAP) {
+		pr_info("qp cap 0x%x\n", VIRTIO_IB_QP_CAP);
+		// TODO these are temporary and should be updated.
+		ack->cap.max_send_wr = 100;
+		ack->cap.max_send_sge = 32;
+		ack->cap.max_inline_data = 32 * sizeof(struct virtio_rdma_sge);
+		ack->cap.max_recv_wr = 100;
+		ack->cap.max_recv_sge = 32;
+	}
+
+	if (attr_mask & VIRTIO_IB_QP_DEST_QPN) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_DEST_QPN);
+		err = 1;
+		goto out;
+	}
+
+	if (attr_mask & VIRTIO_IB_QP_RATE_LIMIT) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_RATE_LIMIT);
+		err = 1;
+		goto out;
+	}
+
+out:
+unmap_ack:
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, aphys, ack,
+			   alen);
+unmap_cmd:
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, cphys, cmd,
+			   clen);
+
+	return err;
 }
 
 static int epf_vnet_ep_handle_destroy_qp(struct epf_vnet *vnet,
@@ -575,7 +715,7 @@ static int (*virtio_rdma_ep_cmd_handler[])(struct epf_vnet *vnet,
 	[VIRTIO_NET_CTRL_ROCE_DEREG_MR] = epf_vnet_ep_handle_dereg_mr,
 	[VIRTIO_NET_CTRL_ROCE_CREATE_QP] = epf_vnet_ep_handle_create_qp,
 	[VIRTIO_NET_CTRL_ROCE_MODIFY_QP] = epf_vnet_ep_handle_modify_qp,
-	// 	[VIRTIO_NET_CTRL_ROCE_QUERY_QP] = epf_vnet_ep_handle_query_qp,
+	[VIRTIO_NET_CTRL_ROCE_QUERY_QP] = epf_vnet_ep_handle_query_qp,
 	[VIRTIO_NET_CTRL_ROCE_DESTROY_QP] = epf_vnet_ep_handle_destroy_qp,
 	// 	[VIRTIO_NET_CTRL_ROCE_CREATE_AH]
 	// 	[VIRTIO_NET_CTRL_ROCE_DESTROY_AH]
