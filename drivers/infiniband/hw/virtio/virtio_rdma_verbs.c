@@ -596,6 +596,7 @@ static void* virtio_rdma_init_mmap_entry(struct virtio_rdma_dev *vdev,
 	entry->type = VIRTIO_RDMA_MMAP_QP;
 	entry->queue = vq;
 	entry->ubuf = buf;
+	entry->ubuf_phys = *dma_addr;
 	entry->ubuf_size = PAGE_ALIGN(buf_size);
 
 	*used_off = virtqueue_get_used_addr(vq) - virtqueue_get_desc_addr(vq);
@@ -1147,13 +1148,12 @@ static int virtio_rdma_mmap(struct ib_ucontext *ctx,
 
 		// vring
 		rc = remap_pfn_range(vma, vma->vm_start,
-				     page_to_pfn(virt_to_page(
-				     virtqueue_get_vring(entry->queue)->desc)),
+				PHYS_PFN(virtqueue_get_desc_addr(entry->queue)),
 				     vq_size, vma->vm_page_prot);
 
 		// user buffer
 		rc = remap_pfn_range(vma, vma->vm_start + vq_size,
-				     page_to_pfn(virt_to_page(entry->ubuf)),
+					 PHYS_PFN(entry->ubuf_phys),
 				     entry->ubuf_size, vma->vm_page_prot);
 		if (rc) {
 			pr_warn("remap_pfn_range failed: %lu, %zu\n",
@@ -1170,13 +1170,12 @@ static int virtio_rdma_mmap(struct ib_ucontext *ctx,
 
 		// vring
 		rc = remap_pfn_range(vma, vma->vm_start,
-				     page_to_pfn(virt_to_page(
-				     virtqueue_get_vring(entry->queue)->desc)),
+				PHYS_PFN(virtqueue_get_desc_addr(entry->queue)),
 				     vq_size, vma->vm_page_prot);
 
 		// user buffer
 		rc = remap_pfn_range(vma, vma->vm_start + vq_size,
-				     page_to_pfn(virt_to_page(entry->ubuf)),
+					 PHYS_PFN(entry->ubuf_phys),
 				     entry->ubuf_size, vma->vm_page_prot);
 
 		// doorbell
