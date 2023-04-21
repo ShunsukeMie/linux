@@ -56,8 +56,8 @@ struct epf_vnet {
 #define EPF_VNET_ROCE_GID_TBL_LEN 512
 	union ib_gid vdev_roce_gid_tbl[EPF_VNET_ROCE_GID_TBL_LEN];
 	union ib_gid ep_roce_gid_tbl[EPF_VNET_ROCE_GID_TBL_LEN];
-	unsigned nmr, ncq, nqp;
-	unsigned ep_ncq, ep_nqp, ep_nmr, ep_npd;
+	unsigned nmr, ncq, nqp, nah;
+	unsigned ep_ncq, ep_nqp, ep_nmr, ep_npd, ep_nah;
 
 	struct kmem_cache *pd_slab;
 
@@ -628,6 +628,51 @@ static int epf_vnet_ep_handle_destroy_qp(struct epf_vnet *vnet,
 	return 0;
 }
 
+static int epf_vnet_ep_handle_create_ah(struct epf_vnet *vnet,
+					struct vringh_kiov *riov,
+					struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_cmd_create_ah *cmd;
+	struct virtio_rdma_ack_create_ah *ack;
+	struct epf_virtio *evio = &vnet->evio;
+	struct pci_epf *epf = evio->epf;
+	size_t clen, alen;
+	int err = 0;
+	phys_addr_t cphys, aphys;
+
+	clen = riov->iov[riov->i].iov_len;
+	cmd = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
+			       (u64)wiov->iov[riov->i].iov_base, &cphys, clen);
+	if (IS_ERR(cmd))
+		return PTR_ERR(cmd);
+
+	alen = wiov->iov[wiov->i].iov_len;
+	ack = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
+			       (u64)wiov->iov[wiov->i].iov_base, &aphys, alen);
+	if (IS_ERR(ack)) {
+		err = PTR_ERR(ack);
+		goto unmap_cmd;
+	}
+
+	iowrite32(vnet->ep_nah++, &ack->ah);
+
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, aphys, ack,
+			   alen);
+unmap_cmd:
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, cphys, cmd,
+			   clen);
+
+	return err;
+}
+
+static int epf_vnet_ep_handle_destroy_ah(struct epf_vnet *vnet,
+					 struct vringh_kiov *riov,
+					 struct vringh_kiov *wiov)
+{
+	vnet->ep_nah--;
+	return 0;
+}
+
 static int epf_vnet_ep_handle_roce_add_gid(struct epf_vnet *vnet,
 					   struct vringh_kiov *riov,
 					   struct vringh_kiov *wiov)
@@ -707,8 +752,8 @@ static int (*virtio_rdma_ep_cmd_handler[])(struct epf_vnet *vnet,
 	[VIRTIO_NET_CTRL_ROCE_MODIFY_QP] = epf_vnet_ep_handle_modify_qp,
 	// 	[VIRTIO_NET_CTRL_ROCE_QUERY_QP] = epf_vnet_ep_handle_query_qp,
 	[VIRTIO_NET_CTRL_ROCE_DESTROY_QP] = epf_vnet_ep_handle_destroy_qp,
-	// 	[VIRTIO_NET_CTRL_ROCE_CREATE_AH]
-	// 	[VIRTIO_NET_CTRL_ROCE_DESTROY_AH]
+	[VIRTIO_NET_CTRL_ROCE_CREATE_AH] = epf_vnet_ep_handle_create_ah,
+	[VIRTIO_NET_CTRL_ROCE_DESTROY_AH] = epf_vnet_ep_handle_destroy_ah,
 	[VIRTIO_NET_CTRL_ROCE_ADD_GID] = epf_vnet_ep_handle_roce_add_gid,
 	[VIRTIO_NET_CTRL_ROCE_DEL_GID] = epf_vnet_ep_handle_roce_del_gid,
 	[VIRTIO_NET_CTRL_ROCE_REQ_NOTIFY_CQ] =
@@ -1241,6 +1286,30 @@ static int epf_vnet_vdev_handle_roce_destroy_qp(struct epf_vnet *vnet,
 	return 0;
 }
 
+static int epf_vnet_vdev_handle_roce_create_ah(struct epf_vnet *vnet,
+					       struct vringh_kiov *riov,
+					       struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_cmd_create_ah *cmd;
+	struct virtio_rdma_ack_create_ah *ack;
+
+	cmd = phys_to_virt((unsigned long)riov->iov[riov->i].iov_base);
+
+	ack = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
+
+	ack->ah = vnet->nah++;
+
+	return 0;
+}
+
+static int epf_vnet_vdev_handle_roce_destroy_ah(struct epf_vnet *vnet,
+						struct vringh_kiov *riov,
+						struct vringh_kiov *wiov)
+{
+	vnet->nah--;
+	return 0;
+}
+
 static int epf_vnet_vdev_handle_roce_add_gid(struct epf_vnet *vnet,
 					     struct vringh_kiov *riov,
 					     struct vringh_kiov *wiov)
@@ -1289,8 +1358,8 @@ static int (*virtio_rdma_vdev_cmd_handler[])(struct epf_vnet *vnet,
 	[VIRTIO_NET_CTRL_ROCE_MODIFY_QP] = epf_vnet_vdev_handle_roce_modify_qp,
 	[VIRTIO_NET_CTRL_ROCE_QUERY_QP] = epf_vnet_vdev_handle_roce_query_qp,
 	[VIRTIO_NET_CTRL_ROCE_DESTROY_QP] = epf_vnet_vdev_handle_roce_destroy_qp,
-	// 	[VIRTIO_NET_CTRL_ROCE_CREATE_AH],
-	// 	[VIRTIO_NET_CTRL_ROCE_DESTROY_AH],
+	[VIRTIO_NET_CTRL_ROCE_CREATE_AH] = epf_vnet_vdev_handle_roce_create_ah,
+	[VIRTIO_NET_CTRL_ROCE_DESTROY_AH] = epf_vnet_vdev_handle_roce_destroy_ah,
 	[VIRTIO_NET_CTRL_ROCE_ADD_GID] = epf_vnet_vdev_handle_roce_add_gid,
 	[VIRTIO_NET_CTRL_ROCE_DEL_GID] = epf_vnet_vdev_handle_roce_del_gid,
 	[VIRTIO_NET_CTRL_ROCE_REQ_NOTIFY_CQ] =
