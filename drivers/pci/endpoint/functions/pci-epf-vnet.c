@@ -1615,8 +1615,8 @@ static void epf_vnet_roce_tx_handler(struct work_struct *work)
 	u16 head;
 	struct virtio_rdma_sq_req *sreq;
 
-	vrh = &vnet->vdev_vrhs[VNET_VIRTQUEUE_TX];
-	iov = &vnet->vdev_iovs[VNET_VIRTQUEUE_TX];
+	vrh = &vnet->vdev_vrhs[VNET_VIRTQUEUE_RDMA_SQ2];
+	iov = &vnet->vdev_iovs[VNET_VIRTQUEUE_RDMA_SQ2];
 
 	err = vringh_getdesc_kern(vrh, iov, NULL, &head, GFP_KERNEL);
 	if (err <= 0) {
