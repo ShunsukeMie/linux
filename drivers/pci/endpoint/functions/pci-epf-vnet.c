@@ -1903,6 +1903,7 @@ static void epf_vnet_vdev_del_vqs(struct virtio_device *vdev)
 			continue;
 
 		vring_del_virtqueue(vnet->vdev_vqs[i]);
+		vnet->vdev_vqs[i] = NULL;
 	}
 }
 
