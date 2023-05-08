@@ -1945,7 +1945,7 @@ static int epf_vnet_setup_vdev(struct epf_vnet *vnet, struct device *parent)
 		vringh_kiov_init(&vnet->vdev_iovs[i], NULL, 0);
 
 	vnet->vdev_vqs =
-		kmalloc_array(nvq, sizeof(vnet->vdev_vrhs[0]), GFP_KERNEL);
+		kmalloc_array(nvq, sizeof(vnet->vdev_vqs[0]), GFP_KERNEL);
 	if (!vnet->vdev_vqs) {
 		err = -ENOMEM;
 		goto err_cleanup_kiov;
