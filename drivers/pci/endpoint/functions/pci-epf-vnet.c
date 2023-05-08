@@ -23,8 +23,13 @@ struct epf_vnet_rdma_pd;
 struct epf_vnet_rdma_mr;
 
 struct epf_vnet_rdma {
+
 #define EPF_VNET_ROCE_GID_TBL_LEN 512
 	union ib_gid gid_tbl[EPF_VNET_ROCE_GID_TBL_LEN];
+
+#define EPF_VNET_RDMA_MAX_PD 32
+	struct epf_vnet_rdma_pd *pds[EPF_VNET_RDMA_MAX_PD];
+	struct kmem_cache *pd_slab;
 };
 
 struct epf_vnet {
@@ -64,13 +69,11 @@ struct epf_vnet {
 	unsigned ncq, nqp, nah;
 	unsigned ep_ncq, ep_nqp, ep_nmr, ep_npd, ep_nah;
 
-	struct kmem_cache *pd_slab, *mr_slab;
+	struct kmem_cache *mr_slab;
 
 #define EPF_VNET_RDMA_MAX_AH 32
 #define EPF_VNET_RDMA_MAX_MR 32
-#define EPF_VNET_RDMA_MAX_PD 32
 	struct virtio_rdma_ack_query_device rdma_attr;
-	struct epf_vnet_rdma_pd *pds[EPF_VNET_RDMA_MAX_PD];
 	struct epf_vnet_rdma_mr *mrs[EPF_VNET_RDMA_MAX_MR];
 };
 
@@ -955,17 +958,17 @@ static int epf_vnet_rdma_init_pd(struct epf_vnet_rdma_pd *pd)
 	return 0;
 }
 
-static struct epf_vnet_rdma_pd *epf_vnet_vdev_alloc_pd(struct epf_vnet *vnet)
+static struct epf_vnet_rdma_pd *epf_vnet_alloc_pd(struct epf_vnet_rdma *rdma)
 {
 	struct epf_vnet_rdma_pd *pd;
 
 	for (int i = 0; i < EPF_VNET_RDMA_MAX_PD; i++) {
-		if (vnet->pds[i])
+		if (rdma->pds[i])
 			continue;
 
-		pd = kmem_cache_alloc(vnet->pd_slab, GFP_KERNEL);
+		pd = kmem_cache_alloc(rdma->pd_slab, GFP_KERNEL);
 
-		vnet->pds[i] = pd;
+		rdma->pds[i] = pd;
 		pd->pdn = i;
 
 		return pd;
@@ -974,24 +977,24 @@ static struct epf_vnet_rdma_pd *epf_vnet_vdev_alloc_pd(struct epf_vnet *vnet)
 	return NULL;
 }
 
-static int epf_vnet_vdev_dealloc_pd(struct epf_vnet *vnet, int pdi)
+static int epf_vnet_dealloc_pd(struct epf_vnet_rdma *rdma, int pdi)
 {
 	if (pdi >= EPF_VNET_RDMA_MAX_PD)
 		return -EINVAL;
 
-	if (!vnet->pds[pdi])
+	if (!rdma->pds[pdi])
 		return -EINVAL;
 
-	kmem_cache_free(vnet->pd_slab, vnet->pds[pdi]);
-	vnet->pds[pdi] = NULL;
+	kmem_cache_free(rdma->pd_slab, rdma->pds[pdi]);
+	rdma->pds[pdi] = NULL;
 
 	return 0;
 }
 
-static struct epf_vnet_rdma_pd *epf_vnet_rdma_lookup_pd(struct epf_vnet *vnet,
+static struct epf_vnet_rdma_pd *epf_vnet_rdma_lookup_pd(struct epf_vnet_rdma *rdma,
 							int index)
 {
-	return index < EPF_VNET_RDMA_MAX_PD ? vnet->pds[index] : NULL;
+	return index < EPF_VNET_RDMA_MAX_PD ? rdma->pds[index] : NULL;
 }
 
 static struct epf_vnet_rdma_mr *epf_vnet_rdma_alloc_mr(struct epf_vnet *vnet)
@@ -1043,7 +1046,7 @@ static int epf_vnet_vdev_handle_roce_create_pd(struct epf_vnet *vnet,
 
 	ack = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
 
-	pd = epf_vnet_vdev_alloc_pd(vnet);
+	pd = epf_vnet_alloc_pd(&vnet->vdev_roce);
 	if (!pd)
 		return -ENOMEM;
 
@@ -1062,7 +1065,7 @@ static int epf_vnet_vdev_handle_roce_destroy_pd(struct epf_vnet *vnet,
 
 	cmd = phys_to_virt((unsigned long)riov->iov[riov->i].iov_base);
 
-	return epf_vnet_vdev_dealloc_pd(vnet, cmd->pdn);
+	return epf_vnet_dealloc_pd(&vnet->vdev_roce, cmd->pdn);
 }
 
 static int epf_vnet_vdev_handle_roce_dma_mr(struct epf_vnet *vnet,
@@ -1101,7 +1104,7 @@ static int epf_vnet_vdev_handle_roce_reg_user_mr(struct epf_vnet *vnet,
 		__func__, cmd->pdn, cmd->access_flags, cmd->virt_addr,
 		cmd->length, cmd->npages);
 
-	pd = epf_vnet_rdma_lookup_pd(vnet, cmd->pdn);
+	pd = epf_vnet_rdma_lookup_pd(&vnet->vdev_roce, cmd->pdn);
 	if (!pd)
 		return -EINVAL;
 
@@ -1692,10 +1695,10 @@ static int epf_vnet_setup_common(struct epf_vnet *vnet)
 
 	INIT_WORK(&vnet->roce_rx_work, epf_vnet_roce_rx_handler);
 
-	vnet->pd_slab = kmem_cache_create(
+	vnet->vdev_roce.pd_slab = kmem_cache_create(
 		"pci-epf-vnet/pd", sizeof(struct epf_vnet_rdma_pd), 0, 0, NULL);
-	if (IS_ERR(vnet->pd_slab))
-		return PTR_ERR(vnet->pd_slab);
+	if (IS_ERR(vnet->vdev_roce.pd_slab))
+		return PTR_ERR(vnet->vdev_roce.pd_slab);
 
 	vnet->mr_slab = kmem_cache_create(
 		"pci-epf-vnet/mr", sizeof(struct epf_vnet_rdma_mr), 0, 0, NULL);
