@@ -47,7 +47,7 @@ struct epf_vnet {
 	struct work_struct raise_irq_work, rx_work, tx_work;
 	struct work_struct vdev_ctrl_work, ep_ctrl_work;
 	/* for RDMA */
-	struct work_struct roce_rx_work, roce_tx_work;
+	struct work_struct roce_rx_work;
 
 #define EPF_VNET_INIT_COMPLETE_VDEV BIT(0)
 #define EPF_VNET_INIT_COMPLETE_EP_FUNC BIT(1)
@@ -1604,25 +1604,24 @@ static int epf_vnet_roce_handle_send_wr(struct epf_vnet *vnet,
 	return -EINVAL;
 }
 
-static void epf_vnet_roce_tx_handler(struct work_struct *work)
+static int epf_vnet_roce_tx_handler(struct epf_vnet *vnet, int tx_qidx)
 {
-	struct epf_vnet *vnet =
-		container_of(work, struct epf_vnet, roce_tx_work);
-	// 	struct epf_virtio *evio = &vnet->evio;
 	struct vringh *vrh;
 	struct vringh_kiov *iov;
 	int err;
 	u16 head;
 	struct virtio_rdma_sq_req *sreq;
 
-	vrh = &vnet->vdev_vrhs[VNET_VIRTQUEUE_RDMA_SQ2];
-	iov = &vnet->vdev_iovs[VNET_VIRTQUEUE_RDMA_SQ2];
+	vrh = &vnet->vdev_vrhs[tx_qidx];
+	iov = &vnet->vdev_iovs[tx_qidx];
 
 	err = vringh_getdesc_kern(vrh, iov, NULL, &head, GFP_KERNEL);
 	if (err <= 0) {
 		if (err < 0)
 			pr_err("err on vringh_getdesc_kern: %d\n", err);
-		return;
+		else
+			pr_info("not found any entries\n");
+		return err;
 	}
 
 	sreq = phys_to_virt((unsigned long)iov->iov[iov->i].iov_base);
@@ -1635,7 +1634,7 @@ static void epf_vnet_roce_tx_handler(struct work_struct *work)
 		if (err) {
 			pr_err("failed to process send work request: %d\n",
 			       err);
-			return;
+			return err;
 		}
 		break;
 		// 	case VIRTIO_IB_WR_RDMA_WRITE:
@@ -1648,7 +1647,7 @@ static void epf_vnet_roce_tx_handler(struct work_struct *work)
 		       sreq->opcode);
 	}
 
-	// TODO wor rreq
+	return 0;
 }
 
 static int epf_vnet_setup_common(struct epf_vnet *vnet)
@@ -1688,7 +1687,6 @@ static int epf_vnet_setup_common(struct epf_vnet *vnet)
 	INIT_WORK(&vnet->raise_irq_work, epf_vnet_raise_irq_handler);
 
 	INIT_WORK(&vnet->roce_rx_work, epf_vnet_roce_rx_handler);
-	INIT_WORK(&vnet->roce_tx_work, epf_vnet_roce_tx_handler);
 
 	vnet->pd_slab = kmem_cache_create(
 		"pci-epf-vnet/pd", sizeof(struct epf_vnet_rdma_pd), 0, 0, NULL);
@@ -1800,9 +1798,12 @@ static void epf_vnet_vdev_reset(struct virtio_device *vdev)
 	pr_debug("doesn't support yet");
 }
 
+static int epf_vnet_roce_tx_handler(struct epf_vnet *vnet, int qidx);
 static bool epf_vnet_vdev_vq_notify(struct virtqueue *vq)
 {
 	struct epf_vnet *vnet = vdev_to_vnet(vq->vdev);
+	int err;
+	bool ret = true;
 
 	/* Support only one queue pair */
 	switch (vq->index) {
@@ -1818,7 +1819,13 @@ static bool epf_vnet_vdev_vq_notify(struct virtqueue *vq)
 		queue_work(vnet->task_wq, &vnet->roce_rx_work);
 		break;
 	case VNET_VIRTQUEUE_RDMA_SQ2:
-		queue_work(vnet->task_wq, &vnet->roce_tx_work);
+		pr_info("tx handler\n");
+		pr_info("tx handler\n");
+		pr_info("tx handler\n");
+		pr_info("tx handler\n");
+		err = epf_vnet_roce_tx_handler(vnet, vq->index);
+		if (err)
+			ret = false;
 		break;
 	case VNET_VIRTQUEUE_RDMA_RQ2:
 		queue_work(vnet->task_wq, &vnet->roce_rx_work);
@@ -1828,7 +1835,7 @@ static bool epf_vnet_vdev_vq_notify(struct virtqueue *vq)
 		return false;
 	}
 
-	return true;
+	return ret;
 }
 
 static int epf_vnet_vdev_find_vqs(struct virtio_device *vdev, unsigned int nvqs,
