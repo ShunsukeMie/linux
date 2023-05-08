@@ -22,6 +22,11 @@ MODULE_PARM_DESC(virtio_queue_size, "A length of virtqueue");
 struct epf_vnet_rdma_pd;
 struct epf_vnet_rdma_mr;
 
+struct epf_vnet_rdma {
+#define EPF_VNET_ROCE_GID_TBL_LEN 512
+	union ib_gid gid_tbl[EPF_VNET_ROCE_GID_TBL_LEN];
+};
+
 struct epf_vnet {
 	/* virtio feature and configurations for virtio-net. It is commonly used
 	 * local and remote. */
@@ -54,9 +59,8 @@ struct epf_vnet {
 	u8 initialized;
 	bool enable_edma;
 
-#define EPF_VNET_ROCE_GID_TBL_LEN 512
-	union ib_gid vdev_roce_gid_tbl[EPF_VNET_ROCE_GID_TBL_LEN];
-	union ib_gid ep_roce_gid_tbl[EPF_VNET_ROCE_GID_TBL_LEN];
+	struct epf_vnet_rdma vdev_roce, ep_roce;
+
 	unsigned ncq, nqp, nah;
 	unsigned ep_ncq, ep_nqp, ep_nmr, ep_npd, ep_nah;
 
@@ -702,7 +706,7 @@ static int epf_vnet_ep_handle_roce_add_gid(struct epf_vnet *vnet,
 
 	index = ioread16(&cmd->index);
 
-	memcpy_fromio(&vnet->ep_roce_gid_tbl[index], cmd->gid,
+	memcpy_fromio(&vnet->ep_roce.gid_tbl[index], cmd->gid,
 		      sizeof(cmd->gid));
 
 	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, phys, cmd,
@@ -1413,7 +1417,7 @@ static int epf_vnet_vdev_handle_roce_add_gid(struct epf_vnet *vnet,
 	if (cmd->index >= EPF_VNET_ROCE_GID_TBL_LEN)
 		return -EINVAL;
 
-	memcpy(vnet->vdev_roce_gid_tbl[cmd->index].raw, cmd->gid,
+	memcpy(vnet->vdev_roce.gid_tbl[cmd->index].raw, cmd->gid,
 	       sizeof(cmd->gid));
 
 	return 0;
@@ -1878,7 +1882,7 @@ static int epf_vnet_vdev_find_vqs(struct virtio_device *vdev, unsigned int nvqs,
 		vring = virtqueue_get_vring(vq);
 
 		err = vringh_init_kern(&vnet->vdev_vrhs[i], vnet->features,
-				       virtio_queue_size, false, vring->desc,
+				       virtio_queue_size, true, vring->desc,
 				       vring->avail, vring->used);
 		if (err) {
 			pr_err("failed to init vringh for vring %d\n", i);
