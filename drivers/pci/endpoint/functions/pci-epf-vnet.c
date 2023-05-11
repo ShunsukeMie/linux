@@ -1891,6 +1891,7 @@ static int epf_vnet_roce_handle_vdev_send_wr(struct epf_vnet *vnet,
 	struct epf_vnet_rdma_qp *dst_qp, *src_qp;
 	u16 head;
 	int ret;
+	size_t total_len = 0;
 
 	pr_info("send wr\n");
 
@@ -1924,6 +1925,7 @@ static int epf_vnet_roce_handle_vdev_send_wr(struct epf_vnet *vnet,
 		void *src;
 
 		pr_info("send wr: len %d\n", src_sge->length);
+		total_len += src_sge->length;
 
 		src_mr = epf_vnet_lookup_mr(&vnet->vdev_roce, src_sge->lkey);
 		if (!src_mr)
@@ -2049,8 +2051,8 @@ static int epf_vnet_roce_handle_vdev_send_wr(struct epf_vnet *vnet,
 						   epf->vfunc_no, cq_phys,
 						   cqdst, sizeof(cqe));
 
-				queue_work(vnet->task_wq,
-					   &vnet->raise_irq_work);
+				epf_virtio_iov_complete(evio, cq->vqn, cqhead,
+							sizeof(cqe));
 			}
 
 			pci_epc_unmap_addr(epf->epc, epf->func_no,
@@ -2097,9 +2099,14 @@ static int epf_vnet_roce_handle_vdev_send_wr(struct epf_vnet *vnet,
 
 			memcpy(iov->iov[iov->i].iov_base, &cqe, sizeof(cqe));
 
+			vringh_complete_kern(vrh, scq_head, sizeof(cqe));
+
 			vring_interrupt(0, vq);
 		}
 	}
+
+	epf_virtio_iov_complete(evio, dst_qp->rvq, head, total_len);
+	queue_work(vnet->task_wq, &vnet->raise_irq_work);
 
 	return 0;
 }
