@@ -19,7 +19,13 @@ static int virtio_queue_size = 0x400;
 module_param(virtio_queue_size, int, 0444);
 MODULE_PARM_DESC(virtio_queue_size, "A length of virtqueue");
 
+enum epf_vnet_rdma_mr_type {
+	EPF_VNET_RDMA_MR_TYPE_DMA,
+	EPF_VNET_RDMA_MR_TYPE_MR,
+};
+
 struct epf_vnet_rdma_mr {
+	enum epf_vnet_rdma_mr_type type;
 	int mrn;
 	u64 virt_addr;
 	u64 length;
@@ -36,6 +42,11 @@ struct epf_vnet_rdma_qp {
 	u32 svq, rvq;
 	u32 rcq, scq;
 	enum ib_qp_state state;
+};
+
+struct epf_vnet_rdma_cq {
+	u32 cqn;
+	u32 vqn;
 };
 
 struct epf_vnet_rdma {
@@ -55,6 +66,8 @@ struct epf_vnet_rdma {
 	struct kmem_cache *qp_slab;
 
 #define EPF_VNET_RDMA_MAX_CQ 3
+	struct epf_vnet_rdma_cq *cqs[EPF_VNET_RDMA_MAX_QP];
+	struct kmem_cache *cq_slab;
 };
 
 struct epf_vnet {
@@ -91,7 +104,7 @@ struct epf_vnet {
 
 	struct epf_vnet_rdma vdev_roce, ep_roce;
 
-	unsigned ncq, nah;
+	unsigned nah;
 	unsigned ep_ncq, ep_npd, ep_nah;
 
 #define EPF_VNET_RDMA_MAX_AH 32
@@ -102,9 +115,9 @@ enum {
 	VNET_VIRTQUEUE_RX,
 	VNET_VIRTQUEUE_TX,
 	VNET_VIRTQUEUE_CTRL,
+	VNET_VIRTQUEUE_RDMA_CQ0,
 	VNET_VIRTQUEUE_RDMA_CQ1,
 	VNET_VIRTQUEUE_RDMA_CQ2,
-	VNET_VIRTQUEUE_RDMA_CQ3,
 	VNET_VIRTQUEUE_RDMA_SQ0, // SGI
 	VNET_VIRTQUEUE_RDMA_RQ0,
 	VNET_VIRTQUEUE_RDMA_SQ1, // GSI
@@ -261,15 +274,56 @@ static struct epf_vnet_rdma_qp *epf_vnet_lookup_qp(struct epf_vnet_rdma *rdma,
 	return index < EPF_VNET_RDMA_MAX_QP ? rdma->qps[index] : NULL;
 }
 
+static struct epf_vnet_rdma_cq *epf_vnet_alloc_cq(struct epf_vnet_rdma *rdma)
+{
+	struct epf_vnet_rdma_cq *cq;
+
+	for (int i = 0; i < EPF_VNET_RDMA_MAX_CQ; i++) {
+		if (rdma->cqs[i])
+			continue;
+
+		cq = kmem_cache_alloc(rdma->cq_slab, GFP_KERNEL);
+
+		rdma->cqs[i] = cq;
+		cq->cqn = i;
+		cq->vqn = VNET_VIRTQUEUE_RDMA_CQ0 + i;
+
+		return cq;
+	}
+
+	return NULL;
+}
+
+static int epf_vnet_dealloc_cq(struct epf_vnet_rdma *rdma, int index)
+{
+	if (index >= EPF_VNET_RDMA_MAX_CQ)
+		return -EINVAL;
+
+	if (!rdma->cqs[index])
+		return -EINVAL;
+
+	kmem_cache_free(rdma->cq_slab, rdma->cqs[index]);
+	rdma->cqs[index] = NULL;
+
+	return 0;
+}
+
+static struct epf_vnet_rdma_cq *epf_vnet_lookup_cq(struct epf_vnet_rdma *rdma,
+						   int index)
+{
+	return index < EPF_VNET_RDMA_MAX_CQ ? rdma->cqs[index] : NULL;
+}
+
 static int epf_vnet_init_rdma(struct device *dev, struct epf_vnet_rdma *rdma,
 			      const char *base)
 {
-	char *pd_name, *mr_name, *qp_name;
+	char *pd_name, *mr_name, *qp_name, *cq_name;
 	struct epf_vnet_rdma_qp *qp;
 
 	pd_name = devm_kasprintf(dev, GFP_KERNEL, "epf-vnet-rdma-%s-pd", base);
 	mr_name = devm_kasprintf(dev, GFP_KERNEL, "epf-vnet-rdma-%s-mr", base);
 	qp_name = devm_kasprintf(dev, GFP_KERNEL, "epf-vnet-rdma-%s-qp", base);
+	cq_name = devm_kasprintf(dev, GFP_KERNEL, "epf-vnet-rdma-%s-cq", base);
 
 	rdma->pd_slab = kmem_cache_create(
 		pd_name, sizeof(struct epf_vnet_rdma_pd), 0, 0, NULL);
@@ -282,13 +336,19 @@ static int epf_vnet_init_rdma(struct device *dev, struct epf_vnet_rdma *rdma,
 		return PTR_ERR(rdma->mr_slab);
 
 	rdma->qp_slab = kmem_cache_create(
-		qp_name, sizeof(struct epf_vnet_rdma_mr), 0, 0, NULL);
+		qp_name, sizeof(struct epf_vnet_rdma_qp), 0, 0, NULL);
 	if (IS_ERR(rdma->qp_slab))
 		return PTR_ERR(rdma->qp_slab);
+
+	rdma->cq_slab = kmem_cache_create(
+		cq_name, sizeof(struct epf_vnet_rdma_cq), 0, 0, NULL);
+	if (IS_ERR(rdma->cq_slab))
+		return PTR_ERR(rdma->cq_slab);
 
 	devm_kfree(dev, pd_name);
 	devm_kfree(dev, mr_name);
 	devm_kfree(dev, qp_name);
+	devm_kfree(dev, cq_name);
 
 	// QP for SMI
 	qp = epf_vnet_alloc_qp(rdma);
@@ -737,6 +797,8 @@ static int epf_vnet_ep_handle_get_dma_mr(struct epf_vnet *vnet,
 	if (!mr)
 		return -EIO;
 
+	mr->type = EPF_VNET_RDMA_MR_TYPE_DMA;
+
 	len = wiov->iov[wiov->i].iov_len;
 	ack = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
 			       (u64)wiov->iov[wiov->i].iov_base, &phys, len);
@@ -763,6 +825,8 @@ static int epf_vnet_ep_handle_reg_user_mr(struct epf_vnet *vnet,
 	phys_addr_t aphys, cphys;
 	struct epf_vnet_rdma_mr *mr;
 
+	pr_info("%s:%d\n", __func__, __LINE__);
+
 	clen = riov->iov[riov->i].iov_len;
 	cmd = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
 			       (u64)riov->iov[riov->i].iov_base, &cphys, clen);
@@ -773,6 +837,8 @@ static int epf_vnet_ep_handle_reg_user_mr(struct epf_vnet *vnet,
 	if (!mr)
 		return -EIO;
 
+	mr->type = EPF_VNET_RDMA_MR_TYPE_MR;
+
 	mr->virt_addr = ioread64(&cmd->virt_addr);
 	mr->length = ioread64(&cmd->length);
 	mr->npages = ioread32(&cmd->npages);
@@ -781,7 +847,8 @@ static int epf_vnet_ep_handle_reg_user_mr(struct epf_vnet *vnet,
 
 	memcpy_fromio(mr->pages, cmd->pages, sizeof(mr->pages[0]) * mr->npages);
 	for (int i = 0; i < mr->npages; i++)
-		pr_info("reg_user_mr: page[%d] 0x%llx\n", i, cmd->pages[i]);
+		pr_info("reg_user_mr: mrn: %d, page[%d] 0x%llx\n", mr->mrn, i,
+			cmd->pages[i]);
 
 	alen = wiov->iov[wiov->i].iov_len;
 	ack = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
@@ -1224,6 +1291,7 @@ static int epf_vnet_vdev_handle_roce_create_cq(struct epf_vnet *vnet,
 {
 	struct virtio_rdma_cmd_create_cq *cmd;
 	struct virtio_rdma_ack_create_cq *ack;
+	struct epf_vnet_rdma_cq *cq;
 
 	cmd = phys_to_virt((unsigned long)riov->iov[riov->i].iov_base);
 
@@ -1231,8 +1299,14 @@ static int epf_vnet_vdev_handle_roce_create_cq(struct epf_vnet *vnet,
 	if (cmd->cqe > virtio_queue_size)
 		return 1;
 
+	cq = epf_vnet_alloc_cq(&vnet->vdev_roce);
+	if (!cq) {
+		pr_err("failed to allocate cq\n");
+		return -EIO;
+	}
+
 	ack = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
-	ack->cqn = vnet->ncq++;
+	ack->cqn = cq->cqn;
 
 	return 0;
 }
@@ -1241,8 +1315,11 @@ static int epf_vnet_vdev_handle_roce_destroy_cq(struct epf_vnet *vnet,
 						struct vringh_kiov *riov,
 						struct vringh_kiov *wiov)
 {
-	vnet->ncq--;
-	return 0;
+	struct virtio_rdma_cmd_destroy_cq *cmd;
+
+	cmd = phys_to_virt((unsigned long)riov->iov[riov->i].iov_base);
+
+	return epf_vnet_dealloc_cq(&vnet->vdev_roce, cmd->cqn);
 }
 
 static int epf_vnet_vdev_handle_roce_create_pd(struct epf_vnet *vnet,
@@ -1290,6 +1367,8 @@ static int epf_vnet_vdev_handle_roce_dma_mr(struct epf_vnet *vnet,
 	if (!mr)
 		return -EINVAL;
 
+	mr->type = EPF_VNET_RDMA_MR_TYPE_DMA;
+
 	ack->lkey = mr->mrn;
 	ack->rkey = mr->mrn;
 	ack->mrn = mr->mrn;
@@ -1319,6 +1398,8 @@ static int epf_vnet_vdev_handle_roce_reg_user_mr(struct epf_vnet *vnet,
 	mr = epf_vnet_alloc_mr(&vnet->vdev_roce);
 	if (!mr)
 		return -EINVAL;
+
+	mr->type = EPF_VNET_RDMA_MR_TYPE_MR;
 
 	ack = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
 
@@ -1831,13 +1912,13 @@ static int epf_vnet_roce_handle_vdev_send_wr(struct epf_vnet *vnet,
 
 	pr_info("sreq: num_sge %d\n", sreq->num_sge);
 	for (int i = 0; i < sreq->num_sge; i++) {
-		struct virtio_rdma_sge *sge = &sreq->sg_list[i];
+		struct virtio_rdma_sge *src_sge = &sreq->sg_list[i];
 		struct epf_vnet_rdma_mr *src_mr;
 		void *src;
 
-		pr_info("send wr: len %d\n", sge->length);
+		pr_info("send wr: len %d\n", src_sge->length);
 
-		src_mr = epf_vnet_lookup_mr(&vnet->vdev_roce, sge->lkey);
+		src_mr = epf_vnet_lookup_mr(&vnet->vdev_roce, src_sge->lkey);
 		if (!src_mr)
 			return -EINVAL;
 
@@ -1845,7 +1926,8 @@ static int epf_vnet_roce_handle_vdev_send_wr(struct epf_vnet *vnet,
 
 		if (1) {
 			char *b = src;
-			for (int i = 0; i < sge->length / 16; i++, b += 16) {
+			for (int i = 0; i < src_sge->length / 16;
+			     i++, b += 16) {
 				pr_info("%02x:"
 					" %02x %02x %02x %02x %02x %02x %02x %02x "
 					" %02x %02x %02x %02x %02x %02x %02x %02x ",
@@ -1854,7 +1936,7 @@ static int epf_vnet_roce_handle_vdev_send_wr(struct epf_vnet *vnet,
 					b[12], b[13], b[14], b[15]);
 			}
 
-			for (int i = 0; i < sge->length % 16; i++)
+			for (int i = 0; i < src_sge->length % 16; i++)
 				pr_info("%02x: %02x\n", i, b[i]);
 		}
 
@@ -1883,7 +1965,39 @@ static int epf_vnet_roce_handle_vdev_send_wr(struct epf_vnet *vnet,
 						   &sg_phys,
 						   sizeof(*sg_list) * num_sge);
 
-			memcpy_fromio(&sge, sg_list, sizeof(sge));
+			memcpy_fromio(&dst_sge, sg_list, sizeof(dst_sge));
+
+			pr_info("ep: lkey %d, addr 0x%llx, 0x%x\n",
+				dst_sge.lkey, dst_sge.addr, dst_sge.length);
+			dst_mr = epf_vnet_lookup_mr(&vnet->ep_roce,
+						    dst_sge.lkey);
+			if (!dst_mr) {
+				pr_info("ep: failed to lookup mr\n");
+				break;
+			}
+
+			{
+				phys_addr_t dst_phys;
+				void __iomem *dst;
+
+				if (dst_mr->type == EPF_VNET_RDMA_MR_TYPE_DMA) {
+					dst = pci_epc_map_addr(
+						epf->epc, epf->func_no,
+						epf->vfunc_no, dst_sge.addr,
+						&dst_phys, src_sge->length);
+
+					memcpy_toio(dst, src, src_sge->length);
+
+					pci_epc_unmap_addr(epf->epc,
+							   epf->func_no,
+							   epf->vfunc_no,
+							   dst_phys, dst,
+							   src_sge->length);
+				} else {
+					pr_err("not supported yet\n");
+					break;
+				}
+			}
 
 			pci_epc_unmap_addr(epf->epc, epf->func_no,
 					   epf->vfunc_no, sg_phys, sg_list,
