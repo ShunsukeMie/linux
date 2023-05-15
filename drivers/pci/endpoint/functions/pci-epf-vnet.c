@@ -2172,7 +2172,7 @@ static int epf_vnet_roce_handle_vdev_send_wr(struct epf_vnet *vnet,
 			struct virtio_rdma_cq_req cqe;
 			struct epf_vnet_rdma_cq *cq;
 			struct vringh *vrh;
-			struct vringh_kiov *iov;
+			struct vringh_kiov *cqiov;
 			u16 scq_head;
 			int err;
 			struct virtqueue *cvq;
@@ -2194,10 +2194,11 @@ static int epf_vnet_roce_handle_vdev_send_wr(struct epf_vnet *vnet,
 
 			pr_info("cq->vqp %d\n", cq->vqn);
 			vrh = &vnet->vdev_vrhs[cq->vqn];
-			iov = &vnet->vdev_iovs[cq->vqn];
+			cqiov = &vnet->vdev_iovs[cq->vqn];
 			cvq = vnet->vdev_vqs[cq->vqn];
 
-			err = vringh_getdesc_kern(vrh, NULL, iov, &scq_head,
+#if 1
+			err = vringh_getdesc_kern(vrh, NULL, cqiov, &scq_head,
 						  GFP_KERNEL);
 			if (err <= 0) {
 				pr_err("failed to get desc for send completion from %d: %d\n",
@@ -2205,17 +2206,18 @@ static int epf_vnet_roce_handle_vdev_send_wr(struct epf_vnet *vnet,
 				break;
 			}
 
-			if (iov->iov[iov->i].iov_len < sizeof(cqe)) {
+			if (cqiov->iov[cqiov->i].iov_len < sizeof(cqe)) {
 				pr_err("not enough size: %ld < %ld\n",
-				       iov->iov[iov->i].iov_len, sizeof(cqe));
+				       cqiov->iov[cqiov->i].iov_len, sizeof(cqe));
 				break;
 			}
 
 			buf = phys_to_virt(
-				(unsigned long)iov->iov[iov->i].iov_base);
+				(unsigned long)cqiov->iov[cqiov->i].iov_base);
 			memcpy(buf, &cqe, sizeof(cqe));
 
 			vringh_complete_kern(vrh, scq_head, sizeof(cqe));
+#endif
 
 			pr_info("vring_interrupt: index %d\n", cvq->index);
 			vring_interrupt(0, cvq);
@@ -2445,10 +2447,6 @@ static bool epf_vnet_vdev_vq_notify(struct virtqueue *vq)
 		queue_work(vnet->task_wq, &vnet->roce_rx_work);
 		break;
 	case VNET_VIRTQUEUE_RDMA_SQ2:
-		pr_info("tx handler\n");
-		pr_info("tx handler\n");
-		pr_info("tx handler\n");
-		pr_info("tx handler\n");
 		err = epf_vnet_roce_tx_handler(vnet, vq);
 		if (err)
 			ret = false;
