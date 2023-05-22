@@ -94,6 +94,7 @@ bool virtqueue_is_broken(struct virtqueue *vq);
 
 const struct vring *virtqueue_get_vring(struct virtqueue *vq);
 dma_addr_t virtqueue_get_desc_addr(struct virtqueue *vq);
+void *virtqueue_get_virt_desc_addr(const struct virtqueue *_vq);
 dma_addr_t virtqueue_get_avail_addr(struct virtqueue *vq);
 dma_addr_t virtqueue_get_used_addr(struct virtqueue *vq);
 
