@@ -48,6 +48,7 @@ struct epf_vnet_rdma_cq {
 	u32 cqn;
 	u32 vqn;
 	void *buf;
+	u64 buf_phys;
 };
 
 struct epf_vnet_rdma {
@@ -1433,7 +1434,8 @@ static int epf_vnet_vdev_handle_roce_create_cq(struct epf_vnet *vnet,
 		return -EIO;
 	}
 
-	cq->buf = (void*)cmd->virt_base;
+	cq->buf = (void*)cmd->virt;
+	cq->buf_phys = cmd->phys;
 
 	ack = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
 	ack->cqn = cq->cqn;
@@ -2312,10 +2314,8 @@ static int epf_vnet_roce_handle_vdev_send_wr(struct epf_vnet *vnet,
 				break;
 			}
 
-// 			buf = phys_to_virt(
-// 				(unsigned long)cqiov->iov[cqiov->i].iov_base);
-			buf = cq->buf;
-			pr_info("cq phys 0x%lx, virt 0x%px\n\n", (unsigned long)cqiov->iov[cqiov->i].iov_base, buf);
+			buf = cq->buf + (u64)cqiov->iov[cqiov->i].iov_base - cq->buf_phys;
+
 			memcpy(buf, &cqe, sizeof(cqe));
 
 			asm volatile("dmb ish");
