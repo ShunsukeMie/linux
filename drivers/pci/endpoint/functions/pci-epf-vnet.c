@@ -745,6 +745,9 @@ static int epf_vnet_ep_handle_create_cq(struct epf_vnet *vnet,
 		goto unmap_ack;
 	}
 
+	epf_virtio_vringh_reset(evio, cq->vqn);
+	pr_info("ep: create cq: %d\n", cq->vqn);
+
 	iowrite32(cq->cqn, &ack->cqn);
 
 unmap_ack:
@@ -1004,6 +1007,9 @@ static int epf_vnet_ep_handle_create_qp(struct epf_vnet *vnet,
 	if (IS_ERR(ack))
 		return PTR_ERR(ack);
 
+	epf_virtio_vringh_reset(evio, qp->svq);
+	epf_virtio_vringh_reset(evio, qp->rvq);
+
 	iowrite32(qp->qpn, ack);
 
 	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, cphys, cmd,
@@ -1052,9 +1058,6 @@ static int epf_vnet_ep_handle_destroy_qp(struct epf_vnet *vnet,
 	qp = epf_vnet_lookup_qp(&vnet->ep_roce, ioread32(&cmd->qpn));
 	if (!qp)
 		return -EINVAL;
-
-	epf_virtio_vringh_reset(evio, qp->svq);
-	epf_virtio_vringh_reset(evio, qp->rvq);
 
 	epf_vnet_dealloc_qp(&vnet->ep_roce, ioread32(&cmd->qpn));
 
@@ -1303,10 +1306,58 @@ err_out:
 }
 
 static int
-epf_vnet_roce_handle_ep_send_wr(struct epf_vnet *vnet,
-				struct virtio_rdma_sq_req __iomem *sreq)
+epf_vnet_roce_handle_ep_send_wr(struct epf_vnet *vnet, u32 vqn,
+				struct virtio_rdma_sq_req __iomem *sreq, u64 sreq_pci)
 {
-	return -EINVAL;
+	u32 nsge;
+	struct virtio_rdma_sge __iomem *sg_list;
+	struct pci_epf *epf = vnet->evio.epf;
+	phys_addr_t sg_list_phys;
+	int err = 0;
+
+	if (ioread8(&sreq->send_flags) & VIRTIO_IB_SEND_INLINE) {
+		pr_info("inline data is not supported\n");
+		return -ENOTSUPP;
+	}
+
+	nsge = ioread32(&sreq->num_sge);
+	pr_info("ep send wr: nsge %d\n", nsge);
+
+	sreq->sg_list;
+
+	sg_list = pci_epc_map_addr(
+		epf->epc, epf->func_no, epf->vfunc_no,
+		sreq_pci + offsetof(struct virtio_rdma_sq_req, sg_list), &sg_list_phys,
+		sizeof(struct virtio_rdma_sge) * nsge);
+
+	for (int i = 0; i < nsge; i++) {
+		struct virtio_rdma_sge src_sge;
+		struct epf_vnet_rdma_mr *src_mr;
+
+		memcpy_fromio(&src_sge, &sg_list[i], sizeof (src_sge));
+
+		src_mr = epf_vnet_lookup_mr(&vnet->ep_roce, src_sge.lkey);
+		if (!src_mr) {
+			pr_err("Failed to found mr: %d\n", src_sge.lkey);
+			err = -EINVAL;
+			break;
+		}
+
+		pr_info("src_mr->type %d\n", src_mr->type);
+		switch(src_mr->type) {
+			case EPF_VNET_RDMA_MR_TYPE_DMA:
+				break;
+			case EPF_VNET_RDMA_MR_TYPE_MR:
+				break;
+			default:
+				err = -EINVAL;
+				goto out;
+		}
+	}
+
+out:
+
+	return err;
 }
 
 static void epf_vnet_ep_roce_tx_handler(struct work_struct *work)
@@ -1334,11 +1385,13 @@ static void epf_vnet_ep_roce_tx_handler(struct work_struct *work)
 			pr_err("err on epf_virtio_getdesc: %d\n", err);
 			break;
 		}
-		pr_info("found send work request\n");
+		pr_info("found send work request: %d(vqn %d)\n", i, vqn);
 
 		sreq_pci = (u64)iov->iov[iov->i].iov_base;
-		if (sizeof(*sreq) < (size_t)iov->iov[iov->i].iov_base)
+		if (sizeof(*sreq) > (size_t)iov->iov[iov->i].iov_base) {
+			pr_info("0x%lx < %px\n", sizeof (*sreq), iov->iov[iov->i].iov_base);
 			break;
+		}
 
 		sreq = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
 					sreq_pci, &sreq_phys, sizeof(*sreq));
@@ -1346,7 +1399,7 @@ static void epf_vnet_ep_roce_tx_handler(struct work_struct *work)
 		pr_info("ep: roce tx: opcode %d\n", ioread8(&sreq->opcode));
 		switch (ioread8(&sreq->opcode)) {
 		case VIRTIO_IB_WR_SEND:
-			err = epf_vnet_roce_handle_ep_send_wr(vnet, sreq);
+			err = epf_vnet_roce_handle_ep_send_wr(vnet, vqn, sreq, sreq_pci);
 			if (err) {
 				pr_err("failed to process send work request: %d\n",
 				       err);
@@ -1367,6 +1420,8 @@ static void epf_vnet_ep_roce_tx_handler(struct work_struct *work)
 
 		pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no,
 				   sreq_phys, sreq, sizeof(*sreq));
+
+		epf_virtio_iov_complete(evio, vqn, head, vringh_kiov_length(iov));
 	}
 }
 
