@@ -1352,6 +1352,7 @@ epf_vnet_roce_handle_ep_send_wr(struct epf_vnet *vnet, u32 vqn,
 	struct pci_epf *epf = vnet->evio.epf;
 	int err = 0;
 	struct epf_vnet_rdma_qp *src_qp;
+	u32 src_qpn;
 
 	if (ioread8(&sreq->send_flags) & VIRTIO_IB_SEND_INLINE) {
 		pr_info("inline data is not supported\n");
@@ -1359,11 +1360,13 @@ epf_vnet_roce_handle_ep_send_wr(struct epf_vnet *vnet, u32 vqn,
 	}
 
 	nsge = ioread32(&sreq->num_sge);
+	src_qpn = (vqn - VNET_VIRTQUEUE_RDMA_SQ0) / 2;
 
-	src_qp = epf_vnet_lookup_qp(&vnet->ep_roce, (vqn - VNET_VIRTQUEUE_RDMA_SQ0) / 2);
+	pr_info("src_qpn %d\n", src_qpn);
+	src_qp = epf_vnet_lookup_qp(&vnet->ep_roce, src_qpn);
 	if (!src_qp) {
 		err = -EINVAL;
-		pr_err("failed to lookup qp\n");
+		pr_err("%d: failed to lookup qp\n", __LINE__);
 		goto err_out;
 	}
 
@@ -1495,7 +1498,7 @@ epf_vnet_roce_handle_ep_send_wr(struct epf_vnet *vnet, u32 vqn,
 
 			memcpy_fromio(dst, src, src_sge.length);
 
-			vringh_complete_kern(dst_vrh, head, vringh_kiov_length(iov));
+			vringh_complete_kern(dst_vrh, head, sizeof(rreq));
 		}
 
 		pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, src_phys, src,
@@ -1573,7 +1576,7 @@ epf_vnet_roce_handle_ep_send_wr(struct epf_vnet *vnet, u32 vqn,
 
 			dst_qp = epf_vnet_lookup_qp(&vnet->vdev_roce, dst_qpn);
 			if (!dst_qp) {
-				pr_err("failed to lookup qp\n");
+				pr_err("%d: failed to lookup qp\n", __LINE__);
 				err = -EINVAL;
 				goto err_out;
 			}
@@ -1707,7 +1710,7 @@ static void epf_vnet_ep_roce_tx_handler(struct work_struct *work)
 			       sreq_tmp.opcode);
 		}
 
-		epf_virtio_iov_complete(evio, vqn, head, vringh_kiov_length(iov));
+		epf_virtio_iov_complete(evio, vqn, head, sizeof (*sreq) + sizeof (struct virtio_rdma_sge) * sreq_tmp.num_sge);
 	}
 }
 
@@ -2733,8 +2736,7 @@ static int epf_vnet_roce_tx_handler(struct epf_vnet *vnet, struct virtqueue *vq)
 		       sreq->opcode);
 	}
 
-	pr_info("complete kern size %ld\n", vringh_kiov_length(iov));
-	vringh_complete_kern(vrh, head, vringh_kiov_length(iov));
+	vringh_complete_kern(vrh, head, sizeof(*sreq) + sizeof(struct virtio_rdma_sge) * sreq->num_sge);
 
 	return 0;
 }
