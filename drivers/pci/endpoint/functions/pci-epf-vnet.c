@@ -667,8 +667,10 @@ static int epf_vnet_ep_handle_roce_query_device(struct epf_vnet *vnet,
 	len = wiov->iov[wiov->i].iov_len;
 	ack = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
 			       (u64)wiov->iov[wiov->i].iov_base, &phys, len);
-	if (IS_ERR(ack))
+	if (IS_ERR(ack)) {
+		pr_err("%s:%d\n", __func__, __LINE__);
 		return PTR_ERR(ack);
+	}
 
 	memcpy_toio(ack, &vnet->rdma_attr, sizeof(vnet->rdma_attr));
 
@@ -691,8 +693,10 @@ static int epf_vnet_ep_handle_roce_query_port(struct epf_vnet *vnet,
 	len = wiov->iov[wiov->i].iov_len;
 	ack = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
 			       (u64)wiov->iov[wiov->i].iov_base, &phys, len);
-	if (IS_ERR(ack))
+	if (IS_ERR(ack)) {
+		pr_err("%s:%d\n", __func__, __LINE__);
 		return PTR_ERR(ack);
+	}
 
 	iowrite32(EPF_VNET_ROCE_GID_TBL_LEN, &ack->gid_tbl_len);
 	//TODO remove magic number
@@ -719,8 +723,10 @@ static int epf_vnet_ep_handle_create_cq(struct epf_vnet *vnet,
 	clen = riov->iov[riov->i].iov_len;
 	cmd = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
 			       (u64)riov->iov[riov->i].iov_base, &cphys, clen);
-	if (IS_ERR(cmd))
+	if (IS_ERR(cmd)) {
+		pr_err("%s:%d\n", __func__, __LINE__);
 		return PTR_ERR(cmd);
+	}
 
 	alen = wiov->iov[wiov->i].iov_len;
 	ack = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
@@ -746,7 +752,7 @@ static int epf_vnet_ep_handle_create_cq(struct epf_vnet *vnet,
 	}
 
 	epf_virtio_vringh_reset(evio, cq->vqn);
-	pr_info("ep: create cq: %d\n", cq->vqn);
+	pr_info("ep: create cq: %d, vqn %d\n", cq->cqn, cq->vqn);
 
 	iowrite32(cq->cqn, &ack->cqn);
 
@@ -773,8 +779,10 @@ static int epf_vnet_ep_handle_destroy_cq(struct epf_vnet *vnet,
 	len = riov->iov[riov->i].iov_len;
 	cmd = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
 			       (u64)riov->iov[riov->i].iov_base, &phys, len);
-	if (IS_ERR(cmd))
+	if (IS_ERR(cmd)) {
+		pr_err("%s:%d\n", __func__, __LINE__);
 		return PTR_ERR(cmd);
+	}
 
 	cq = epf_vnet_lookup_cq(&vnet->ep_roce, ioread32(&cmd->cqn));
 	if (!cq) {
@@ -806,8 +814,10 @@ static int epf_vnet_ep_handle_create_pd(struct epf_vnet *vnet,
 	len = wiov->iov[wiov->i].iov_len;
 	ack = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
 			       (u64)wiov->iov[wiov->i].iov_base, &phys, len);
-	if (IS_ERR(ack))
+	if (IS_ERR(ack)) {
+		pr_err("%s:%d\n", __func__, __LINE__);
 		return PTR_ERR(ack);
+	}
 
 	iowrite32(vnet->ep_npd++, &ack->pdn);
 
@@ -846,8 +856,10 @@ static int epf_vnet_ep_handle_get_dma_mr(struct epf_vnet *vnet,
 	len = wiov->iov[wiov->i].iov_len;
 	ack = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
 			       (u64)wiov->iov[wiov->i].iov_base, &phys, len);
-	if (IS_ERR(ack))
+	if (IS_ERR(ack)) {
+		pr_err("%s:%d\n", __func__, __LINE__);
 		return PTR_ERR(ack);
+	}
 
 	iowrite32(mr->mrn, &ack->mrn);
 
@@ -874,8 +886,10 @@ static int epf_vnet_ep_handle_reg_user_mr(struct epf_vnet *vnet,
 	clen = riov->iov[riov->i].iov_len;
 	cmd = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
 			       (u64)riov->iov[riov->i].iov_base, &cphys, clen);
-	if (IS_ERR(cmd))
+	if (IS_ERR(cmd)) {
+		pr_err("%s:%d\n", __func__, __LINE__);
 		return PTR_ERR(cmd);
+	}
 
 	mr = epf_vnet_alloc_mr(&vnet->ep_roce);
 	if (!mr)
@@ -897,8 +911,10 @@ static int epf_vnet_ep_handle_reg_user_mr(struct epf_vnet *vnet,
 	alen = wiov->iov[wiov->i].iov_len;
 	ack = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
 			       (u64)wiov->iov[wiov->i].iov_base, &aphys, alen);
-	if (IS_ERR(ack))
+	if (IS_ERR(ack)) {
+		pr_err("%s:%d\n", __func__, __LINE__);
 		return PTR_ERR(ack);
+	}
 
 	if (cmd->access_flags & VIRTIO_IB_ACCESS_LOCAL_WRITE)
 		iowrite32(mr->mrn, &ack->lkey);
@@ -930,8 +946,10 @@ static int epf_vnet_ep_handle_dereg_mr(struct epf_vnet *vnet,
 	len = riov->iov[riov->i].iov_len;
 	cmd = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
 			       (u64)riov->iov[riov->i].iov_base, &phys, len);
-	if (IS_ERR(cmd))
+	if (IS_ERR(cmd)) {
+		pr_err("%s:%d\n", __func__, __LINE__);
 		return PTR_ERR(cmd);
+	}
 
 	mr = epf_vnet_lookup_mr(&vnet->ep_roce, ioread32(&cmd->mrn));
 	if (!mr) {
@@ -966,8 +984,10 @@ static int epf_vnet_ep_handle_create_qp(struct epf_vnet *vnet,
 	clen = riov->iov[riov->i].iov_len;
 	cmd = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
 			       (u64)riov->iov[riov->i].iov_base, &cphys, clen);
-	if (IS_ERR(cmd))
+	if (IS_ERR(cmd)) {
+		pr_err("%s:%d\n", __func__, __LINE__);
 		return PTR_ERR(cmd);
+	}
 
 	switch (ioread8(&cmd->qp_type)) {
 	case VIRTIO_IB_QPT_SMI:
@@ -1004,8 +1024,10 @@ static int epf_vnet_ep_handle_create_qp(struct epf_vnet *vnet,
 	alen = wiov->iov[wiov->i].iov_len;
 	ack = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
 			       (u64)wiov->iov[wiov->i].iov_base, &aphys, alen);
-	if (IS_ERR(ack))
+	if (IS_ERR(ack)) {
+		pr_err("%s:%d\n", __func__, __LINE__);
 		return PTR_ERR(ack);
+	}
 
 	epf_virtio_vringh_reset(evio, qp->svq);
 	epf_virtio_vringh_reset(evio, qp->rvq);
@@ -1047,13 +1069,15 @@ static int epf_vnet_ep_handle_destroy_qp(struct epf_vnet *vnet,
 	size_t len;
 	phys_addr_t phys;
 	struct epf_vnet_rdma_qp *qp;
-	struct epf_virtio *evio = &vnet->evio;
+// 	struct epf_virtio *evio = &vnet->evio;
 
 	len = riov->iov[riov->i].iov_len;
 	cmd = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
 			       (u64)riov->iov[riov->i].iov_base, &phys, len);
-	if (IS_ERR(cmd))
+	if (IS_ERR(cmd)) {
+		pr_err("%s:%d\n", __func__, __LINE__);
 		return PTR_ERR(cmd);
+	}
 
 	qp = epf_vnet_lookup_qp(&vnet->ep_roce, ioread32(&cmd->qpn));
 	if (!qp)
@@ -1082,13 +1106,16 @@ static int epf_vnet_ep_handle_create_ah(struct epf_vnet *vnet,
 	clen = riov->iov[riov->i].iov_len;
 	cmd = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
 			       (u64)riov->iov[riov->i].iov_base, &cphys, clen);
-	if (IS_ERR(cmd))
+	if (IS_ERR(cmd)) {
+		pr_err("%s:%d\n", __func__, __LINE__);
 		return PTR_ERR(cmd);
+	}
 
 	alen = wiov->iov[wiov->i].iov_len;
 	ack = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
 			       (u64)wiov->iov[wiov->i].iov_base, &aphys, alen);
 	if (IS_ERR(ack)) {
+		pr_err("%s:%d\n", __func__, __LINE__);
 		err = PTR_ERR(ack);
 		goto unmap_cmd;
 	}
@@ -1126,8 +1153,10 @@ static int epf_vnet_ep_handle_roce_add_gid(struct epf_vnet *vnet,
 	len = riov->iov[riov->i].iov_len;
 	cmd = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
 			       (u64)riov->iov[riov->i].iov_base, &phys, len);
-	if (IS_ERR(cmd))
+	if (IS_ERR(cmd)) {
+		pr_err("%s:%d\n", __func__, __LINE__);
 		return PTR_ERR(cmd);
+	}
 
 	index = ioread16(&cmd->index);
 
@@ -1154,8 +1183,10 @@ static int epf_vnet_ep_handle_roce_del_gid(struct epf_vnet *vnet,
 	len = riov->iov[riov->i].iov_len;
 	cmd = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
 			       (u64)riov->iov[riov->i].iov_base, &phys, len);
-	if (IS_ERR(cmd))
+	if (IS_ERR(cmd)) {
+		pr_err("%s:%d\n", __func__, __LINE__);
 		return PTR_ERR(cmd);
+	}
 
 	index = ioread16(&cmd->index);
 
@@ -1229,6 +1260,7 @@ static void epf_vnet_ep_ctrl_handler(struct work_struct *work)
 	rvirt = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
 				 (u64)riov.iov[riov.i].iov_base, &rphys, rlen);
 	if (IS_ERR(rvirt)) {
+		pr_info("%s:%d\n", __func__, __LINE__);
 		err = PTR_ERR(rvirt);
 		goto err_out;
 	}
@@ -1237,6 +1269,7 @@ static void epf_vnet_ep_ctrl_handler(struct work_struct *work)
 	wvirt = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
 				 (u64)wiov.iov[wiov.i].iov_base, &wphys, wlen);
 	if (IS_ERR(wvirt)) {
+		pr_info("%s:%d\n", __func__, __LINE__);
 		err = PTR_ERR(wvirt);
 		goto err_unmap_command;
 	}
@@ -1287,11 +1320,12 @@ static void epf_vnet_ep_ctrl_handler(struct work_struct *work)
 		break;
 	}
 
-	vringh_complete_iomem(vrh, head, total_len);
 	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, rphys, rvirt,
 			   rlen);
 	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, wphys, wvirt,
 			   wlen);
+
+	vringh_complete_iomem(vrh, head, total_len);
 
 	vringh_kiov_cleanup(&riov);
 	vringh_kiov_cleanup(&wiov);
@@ -1314,6 +1348,7 @@ epf_vnet_roce_handle_ep_send_wr(struct epf_vnet *vnet, u32 vqn,
 	struct pci_epf *epf = vnet->evio.epf;
 	phys_addr_t sg_list_phys;
 	int err = 0;
+	struct epf_vnet_rdma_qp *src_qp;
 
 	if (ioread8(&sreq->send_flags) & VIRTIO_IB_SEND_INLINE) {
 		pr_info("inline data is not supported\n");
@@ -1321,18 +1356,34 @@ epf_vnet_roce_handle_ep_send_wr(struct epf_vnet *vnet, u32 vqn,
 	}
 
 	nsge = ioread32(&sreq->num_sge);
-	pr_info("ep send wr: nsge %d\n", nsge);
 
-	sreq->sg_list;
+	src_qp = epf_vnet_lookup_qp(&vnet->ep_roce, (vqn - VNET_VIRTQUEUE_RDMA_SQ0) / 2);
+	if (!src_qp) {
+		err = -EINVAL;
+		pr_err("failed to lookup qp\n");
+		goto err_out;
+	}
+
+	pr_info("ep send wr: nsge %d, [qp] src %d, dst %d\n", nsge, src_qp->qpn, ioread32(&sreq->ud.remote_qpn));
 
 	sg_list = pci_epc_map_addr(
 		epf->epc, epf->func_no, epf->vfunc_no,
 		sreq_pci + offsetof(struct virtio_rdma_sq_req, sg_list), &sg_list_phys,
 		sizeof(struct virtio_rdma_sge) * nsge);
+	if (IS_ERR(sg_list)) {
+		err = PTR_ERR(sg_list);
+		pr_err("Failed to map sg_list\n");
+		goto err_out;
+	}
 
 	for (int i = 0; i < nsge; i++) {
 		struct virtio_rdma_sge src_sge;
 		struct epf_vnet_rdma_mr *src_mr;
+		void __iomem *src;
+		void *dst;
+		phys_addr_t src_phys;
+		struct virtio_rdma_rq_req *rreq;
+		u32 dst_qpn = ioread32(&sreq->ud.remote_qpn);
 
 		memcpy_fromio(&src_sge, &sg_list[i], sizeof (src_sge));
 
@@ -1343,19 +1394,242 @@ epf_vnet_roce_handle_ep_send_wr(struct epf_vnet *vnet, u32 vqn,
 			break;
 		}
 
-		pr_info("src_mr->type %d\n", src_mr->type);
+		pr_info("ep: src_mr->type %d\n", src_mr->type);
 		switch(src_mr->type) {
 			case EPF_VNET_RDMA_MR_TYPE_DMA:
+				pr_err("not yet implemented\n");
 				break;
 			case EPF_VNET_RDMA_MR_TYPE_MR:
+
+				if (src_sge.length >= PAGE_SIZE) {
+					pr_err("copy acrossing page is not yet implemented\n");
+					break;
+				}
+
+				pr_info("ep: src address: 0x%llx (0x%llx)\n", src_mr->pages[0], src_mr->virt_addr);
+
+				src = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no, src_mr->pages[0],
+						&src_phys, src_sge.length);
+				if (IS_ERR(src)){
+					pr_info("%s:%d\n", __func__, __LINE__);
+					break;
+				}
+
 				break;
 			default:
 				err = -EINVAL;
-				goto out;
+				goto err_out;
+		}
+
+		if (1) {
+			struct epf_vnet_rdma_qp *dst_qp;
+			struct vringh *dst_vrh;
+			struct vringh_kiov *iov;
+			u16 head;
+			struct virtio_rdma_sge *dst_sge;
+			struct epf_vnet_rdma_mr *dst_mr;
+
+			pr_info("%s:%d remote_qpn %d\n", __func__, __LINE__, dst_qpn);
+			dst_qp = epf_vnet_lookup_qp(&vnet->vdev_roce, dst_qpn);
+			if (!dst_qp) {
+				pr_err("Failed to lookup qp: %d\n", dst_qpn);
+				return -EINVAL;
+			}
+
+			pr_info("%s:%d dst_qp->rvq %d\n", __func__, __LINE__, dst_qp->rvq);
+			dst_vrh = &vnet->vdev_vrhs[dst_qp->rvq];
+			iov = &vnet->vdev_iovs[dst_qp->rvq];
+
+			err = vringh_getdesc_kern(dst_vrh, iov, NULL, &head, GFP_KERNEL);
+			if (err < 0) {
+				pr_err("ep: failed to get desc for dest\n");
+				goto err_out;
+			}
+			if (!err) {
+				pr_err("ep: not found an entry(rcv)\n");
+				goto err_out;
+			}
+
+			rreq = phys_to_virt((phys_addr_t)iov->iov[iov->i].iov_base);
+
+			pr_info("recv nsge: %d\n", rreq->num_sge);
+			dst_sge = &rreq->sg_list[0];
+
+			dst_mr = epf_vnet_lookup_mr(&vnet->vdev_roce, dst_sge->lkey);
+			if (!dst_mr) {
+				pr_info("ep: invalid lkey found\n");
+				err = -EINVAL;
+				goto err_out;
+			}
+
+			pr_info("ep: dst_mr->type %d\n", dst_mr->type);
+			switch(dst_mr->type) {
+				case EPF_VNET_RDMA_MR_TYPE_DMA:
+					pr_err("ep: not yet implemented for mr type EPF_VNET_RDMA_MR_TYPE_DMA\n");
+					err = -EINVAL;
+					goto err_out;
+					break;
+				case EPF_VNET_RDMA_MR_TYPE_MR:
+					if (dst_sge->length >= PAGE_SIZE) {
+						pr_err("a copy acrossing pages is not yet implemented\n");
+						err = -ENOTSUPP;
+						goto err_out;
+					}
+
+					dst = phys_to_virt((phys_addr_t)dst_mr->pages[0]);
+					break;
+				default:
+					pr_err("invalid mr type found\n");
+					err = -EINVAL;
+					goto err_out;
+					break;
+			}
+
+			memcpy_fromio(dst, src, src_sge.length);
+
+			vringh_complete_kern(dst_vrh, head, vringh_kiov_length(iov));
+		}
+
+		pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, src_phys, src,
+				src_sge.length);
+
+		// completion for ep
+		if (0){
+			struct epf_vnet_rdma_cq *cq;
+			struct vringh_kiov *iov;
+			u16 head;
+			struct epf_virtio *evio = &vnet->evio;
+			struct virtio_rdma_cq_req __iomem *cqe;
+			struct virtio_rdma_cq_req cqe_tmp;
+			u64 cqe_pci;
+			phys_addr_t cqe_phys;
+
+			cq = epf_vnet_lookup_cq(&vnet->ep_roce, src_qp->scq);
+			if (!cq) {
+				pr_err("failed to lookup cq\n");
+				err = -EINVAL;
+				goto err_out;
+			}
+
+			iov = &vnet->rdev_iovs[cq->vqn];
+
+			err = epf_virtio_getdesc(evio, cq->vqn, NULL,
+					iov, &head);
+			if (err <= 0) {
+				pr_err("%s:%d epf_virtio_getdesc: %d\n",
+						__func__, __LINE__, err);
+				goto err_out;
+			}
+
+			if (iov->iov[iov->i].iov_len < sizeof (*cqe)) {
+				pr_err("not enough buffer size\n");
+				goto err_out;
+			}
+
+			cqe_pci = (u64)iov->iov[iov->i].iov_base;
+
+			cqe = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
+					cqe_pci, &cqe_phys, sizeof(*cqe));
+			if (IS_ERR(cqe)) {
+				pr_err("failed to map addr for cqe\n");
+				err = PTR_ERR(cqe);
+				goto err_out;
+			}
+
+
+			cqe_tmp.wr_id = ioread64(&sreq->wr_id);
+			cqe_tmp.status = VIRTIO_IB_WC_SUCCESS;
+			cqe_tmp.opcode = ioread8(&sreq->opcode);
+			cqe_tmp.byte_len = src_sge.length;
+			cqe_tmp.qp_num = src_qp->qpn;
+
+			memcpy_toio(cqe, &cqe_tmp, sizeof (cqe_tmp));
+
+			epf_virtio_iov_complete(evio, cq->vqn, head, vringh_kiov_length(iov));
+// 			epf_virtio_iov_complete(evio, cq->vqn, head, sizeof (*cqe));
+
+			pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, cqe_phys, cqe,
+					sizeof(*cqe));
+		}
+
+		// completion for vdev
+		{
+			struct virtio_rdma_cq_req *cqe;
+			struct epf_vnet_rdma_qp *dst_qp;
+			struct epf_vnet_rdma_cq *cq;
+			struct vringh_kiov *iov;
+			struct vringh *vrh;
+			u16 head;
+			struct virtqueue *cvq;
+
+			dst_qp = epf_vnet_lookup_qp(&vnet->vdev_roce, dst_qpn);
+			if (!dst_qp) {
+				pr_err("failed to lookup qp\n");
+				err = -EINVAL;
+				goto err_out;
+			}
+			pr_info("%s:%d cqn %d\n", __func__, __LINE__, dst_qp->rcq);
+
+			cq = epf_vnet_lookup_cq(&vnet->vdev_roce, dst_qp->rcq);
+			if (!cq) {
+				pr_err("invalid cq\n");
+				err = -EINVAL;
+				goto err_out;
+			}
+
+			vrh = &vnet->vdev_vrhs[cq->vqn];
+			iov = &vnet->vdev_iovs[cq->vqn];
+			cvq = vnet->vdev_vqs[cq->vqn];
+
+			pr_info("%s:%d cq->vqn %d\n", __func__, __LINE__, cq->vqn);
+			err = vringh_getdesc_kern(vrh, NULL, iov, &head, GFP_KERNEL);
+			if (err <= 0) {
+				pr_err("failed to get cq entry: %d\n", err);
+				goto err_out;
+			}
+			pr_info("%s:%d head %d\n", __func__, __LINE__, head);
+
+			if (iov->iov[iov->i].iov_len < sizeof (*cqe)) {
+				pr_err("not enough size\n");
+				err = -EINVAL;
+				goto err_out;
+			}
+
+			pr_info("%s:%d\n", __func__, __LINE__);
+// 			cqe = phys_to_virt((phys_addr_t)iov->iov[iov->i].iov_base);
+
+			cqe = cq->buf + (u64)iov->iov[iov->i].iov_base - cq->buf_phys;
+			pr_info("%s:%d virt 0x%px, phys 0x%llx\n", __func__, __LINE__, cqe,
+					(phys_addr_t)iov->iov[iov->i].iov_base);
+
+			cqe->wr_id = rreq->wr_id;
+			cqe->status = VIRTIO_IB_WC_SUCCESS;
+			cqe->opcode = VIRTIO_IB_WC_RECV;
+			cqe->byte_len = src_sge.length;
+			cqe->qp_num = dst_qp->qpn;
+
+			pr_info("%s:%d vdev wr_id %lld, status %d, opcode %d\n", __func__, __LINE__,
+					cqe->wr_id, cqe->status, cqe->opcode);
+
+			vringh_complete_kern(vrh, head, sizeof(*cqe));
+
+			pr_info("vring_interrupt: index %d\n", cvq->index);
+			vring_interrupt(0, cvq);
 		}
 	}
 
-out:
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, sg_list_phys,
+			sg_list, sizeof(struct virtio_rdma_sge) * nsge);
+
+	pr_info("%s:%d\n", __func__, __LINE__);
+
+	return 0;
+
+err_out:
+
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, sg_list_phys,
+			sg_list, sizeof(struct virtio_rdma_sge) * nsge);
+	pr_info("%s:%d\n", __func__, __LINE__);
 
 	return err;
 }
@@ -1395,6 +1669,11 @@ static void epf_vnet_ep_roce_tx_handler(struct work_struct *work)
 
 		sreq = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
 					sreq_pci, &sreq_phys, sizeof(*sreq));
+		if (IS_ERR(sreq)) {
+			pr_err("Failed to map sreq\n");
+			err = PTR_ERR(sreq);
+			break;
+		}
 
 		pr_info("ep: roce tx: opcode %d\n", ioread8(&sreq->opcode));
 		switch (ioread8(&sreq->opcode)) {
@@ -1496,7 +1775,7 @@ static int epf_vnet_vdev_handle_roce_create_cq(struct epf_vnet *vnet,
 	ack->cqn = cq->cqn;
 
 	vrh = &vnet->vdev_vrhs[cq->vqn];
-	pr_info("reset cq(%d)\n", cq->vqn);
+	pr_info("vdev: create cq: cqn %d, vqn %d\n", cq->cqn, cq->vqn);
 	vringh_reset_kern(vrh);
 
 	return 0;
@@ -1511,11 +1790,6 @@ static int epf_vnet_vdev_handle_roce_destroy_cq(struct epf_vnet *vnet,
 	struct vringh *vrh;
 
 	cmd = phys_to_virt((unsigned long)riov->iov[riov->i].iov_base);
-
-	cq = epf_vnet_lookup_cq(&vnet->vdev_roce, cmd->cqn);
-
-	vrh = &vnet->vdev_vrhs[cq->vqn];
-
 
 	return epf_vnet_dealloc_cq(&vnet->vdev_roce, cmd->cqn);
 }
@@ -1691,13 +1965,12 @@ static int epf_vnet_vdev_handle_roce_create_qp(struct epf_vnet *vnet,
 	ack = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
 
 	ack->qpn = qp->qpn;
+	pr_info("vdev: create qp %d\n", qp->qpn);
 
 	vrh = &vnet->vdev_vrhs[qp->svq];
 	vringh_reset_kern(vrh);
-	pr_info("%d last_avail_idx %d\n", qp->svq, vrh->last_avail_idx);
 	vrh = &vnet->vdev_vrhs[qp->rvq];
 	vringh_reset_kern(vrh);
-	pr_info("%d last_avail_idx %d\n", qp->rvq, vrh->last_avail_idx);
 
 	return 0;
 }
@@ -2190,6 +2463,10 @@ static int epf_vnet_roce_handle_vdev_send_wr(struct epf_vnet *vnet,
 			rreq = pci_epc_map_addr(epf->epc, epf->func_no,
 						epf->vfunc_no, rreq_pci,
 						&rreq_phys, sizeof(*rreq));
+			if (IS_ERR(rreq)) {
+				pr_err("faild to map rreq\n");
+				break;
+			}
 
 			num_sge = ioread32(&rreq->num_sge);
 			pr_info("rreq: num_sge: %d\n", num_sge);
@@ -2198,8 +2475,16 @@ static int epf_vnet_roce_handle_vdev_send_wr(struct epf_vnet *vnet,
 						   epf->vfunc_no, sg_list_pci,
 						   &sg_phys,
 						   sizeof(*sg_list) * num_sge);
+			if (IS_ERR(sg_list)) {
+				pr_err("Failed to map sg_list\n");
+				break;
+			}
 
 			memcpy_fromio(&dst_sge, sg_list, sizeof(dst_sge));
+
+			pci_epc_unmap_addr(epf->epc, epf->func_no,
+					   epf->vfunc_no, sg_phys, sg_list,
+					   sizeof(*sg_list) * num_sge);
 
 			pr_info("ep: lkey %d, addr 0x%llx, 0x%x\n",
 				dst_sge.lkey, dst_sge.addr, dst_sge.length);
@@ -2220,6 +2505,10 @@ static int epf_vnet_roce_handle_vdev_send_wr(struct epf_vnet *vnet,
 						epf->epc, epf->func_no,
 						epf->vfunc_no, dst_sge.addr,
 						&dst_phys, src_sge->length);
+					if (IS_ERR(dst)) {
+						pr_err("failed to map dst\n");
+						break;
+					}
 
 					memcpy_toio(dst, src, src_sge->length);
 
@@ -2240,8 +2529,10 @@ static int epf_vnet_roce_handle_vdev_send_wr(struct epf_vnet *vnet,
 
 					dst = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no, dst_mr->pages[0],
 							&dst_phys, src_sge->length);
-					if (IS_ERR(dst))
+					if (IS_ERR(dst)) {
+						pr_err("Failed to map dst\n");
 						break;
+					}
 
 					memcpy_toio(dst, src, src_sge->length);
 
@@ -2255,10 +2546,6 @@ static int epf_vnet_roce_handle_vdev_send_wr(struct epf_vnet *vnet,
 					break;
 				}
 			}
-
-			pci_epc_unmap_addr(epf->epc, epf->func_no,
-					   epf->vfunc_no, sg_phys, sg_list,
-					   sizeof(*sg_list) * num_sge);
 
 			{
 				struct virtio_rdma_cq_req cqe;
@@ -2307,6 +2594,10 @@ static int epf_vnet_roce_handle_vdev_send_wr(struct epf_vnet *vnet,
 				cqdst = pci_epc_map_addr(epf->epc, epf->func_no,
 							 epf->vfunc_no, cq_pci,
 							 &cq_phys, sizeof(cqe));
+				if (IS_ERR(cqdst)) {
+					pr_err("Failed to map cqdst\n");
+					break;
+				}
 
 				memcpy_toio(cqdst, &cqe, sizeof(cqe));
 
@@ -2373,9 +2664,8 @@ static int epf_vnet_roce_handle_vdev_send_wr(struct epf_vnet *vnet,
 
 			memcpy(buf, &cqe, sizeof(cqe));
 
-			asm volatile("dmb ish");
+			pr_info("scq_head %d\n", scq_head);
 			vringh_complete_kern(vrh, scq_head, sizeof(cqe));
-			asm volatile("dmb ish");
 #endif
 			pr_info("vring_interrupt: index %d\n", cvq->index);
 			vring_interrupt(0, cvq);
@@ -2436,6 +2726,7 @@ static int epf_vnet_roce_tx_handler(struct epf_vnet *vnet, struct virtqueue *vq)
 		       sreq->opcode);
 	}
 
+	pr_info("complete kern size %ld\n", vringh_kiov_length(iov));
 	vringh_complete_kern(vrh, head, vringh_kiov_length(iov));
 
 	return 0;
@@ -2732,6 +3023,9 @@ static int epf_vnet_setup_vdev(struct epf_vnet *vnet, struct device *parent)
 		kmalloc_array(nvq, sizeof(vnet->vdev_vrhs[0]), GFP_KERNEL);
 	if (!vnet->vdev_vrhs)
 		return -ENOMEM;
+
+// 	for(int i=0; i< nvq; i++)
+// 		pr_info("vq[%d] %px\n", i, &vnet->vdev_vrhs[i]);
 
 	vnet->vdev_iovs =
 		kmalloc_array(nvq, sizeof(vnet->vdev_iovs[0]), GFP_KERNEL);
