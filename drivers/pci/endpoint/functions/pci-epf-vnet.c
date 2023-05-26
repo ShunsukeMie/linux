@@ -881,8 +881,6 @@ static int epf_vnet_ep_handle_reg_user_mr(struct epf_vnet *vnet,
 	phys_addr_t aphys, cphys;
 	struct epf_vnet_rdma_mr *mr;
 
-	pr_info("%s:%d\n", __func__, __LINE__);
-
 	clen = riov->iov[riov->i].iov_len;
 	cmd = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
 			       (u64)riov->iov[riov->i].iov_base, &cphys, clen);
@@ -1260,7 +1258,7 @@ static void epf_vnet_ep_ctrl_handler(struct work_struct *work)
 	rvirt = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
 				 (u64)riov.iov[riov.i].iov_base, &rphys, rlen);
 	if (IS_ERR(rvirt)) {
-		pr_info("%s:%d\n", __func__, __LINE__);
+		pr_info("pci_epc_map failed for cmd range\n");
 		err = PTR_ERR(rvirt);
 		goto err_out;
 	}
@@ -1269,7 +1267,7 @@ static void epf_vnet_ep_ctrl_handler(struct work_struct *work)
 	wvirt = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
 				 (u64)wiov.iov[wiov.i].iov_base, &wphys, wlen);
 	if (IS_ERR(wvirt)) {
-		pr_info("%s:%d\n", __func__, __LINE__);
+		pr_info("pci_epc_map failed for ack range\n");
 		err = PTR_ERR(wvirt);
 		goto err_unmap_command;
 	}
@@ -1494,7 +1492,7 @@ epf_vnet_roce_handle_ep_send_wr(struct epf_vnet *vnet, u32 vqn,
 				src_sge.length);
 
 		// completion for ep
-		if (0){
+		if (1) {
 			struct epf_vnet_rdma_cq *cq;
 			struct vringh_kiov *iov;
 			u16 head;
@@ -1545,11 +1543,12 @@ epf_vnet_roce_handle_ep_send_wr(struct epf_vnet *vnet, u32 vqn,
 
 			memcpy_toio(cqe, &cqe_tmp, sizeof (cqe_tmp));
 
-			epf_virtio_iov_complete(evio, cq->vqn, head, vringh_kiov_length(iov));
-// 			epf_virtio_iov_complete(evio, cq->vqn, head, sizeof (*cqe));
+// 			epf_virtio_iov_complete(evio, cq->vqn, head, vringh_kiov_length(iov));
+			epf_virtio_iov_complete(evio, cq->vqn, head, sizeof (*cqe));
 
 			pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, cqe_phys, cqe,
 					sizeof(*cqe));
+			queue_work(vnet->task_wq, &vnet->raise_irq_work);
 		}
 
 		// completion for vdev
