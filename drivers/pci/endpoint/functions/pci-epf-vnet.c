@@ -1068,23 +1068,30 @@ static int epf_vnet_ep_handle_destroy_qp(struct epf_vnet *vnet,
 	phys_addr_t phys;
 	struct epf_vnet_rdma_qp *qp;
 // 	struct epf_virtio *evio = &vnet->evio;
+	u32 qpn;
+
+	pr_info("ep: destroy qp\n");
 
 	len = riov->iov[riov->i].iov_len;
 	cmd = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
 			       (u64)riov->iov[riov->i].iov_base, &phys, len);
 	if (IS_ERR(cmd)) {
-		pr_err("%s:%d\n", __func__, __LINE__);
+		pr_err("ep: failed to map command range for destry qp\n");
 		return PTR_ERR(cmd);
 	}
-
-	qp = epf_vnet_lookup_qp(&vnet->ep_roce, ioread32(&cmd->qpn));
-	if (!qp)
-		return -EINVAL;
-
-	epf_vnet_dealloc_qp(&vnet->ep_roce, ioread32(&cmd->qpn));
+	qpn = ioread32(&cmd->qpn);
 
 	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, phys, cmd,
 			   len);
+
+	pr_info("ep: destroy qp: qpn %d\n", qpn);
+
+	qp = epf_vnet_lookup_qp(&vnet->ep_roce, qpn);
+	if (!qp)
+		return -EINVAL;
+
+	epf_vnet_dealloc_qp(&vnet->ep_roce, qpn);
+
 
 	return 0;
 }
@@ -1342,9 +1349,7 @@ epf_vnet_roce_handle_ep_send_wr(struct epf_vnet *vnet, u32 vqn,
 				struct virtio_rdma_sq_req __iomem *sreq, u64 sreq_pci)
 {
 	u32 nsge;
-	struct virtio_rdma_sge __iomem *sg_list;
 	struct pci_epf *epf = vnet->evio.epf;
-	phys_addr_t sg_list_phys;
 	int err = 0;
 	struct epf_vnet_rdma_qp *src_qp;
 
@@ -1364,16 +1369,6 @@ epf_vnet_roce_handle_ep_send_wr(struct epf_vnet *vnet, u32 vqn,
 
 	pr_info("ep send wr: nsge %d, [qp] src %d, dst %d\n", nsge, src_qp->qpn, ioread32(&sreq->ud.remote_qpn));
 
-	sg_list = pci_epc_map_addr(
-		epf->epc, epf->func_no, epf->vfunc_no,
-		sreq_pci + offsetof(struct virtio_rdma_sq_req, sg_list), &sg_list_phys,
-		sizeof(struct virtio_rdma_sge) * nsge);
-	if (IS_ERR(sg_list)) {
-		err = PTR_ERR(sg_list);
-		pr_err("Failed to map sg_list\n");
-		goto err_out;
-	}
-
 	for (int i = 0; i < nsge; i++) {
 		struct virtio_rdma_sge src_sge;
 		struct epf_vnet_rdma_mr *src_mr;
@@ -1381,9 +1376,24 @@ epf_vnet_roce_handle_ep_send_wr(struct epf_vnet *vnet, u32 vqn,
 		void *dst;
 		phys_addr_t src_phys;
 		struct virtio_rdma_rq_req *rreq;
+		struct virtio_rdma_sge __iomem *sg_list;
+		phys_addr_t sg_list_phys;
 		u32 dst_qpn = ioread32(&sreq->ud.remote_qpn);
 
+		sg_list = pci_epc_map_addr(
+				epf->epc, epf->func_no, epf->vfunc_no,
+				sreq_pci + offsetof(struct virtio_rdma_sq_req, sg_list), &sg_list_phys,
+				sizeof(struct virtio_rdma_sge) * nsge);
+		if (IS_ERR(sg_list)) {
+			err = PTR_ERR(sg_list);
+			pr_err("Failed to map sg_list\n");
+			goto err_out;
+		}
+
 		memcpy_fromio(&src_sge, &sg_list[i], sizeof (src_sge));
+
+		pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, sg_list_phys,
+			sg_list, sizeof(struct virtio_rdma_sge) * nsge);
 
 		src_mr = epf_vnet_lookup_mr(&vnet->ep_roce, src_sge.lkey);
 		if (!src_mr) {
@@ -1617,17 +1627,12 @@ epf_vnet_roce_handle_ep_send_wr(struct epf_vnet *vnet, u32 vqn,
 		}
 	}
 
-	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, sg_list_phys,
-			sg_list, sizeof(struct virtio_rdma_sge) * nsge);
 
 	pr_info("%s:%d\n", __func__, __LINE__);
 
 	return 0;
 
 err_out:
-
-	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, sg_list_phys,
-			sg_list, sizeof(struct virtio_rdma_sge) * nsge);
 	pr_info("%s:%d\n", __func__, __LINE__);
 
 	return err;
@@ -1641,6 +1646,7 @@ static void epf_vnet_ep_roce_tx_handler(struct work_struct *work)
 	struct epf_virtio *evio = &vnet->evio;
 	struct pci_epf *epf = evio->epf;
 	struct virtio_rdma_sq_req __iomem *sreq;
+	struct virtio_rdma_sq_req sreq_tmp;
 	int err;
 
 	for (int i = 0; i < 3; i++) {
@@ -1674,10 +1680,15 @@ static void epf_vnet_ep_roce_tx_handler(struct work_struct *work)
 			break;
 		}
 
-		pr_info("ep: roce tx: opcode %d\n", ioread8(&sreq->opcode));
-		switch (ioread8(&sreq->opcode)) {
+		memcpy(&sreq_tmp, sreq, sizeof (*sreq));
+
+		pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no,
+				   sreq_phys, sreq, sizeof(*sreq));
+
+		pr_info("ep: roce tx: opcode %d\n", sreq_tmp.opcode);
+		switch (sreq_tmp.opcode) {
 		case VIRTIO_IB_WR_SEND:
-			err = epf_vnet_roce_handle_ep_send_wr(vnet, vqn, sreq, sreq_pci);
+			err = epf_vnet_roce_handle_ep_send_wr(vnet, vqn, &sreq_tmp, sreq_pci);
 			if (err) {
 				pr_err("failed to process send work request: %d\n",
 				       err);
@@ -1693,11 +1704,8 @@ static void epf_vnet_ep_roce_tx_handler(struct work_struct *work)
 			// 		break;
 		default:
 			pr_err("Found unsupported work request type %d\n",
-			       sreq->opcode);
+			       sreq_tmp.opcode);
 		}
-
-		pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no,
-				   sreq_phys, sreq, sizeof(*sreq));
 
 		epf_virtio_iov_complete(evio, vqn, head, vringh_kiov_length(iov));
 	}
