@@ -1917,8 +1917,24 @@ static int epf_vnet_vdev_handle_roce_dereg_mr(struct epf_vnet *vnet,
 					      struct vringh_kiov *wiov)
 {
 	struct virtio_rdma_cmd_dereg_mr *cmd;
+	struct epf_vnet_rdma_mr *mr;
 
 	cmd = phys_to_virt((unsigned long)riov->iov[riov->i].iov_base);
+
+	pr_info("vdev: dereg_mr mrn: %d\n", cmd->mrn);
+
+	mr = epf_vnet_lookup_mr(&vnet->vdev_roce, cmd->mrn);
+
+	switch(mr->type) {
+		case EPF_VNET_RDMA_MR_TYPE_MR:
+			break;
+		case EPF_VNET_RDMA_MR_TYPE_DMA:
+			kfree(mr->pages);
+			break;
+		default:
+			pr_err("found invalid mr type\n");
+			return -EINVAL;
+	}
 
 	return epf_vnet_dealloc_mr(&vnet->vdev_roce, cmd->mrn);
 }
