@@ -1663,6 +1663,7 @@ static void epf_vnet_ep_roce_tx_handler(struct work_struct *work)
 		err = epf_virtio_getdesc(evio, vqn, iov, NULL, &head);
 		if (!err)
 			continue;
+
 		if (err < 0) {
 			pr_err("err on epf_virtio_getdesc: %d\n", err);
 			break;
@@ -1692,12 +1693,9 @@ static void epf_vnet_ep_roce_tx_handler(struct work_struct *work)
 		switch (sreq_tmp.opcode) {
 		case VIRTIO_IB_WR_SEND:
 			err = epf_vnet_roce_handle_ep_send_wr(vnet, vqn, &sreq_tmp, sreq_pci);
-			if (err) {
-				pr_err("failed to process send work request: %d\n",
+			if (err)
+				pr_err("[%d] failed to process send work request: %d\n", i,
 				       err);
-				//TODO
-				continue;
-			}
 			break;
 			//TODO
 			// 	case VIRTIO_IB_WR_RDMA_WRITE:
@@ -2353,7 +2351,6 @@ static void epf_vnet_vdev_ctrl_handler(struct work_struct *work)
 		*ack = VIRTIO_NET_OK;
 		break;
 	case VIRTIO_NET_CTRL_ROCE:
-		pr_info("ctrl roce: %d\n", hdr->cmd);
 		if (ARRAY_SIZE(virtio_rdma_vdev_cmd_handler) < hdr->cmd) {
 			err = -EIO;
 			pr_debug("found invalid command\n");
