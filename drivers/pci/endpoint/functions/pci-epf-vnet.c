@@ -10,12 +10,69 @@
 #include <linux/virtio_pci.h>
 #include <linux/virtio_ring.h>
 #include <linux/dmaengine.h>
+#include <rdma/ib_verbs.h>
+#include <rdma/virtio_rdma_abi.h>
 
 #include "pci-epf-virtio.h"
 
-static int virtio_queue_size = 0x100;
+static int virtio_queue_size = 0x400;
 module_param(virtio_queue_size, int, 0444);
 MODULE_PARM_DESC(virtio_queue_size, "A length of virtqueue");
+
+enum epf_vnet_rdma_mr_type {
+	EPF_VNET_RDMA_MR_TYPE_DMA,
+	EPF_VNET_RDMA_MR_TYPE_MR,
+};
+
+struct epf_vnet_rdma_mr {
+	enum epf_vnet_rdma_mr_type type;
+	int mrn;
+	u64 virt_addr;
+	u64 length;
+	u32 npages;
+	u64 *pages;
+};
+
+struct epf_vnet_rdma_pd {
+	int pdn;
+};
+
+struct epf_vnet_rdma_qp {
+	u32 qpn;
+	u32 dest_qpn;
+	u32 svq, rvq;
+	u32 rcq, scq;
+	enum ib_qp_state state;
+	u8 type;
+};
+
+struct epf_vnet_rdma_cq {
+	u32 cqn;
+	u32 vqn;
+	void *buf;
+	u64 buf_phys;
+};
+
+struct epf_vnet_rdma {
+#define EPF_VNET_ROCE_GID_TBL_LEN 512
+	union ib_gid gid_tbl[EPF_VNET_ROCE_GID_TBL_LEN];
+
+#define EPF_VNET_RDMA_MAX_PD 32
+	struct epf_vnet_rdma_pd *pds[EPF_VNET_RDMA_MAX_PD];
+	struct kmem_cache *pd_slab;
+
+#define EPF_VNET_RDMA_MAX_MR 32
+	struct epf_vnet_rdma_mr *mrs[EPF_VNET_RDMA_MAX_MR];
+	struct kmem_cache *mr_slab;
+
+#define EPF_VNET_RDMA_MAX_QP 3
+	struct epf_vnet_rdma_qp *qps[EPF_VNET_RDMA_MAX_QP];
+	struct kmem_cache *qp_slab;
+
+#define EPF_VNET_RDMA_MAX_CQ 3
+	struct epf_vnet_rdma_cq *cqs[EPF_VNET_RDMA_MAX_QP];
+	struct kmem_cache *cq_slab;
+};
 
 struct epf_vnet {
 	/* virtio feature and configurations for virtio-net. It is commonly used
@@ -42,10 +99,39 @@ struct epf_vnet {
 	struct work_struct raise_irq_work, rx_work, tx_work;
 	struct work_struct vdev_ctrl_work, ep_ctrl_work;
 
+	/* for RDMA */
+	struct work_struct roce_rx_work;
+	struct work_struct ep_roce_tx_work;
+
 #define EPF_VNET_INIT_COMPLETE_VDEV BIT(0)
 #define EPF_VNET_INIT_COMPLETE_EP_FUNC BIT(1)
 	u8 initialized;
 	bool enable_edma;
+
+	struct epf_vnet_rdma vdev_roce, ep_roce;
+
+	unsigned nah;
+	unsigned ep_npd, ep_nah;
+
+#define EPF_VNET_RDMA_MAX_AH 32
+	struct virtio_rdma_ack_query_device rdma_attr;
+};
+
+enum {
+	VNET_VIRTQUEUE_RX,
+	VNET_VIRTQUEUE_TX,
+	VNET_VIRTQUEUE_CTRL,
+	VNET_VIRTQUEUE_RDMA_CQ0,
+	VNET_VIRTQUEUE_RDMA_CQ1,
+	VNET_VIRTQUEUE_RDMA_CQ2,
+	VNET_VIRTQUEUE_RDMA_SQ0, // SGI
+	VNET_VIRTQUEUE_RDMA_RQ0,
+	VNET_VIRTQUEUE_RDMA_SQ1, // GSI
+	VNET_VIRTQUEUE_RDMA_RQ1,
+	VNET_VIRTQUEUE_RDMA_SQ2, // for user
+	VNET_VIRTQUEUE_RDMA_RQ2,
+
+	VNET_VIRTQUEUE_NUM,
 };
 
 static inline struct epf_vnet *vdev_to_vnet(struct virtio_device *vdev)
@@ -53,11 +139,240 @@ static inline struct epf_vnet *vdev_to_vnet(struct virtio_device *vdev)
 	return container_of(vdev, struct epf_vnet, vdev);
 }
 
+/* TODO This nvq is fixed value so I can use cache */
 static u16 epf_vnet_get_nvq(struct epf_vnet *vnet)
 {
-	/* tx and rx queue pair and control queue. */
-	return vnet->vnet_cfg.max_virtqueue_pairs * 2 +
-	       !!(vnet->features & BIT(VIRTIO_NET_F_CTRL_VQ));
+	u16 nvq;
+
+	nvq = vnet->vnet_cfg.max_virtqueue_pairs * 2;
+
+	if (vnet->features & BIT(VIRTIO_NET_F_CTRL_VQ))
+		nvq++;
+
+	if (vnet->features & BIT(VIRTIO_NET_F_ROCE)) {
+		nvq += vnet->vnet_cfg.max_rdma_cqs;
+		nvq += vnet->vnet_cfg.max_rdma_qps * 2;
+	}
+
+	return nvq;
+}
+
+static int epf_vnet_rdma_init_pd(struct epf_vnet_rdma_pd *pd)
+{
+	return 0;
+}
+
+static struct epf_vnet_rdma_pd *epf_vnet_alloc_pd(struct epf_vnet_rdma *rdma)
+{
+	struct epf_vnet_rdma_pd *pd;
+
+	for (int i = 0; i < EPF_VNET_RDMA_MAX_PD; i++) {
+		if (rdma->pds[i])
+			continue;
+
+		pd = kmem_cache_alloc(rdma->pd_slab, GFP_KERNEL);
+
+		rdma->pds[i] = pd;
+		pd->pdn = i;
+
+		return pd;
+	}
+
+	return NULL;
+}
+
+static int epf_vnet_dealloc_pd(struct epf_vnet_rdma *rdma, int pdi)
+{
+	if (pdi >= EPF_VNET_RDMA_MAX_PD)
+		return -EINVAL;
+
+	if (!rdma->pds[pdi])
+		return -EINVAL;
+
+	kmem_cache_free(rdma->pd_slab, rdma->pds[pdi]);
+	rdma->pds[pdi] = NULL;
+
+	return 0;
+}
+
+static struct epf_vnet_rdma_pd *
+epf_vnet_rdma_lookup_pd(struct epf_vnet_rdma *rdma, int index)
+{
+	return index < EPF_VNET_RDMA_MAX_PD ? rdma->pds[index] : NULL;
+}
+
+static struct epf_vnet_rdma_mr *epf_vnet_alloc_mr(struct epf_vnet_rdma *rdma)
+{
+	struct epf_vnet_rdma_mr *mr;
+
+	for (int i = 0; i < EPF_VNET_RDMA_MAX_MR; i++) {
+		if (rdma->mrs[i])
+			continue;
+
+		mr = kmem_cache_alloc(rdma->mr_slab, GFP_KERNEL);
+
+		mr->mrn = i;
+		rdma->mrs[i] = mr;
+
+		return mr;
+	}
+
+	return NULL;
+}
+
+static int epf_vnet_dealloc_mr(struct epf_vnet_rdma *rdma, int index)
+{
+	if (index >= EPF_VNET_RDMA_MAX_MR)
+		return -EINVAL;
+
+	if (!rdma->mrs[index])
+		return -EINVAL;
+
+	kmem_cache_free(rdma->mr_slab, rdma->mrs[index]);
+
+	rdma->mrs[index] = NULL;
+
+	return 0;
+}
+
+static struct epf_vnet_rdma_mr *epf_vnet_lookup_mr(struct epf_vnet_rdma *rdma,
+						   int index)
+{
+	return index < EPF_VNET_RDMA_MAX_MR ? rdma->mrs[index] : NULL;
+}
+
+static struct epf_vnet_rdma_qp *epf_vnet_alloc_qp(struct epf_vnet_rdma *rdma)
+{
+	struct epf_vnet_rdma_qp *qp;
+
+	for (int i = 0; i < EPF_VNET_RDMA_MAX_QP; i++) {
+		if (rdma->qps[i])
+			continue;
+
+		qp = kmem_cache_alloc(rdma->qp_slab, GFP_KERNEL);
+
+		rdma->qps[i] = qp;
+		qp->qpn = i;
+
+		return qp;
+	}
+
+	return NULL;
+}
+
+static int epf_vnet_dealloc_qp(struct epf_vnet_rdma *rdma, int qpi)
+{
+	if (qpi >= EPF_VNET_RDMA_MAX_QP)
+		return -EINVAL;
+
+	if (!rdma->qps[qpi])
+		return -EINVAL;
+
+	kmem_cache_free(rdma->qp_slab, rdma->qps[qpi]);
+	rdma->qps[qpi] = NULL;
+
+	return 0;
+}
+
+static struct epf_vnet_rdma_qp *epf_vnet_lookup_qp(struct epf_vnet_rdma *rdma,
+						   int index)
+{
+	return index < EPF_VNET_RDMA_MAX_QP ? rdma->qps[index] : NULL;
+}
+
+static struct epf_vnet_rdma_cq *epf_vnet_alloc_cq(struct epf_vnet_rdma *rdma)
+{
+	struct epf_vnet_rdma_cq *cq;
+
+	for (int i = 0; i < EPF_VNET_RDMA_MAX_CQ; i++) {
+		if (rdma->cqs[i])
+			continue;
+
+		cq = kmem_cache_alloc(rdma->cq_slab, GFP_KERNEL);
+
+		rdma->cqs[i] = cq;
+		cq->cqn = i;
+		cq->vqn = VNET_VIRTQUEUE_RDMA_CQ0 + i;
+
+		return cq;
+	}
+
+	return NULL;
+}
+
+static int epf_vnet_dealloc_cq(struct epf_vnet_rdma *rdma, int index)
+{
+	if (index >= EPF_VNET_RDMA_MAX_CQ)
+		return -EINVAL;
+
+	if (!rdma->cqs[index])
+		return -EINVAL;
+
+	kmem_cache_free(rdma->cq_slab, rdma->cqs[index]);
+	rdma->cqs[index] = NULL;
+
+	return 0;
+}
+
+static struct epf_vnet_rdma_cq *epf_vnet_lookup_cq(struct epf_vnet_rdma *rdma,
+						   int index)
+{
+	return index < EPF_VNET_RDMA_MAX_CQ ? rdma->cqs[index] : NULL;
+}
+
+static int epf_vnet_init_rdma(struct device *dev, struct epf_vnet_rdma *rdma,
+			      const char *base)
+{
+	char *pd_name, *mr_name, *qp_name, *cq_name;
+	struct epf_vnet_rdma_qp *qp;
+
+	pd_name = devm_kasprintf(dev, GFP_KERNEL, "epf-vnet-rdma-%s-pd", base);
+	mr_name = devm_kasprintf(dev, GFP_KERNEL, "epf-vnet-rdma-%s-mr", base);
+	qp_name = devm_kasprintf(dev, GFP_KERNEL, "epf-vnet-rdma-%s-qp", base);
+	cq_name = devm_kasprintf(dev, GFP_KERNEL, "epf-vnet-rdma-%s-cq", base);
+
+	rdma->pd_slab = kmem_cache_create(
+		pd_name, sizeof(struct epf_vnet_rdma_pd), 0, 0, NULL);
+	if (IS_ERR(rdma->pd_slab))
+		return PTR_ERR(rdma->pd_slab);
+
+	rdma->mr_slab = kmem_cache_create(
+		mr_name, sizeof(struct epf_vnet_rdma_mr), 0, 0, NULL);
+	if (IS_ERR(rdma->mr_slab))
+		return PTR_ERR(rdma->mr_slab);
+
+	rdma->qp_slab = kmem_cache_create(
+		qp_name, sizeof(struct epf_vnet_rdma_qp), 0, 0, NULL);
+	if (IS_ERR(rdma->qp_slab))
+		return PTR_ERR(rdma->qp_slab);
+
+	rdma->cq_slab = kmem_cache_create(
+		cq_name, sizeof(struct epf_vnet_rdma_cq), 0, 0, NULL);
+	if (IS_ERR(rdma->cq_slab))
+		return PTR_ERR(rdma->cq_slab);
+
+	devm_kfree(dev, pd_name);
+	devm_kfree(dev, mr_name);
+	devm_kfree(dev, qp_name);
+	devm_kfree(dev, cq_name);
+
+	// QP for SMI
+	qp = epf_vnet_alloc_qp(rdma);
+	if (!qp && qp->qpn != 0)
+		return -ENOMEM;
+
+	qp->svq = VNET_VIRTQUEUE_RDMA_SQ0;
+	qp->rvq = VNET_VIRTQUEUE_RDMA_RQ0;
+
+	// QP for GSI
+	qp = epf_vnet_alloc_qp(rdma);
+	if (!qp && qp->qpn != 1)
+		return -ENOMEM;
+
+	qp->svq = VNET_VIRTQUEUE_RDMA_SQ1;
+	qp->rvq = VNET_VIRTQUEUE_RDMA_RQ1;
+
+	return 0;
 }
 
 static void epf_vnet_qnotify_callback(void *param)
@@ -66,6 +381,7 @@ static void epf_vnet_qnotify_callback(void *param)
 
 	queue_work(vnet->task_wq, &vnet->rx_work);
 	queue_work(vnet->task_wq, &vnet->ep_ctrl_work);
+	queue_work(vnet->task_wq, &vnet->ep_roce_tx_work);
 }
 
 static void epf_vnet_vdev_announce_linkup(struct epf_vnet *vnet);
@@ -145,7 +461,8 @@ static int epf_vnet_setup_ep_func(struct epf_vnet *vnet, struct pci_epf *epf)
 	evio->ic_callback = epf_vnet_ep_init_complete;
 	evio->ic_param = vnet;
 
-	err = epf_virtio_init(evio, &epf_vnet_pci_header, 0);
+	err = epf_virtio_init(evio, &epf_vnet_pci_header,
+			      sizeof(vnet->vnet_cfg));
 	if (err)
 		goto err_cleanup_kiov;
 
@@ -166,12 +483,6 @@ err_virtio_final:
 static void epf_vnet_cleanup_ep_func(struct epf_vnet *vnet)
 {
 }
-
-enum {
-	VNET_VIRTQUEUE_RX,
-	VNET_VIRTQUEUE_TX,
-	VNET_VIRTQUEUE_CTRL,
-};
 
 struct epf_vnet_dma_done_param {
 	struct epf_vnet *vnet;
@@ -349,6 +660,661 @@ static void epf_vnet_tx_handler(struct work_struct *work)
 	} while (ret > 0);
 }
 
+static int epf_vnet_ep_handle_roce_query_device(struct epf_vnet *vnet,
+						struct vringh_kiov *riov,
+						struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_ack_query_device *ack;
+	struct epf_virtio *evio = &vnet->evio;
+	struct pci_epf *epf = evio->epf;
+	size_t len;
+	phys_addr_t phys;
+
+	len = wiov->iov[wiov->i].iov_len;
+	ack = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
+			       (u64)wiov->iov[wiov->i].iov_base, &phys, len);
+	if (IS_ERR(ack)) {
+		pr_err("%s:%d\n", __func__, __LINE__);
+		return PTR_ERR(ack);
+	}
+
+	memcpy_toio(ack, &vnet->rdma_attr, sizeof(vnet->rdma_attr));
+
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, phys, ack,
+			   len);
+
+	return 0;
+}
+
+static int epf_vnet_ep_handle_roce_query_port(struct epf_vnet *vnet,
+					      struct vringh_kiov *riov,
+					      struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_ack_query_port *ack;
+	struct epf_virtio *evio = &vnet->evio;
+	struct pci_epf *epf = evio->epf;
+	size_t len;
+	phys_addr_t phys;
+
+	len = wiov->iov[wiov->i].iov_len;
+	ack = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
+			       (u64)wiov->iov[wiov->i].iov_base, &phys, len);
+	if (IS_ERR(ack)) {
+		pr_err("%s:%d\n", __func__, __LINE__);
+		return PTR_ERR(ack);
+	}
+
+	iowrite32(EPF_VNET_ROCE_GID_TBL_LEN, &ack->gid_tbl_len);
+	//TODO remove magic number
+	iowrite32(0x800000, &ack->max_msg_sz);
+
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, phys, ack,
+			   len);
+	return 0;
+}
+
+static int epf_vnet_ep_handle_create_cq(struct epf_vnet *vnet,
+					struct vringh_kiov *riov,
+					struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_cmd_create_cq *cmd;
+	struct virtio_rdma_ack_create_cq *ack;
+	struct epf_virtio *evio = &vnet->evio;
+	struct pci_epf *epf = evio->epf;
+	size_t clen, alen;
+	int err = 0;
+	phys_addr_t cphys, aphys;
+	struct epf_vnet_rdma_cq *cq;
+
+	clen = riov->iov[riov->i].iov_len;
+	cmd = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
+			       (u64)riov->iov[riov->i].iov_base, &cphys, clen);
+	if (IS_ERR(cmd)) {
+		pr_err("%s:%d\n", __func__, __LINE__);
+		return PTR_ERR(cmd);
+	}
+
+	alen = wiov->iov[wiov->i].iov_len;
+	ack = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
+			       (u64)wiov->iov[wiov->i].iov_base, &aphys, alen);
+	if (IS_ERR(ack)) {
+		err = PTR_ERR(ack);
+		pr_err("failed to map for cq\n");
+		goto unmap_cmd;
+	}
+
+	if (ioread32(&cmd->cqe) > virtio_queue_size) {
+		err = -EINVAL;
+		pr_err("invalid size for cq: %d > %d\n", ioread32(&cmd->cqe),
+		       virtio_queue_size);
+		goto unmap_ack;
+	}
+
+	cq = epf_vnet_alloc_cq(&vnet->ep_roce);
+	if (!cq) {
+		err = -ENOSPC;
+		pr_err("Failed to allocate CQ\n");
+		goto unmap_ack;
+	}
+
+	epf_virtio_vringh_reset(evio, cq->vqn);
+
+	iowrite32(cq->cqn, &ack->cqn);
+
+unmap_ack:
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, aphys, ack,
+			   alen);
+unmap_cmd:
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, cphys, cmd,
+			   clen);
+	return err;
+}
+
+static int epf_vnet_ep_handle_destroy_cq(struct epf_vnet *vnet,
+					 struct vringh_kiov *riov,
+					 struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_cmd_destroy_cq *cmd;
+	struct pci_epf *epf = vnet->evio.epf;
+	phys_addr_t phys;
+	size_t len;
+	struct epf_vnet_rdma_cq *cq;
+	int err = 0;
+
+	len = riov->iov[riov->i].iov_len;
+	cmd = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
+			       (u64)riov->iov[riov->i].iov_base, &phys, len);
+	if (IS_ERR(cmd)) {
+		pr_err("%s:%d\n", __func__, __LINE__);
+		return PTR_ERR(cmd);
+	}
+
+	cq = epf_vnet_lookup_cq(&vnet->ep_roce, ioread32(&cmd->cqn));
+	if (!cq) {
+		err = -EINVAL;
+		goto out;
+	}
+
+	epf_virtio_vringh_reset(&vnet->evio, cq->vqn);
+
+	epf_vnet_dealloc_cq(&vnet->ep_roce, ioread32(&cmd->cqn));
+
+out:
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, phys, cmd,
+			   len);
+
+	return err;
+}
+
+static int epf_vnet_ep_handle_create_pd(struct epf_vnet *vnet,
+					struct vringh_kiov *riov,
+					struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_ack_create_pd *ack;
+	struct epf_virtio *evio = &vnet->evio;
+	struct pci_epf *epf = evio->epf;
+	size_t len;
+	phys_addr_t phys;
+
+	len = wiov->iov[wiov->i].iov_len;
+	ack = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
+			       (u64)wiov->iov[wiov->i].iov_base, &phys, len);
+	if (IS_ERR(ack)) {
+		pr_err("%s:%d\n", __func__, __LINE__);
+		return PTR_ERR(ack);
+	}
+
+	iowrite32(vnet->ep_npd++, &ack->pdn);
+
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, phys, ack,
+			   len);
+
+	return 0;
+}
+
+static int epf_vnet_ep_handle_destroy_pd(struct epf_vnet *vnet,
+					 struct vringh_kiov *riov,
+					 struct vringh_kiov *wiov)
+{
+	vnet->ep_npd--;
+	return 0;
+}
+
+static int epf_vnet_ep_handle_get_dma_mr(struct epf_vnet *vnet,
+					 struct vringh_kiov *riov,
+					 struct vringh_kiov *wiov)
+{
+	// 	struct virtio_rdma_cmd_get_dma_mr *cmd;
+	struct virtio_rdma_ack_get_dma_mr *ack;
+	struct epf_virtio *evio = &vnet->evio;
+	struct pci_epf *epf = evio->epf;
+	size_t len;
+	phys_addr_t phys;
+	struct epf_vnet_rdma_mr *mr;
+
+	mr = epf_vnet_alloc_mr(&vnet->ep_roce);
+	if (!mr)
+		return -EIO;
+
+	mr->type = EPF_VNET_RDMA_MR_TYPE_DMA;
+
+	len = wiov->iov[wiov->i].iov_len;
+	ack = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
+			       (u64)wiov->iov[wiov->i].iov_base, &phys, len);
+	if (IS_ERR(ack)) {
+		pr_err("%s:%d\n", __func__, __LINE__);
+		return PTR_ERR(ack);
+	}
+
+	iowrite32(mr->mrn, &ack->mrn);
+
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, phys, ack,
+			   len);
+
+	return 0;
+}
+
+static int epf_vnet_ep_handle_reg_user_mr(struct epf_vnet *vnet,
+					  struct vringh_kiov *riov,
+					  struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_cmd_reg_user_mr *cmd;
+	struct virtio_rdma_ack_reg_user_mr *ack;
+	struct epf_virtio *evio = &vnet->evio;
+	struct pci_epf *epf = evio->epf;
+	size_t clen, alen;
+	phys_addr_t aphys, cphys;
+	struct epf_vnet_rdma_mr *mr;
+
+	clen = riov->iov[riov->i].iov_len;
+	cmd = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
+			       (u64)riov->iov[riov->i].iov_base, &cphys, clen);
+	if (IS_ERR(cmd)) {
+		pr_err("%s:%d\n", __func__, __LINE__);
+		return PTR_ERR(cmd);
+	}
+
+	mr = epf_vnet_alloc_mr(&vnet->ep_roce);
+	if (!mr)
+		return -EIO;
+
+	mr->type = EPF_VNET_RDMA_MR_TYPE_MR;
+
+	mr->virt_addr = ioread64(&cmd->virt_addr);
+	mr->length = ioread64(&cmd->length);
+	mr->npages = ioread32(&cmd->npages);
+	mr->pages =
+		kmalloc_array(cmd->npages, sizeof(mr->pages[0]), GFP_KERNEL);
+
+	memcpy_fromio(mr->pages, cmd->pages, sizeof(mr->pages[0]) * mr->npages);
+
+	alen = wiov->iov[wiov->i].iov_len;
+	ack = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
+			       (u64)wiov->iov[wiov->i].iov_base, &aphys, alen);
+	if (IS_ERR(ack)) {
+		pr_err("%s:%d\n", __func__, __LINE__);
+		return PTR_ERR(ack);
+	}
+
+	if (cmd->access_flags & VIRTIO_IB_ACCESS_LOCAL_WRITE)
+		iowrite32(mr->mrn, &ack->lkey);
+
+	if (cmd->access_flags & VIRTIO_IB_ACCESS_REMOTE_WRITE ||
+	    cmd->access_flags & VIRTIO_IB_ACCESS_REMOTE_READ)
+		iowrite32(mr->mrn, &ack->rkey);
+
+	iowrite32(mr->mrn, &ack->mrn);
+
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, cphys, cmd,
+			   clen);
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, aphys, ack,
+			   alen);
+	return 0;
+}
+
+static int epf_vnet_ep_handle_dereg_mr(struct epf_vnet *vnet,
+				       struct vringh_kiov *riov,
+				       struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_cmd_dereg_mr *cmd;
+	size_t len;
+	phys_addr_t phys;
+	struct pci_epf *epf = vnet->evio.epf;
+	struct epf_vnet_rdma_mr *mr;
+	int err = 0;
+
+	len = riov->iov[riov->i].iov_len;
+	cmd = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
+			       (u64)riov->iov[riov->i].iov_base, &phys, len);
+	if (IS_ERR(cmd)) {
+		pr_err("%s:%d\n", __func__, __LINE__);
+		return PTR_ERR(cmd);
+	}
+
+	mr = epf_vnet_lookup_mr(&vnet->ep_roce, ioread32(&cmd->mrn));
+	if (!mr) {
+		pr_err("mrn %d is not found\n", ioread32(&cmd->mrn));
+		err = -EINVAL;
+		goto out;
+	}
+
+	kfree(mr->pages);
+
+	epf_vnet_dealloc_mr(&vnet->ep_roce, ioread32(&cmd->mrn));
+
+out:
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, phys, cmd,
+			   len);
+
+	return 0;
+}
+
+static int epf_vnet_ep_handle_create_qp(struct epf_vnet *vnet,
+					struct vringh_kiov *riov,
+					struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_cmd_create_qp __iomem *cmd;
+	struct virtio_rdma_ack_create_qp __iomem *ack;
+	struct epf_virtio *evio = &vnet->evio;
+	struct pci_epf *epf = evio->epf;
+	size_t clen, alen;
+	phys_addr_t aphys, cphys;
+	struct epf_vnet_rdma_qp *qp;
+	u8 qp_type;
+
+	clen = riov->iov[riov->i].iov_len;
+	cmd = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
+			       (u64)riov->iov[riov->i].iov_base, &cphys, clen);
+	if (IS_ERR(cmd)) {
+		pr_err("%s:%d\n", __func__, __LINE__);
+		return PTR_ERR(cmd);
+	}
+
+	qp_type = ioread8(&cmd->qp_type);
+
+	switch (qp_type) {
+	case VIRTIO_IB_QPT_SMI:
+		qp = epf_vnet_lookup_qp(&vnet->ep_roce, 0);
+		if (!qp)
+			return -EIO;
+		qp->type = qp_type;
+		break;
+	case VIRTIO_IB_QPT_GSI:
+		qp = epf_vnet_lookup_qp(&vnet->ep_roce, 1);
+		if (!qp)
+			return -EIO;
+		qp->type = qp_type;
+		break;
+	case VIRTIO_IB_QPT_UD:
+	case VIRTIO_IB_QPT_RC:
+		qp = epf_vnet_alloc_qp(&vnet->ep_roce);
+		if (!qp)
+			return -EIO;
+		qp->type = qp_type;
+
+		//TODO check
+		qp->svq = VNET_VIRTQUEUE_RDMA_SQ0 + qp->qpn * 2;
+		qp->rvq = VNET_VIRTQUEUE_RDMA_SQ0 + qp->qpn * 2 + 1;
+		break;
+	default:
+		return -ENOTSUPP;
+	}
+
+	qp->scq = ioread32(&cmd->send_cqn);
+	qp->rcq = ioread32(&cmd->recv_cqn);
+
+	if (qp->rvq >= VNET_VIRTQUEUE_NUM) {
+		epf_vnet_dealloc_qp(&vnet->ep_roce, qp->qpn);
+		return -EINVAL;
+	}
+
+	alen = wiov->iov[wiov->i].iov_len;
+	ack = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
+			       (u64)wiov->iov[wiov->i].iov_base, &aphys, alen);
+	if (IS_ERR(ack)) {
+		pr_err("%s:%d\n", __func__, __LINE__);
+		return PTR_ERR(ack);
+	}
+
+	epf_virtio_vringh_reset(evio, qp->svq);
+	epf_virtio_vringh_reset(evio, qp->rvq);
+
+	iowrite32(qp->qpn, ack);
+
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, cphys, cmd,
+			   clen);
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, aphys, ack,
+			   alen);
+	return 0;
+}
+
+static int epf_vnet_ep_handle_modify_qp(struct epf_vnet *vnet,
+					struct vringh_kiov *riov,
+					struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_cmd_modify_qp cmd;
+	void __iomem *cmd_ptr;
+	phys_addr_t phys;
+	struct epf_vnet_rdma_qp *qp;
+	size_t len;
+	struct pci_epf *epf = vnet->evio.epf;
+
+	len = riov->iov[riov->i].iov_len;
+	cmd_ptr = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
+				   (u64)riov->iov[riov->i].iov_base, &phys,
+				   len);
+	if (IS_ERR(cmd_ptr)) {
+		pr_err("ep: failed to map command range for destry qp\n");
+		return PTR_ERR(cmd_ptr);
+	}
+
+	memcpy_fromio(&cmd, cmd_ptr, sizeof(cmd));
+
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, phys, cmd_ptr,
+			   len);
+
+	qp = epf_vnet_lookup_qp(&vnet->ep_roce, cmd.qpn);
+	if (!qp) {
+		pr_err("invalid qpn found: %d\n", cmd.qpn);
+		return -EINVAL;
+	}
+
+	if (cmd.attr_mask & VIRTIO_IB_QP_STATE) {
+		pr_info("%s:%d not supported yet\n", __func__, __LINE__);
+	}
+	if (cmd.attr_mask & VIRTIO_IB_QP_CUR_STATE) {
+		pr_info("%s:%d not supported yet\n", __func__, __LINE__);
+	}
+	if (cmd.attr_mask & VIRTIO_IB_QP_ACCESS_FLAGS) {
+		pr_info("%s:%d not supported yet\n", __func__, __LINE__);
+	}
+	if (cmd.attr_mask & VIRTIO_IB_QP_QKEY) {
+		pr_info("%s:%d not supported yet\n", __func__, __LINE__);
+	}
+	if (cmd.attr_mask & VIRTIO_IB_QP_AV) {
+		pr_info("%s:%d not supported yet\n", __func__, __LINE__);
+	}
+	if (cmd.attr_mask & VIRTIO_IB_QP_PATH_MTU) {
+		pr_info("%s:%d not supported yet\n", __func__, __LINE__);
+	}
+	if (cmd.attr_mask & VIRTIO_IB_QP_TIMEOUT) {
+		pr_info("%s:%d not supported yet\n", __func__, __LINE__);
+	}
+	if (cmd.attr_mask & VIRTIO_IB_QP_RETRY_CNT) {
+		pr_info("%s:%d not supported yet\n", __func__, __LINE__);
+	}
+	if (cmd.attr_mask & VIRTIO_IB_QP_RNR_RETRY) {
+		pr_info("%s:%d not supported yet\n", __func__, __LINE__);
+	}
+	if (cmd.attr_mask & VIRTIO_IB_QP_RQ_PSN) {
+		pr_info("%s:%d not supported yet\n", __func__, __LINE__);
+	}
+	if (cmd.attr_mask & VIRTIO_IB_QP_MAX_QP_RD_ATOMIC) {
+		pr_info("%s:%d not supported yet\n", __func__, __LINE__);
+	}
+	if (cmd.attr_mask & VIRTIO_IB_QP_MIN_RNR_TIMER) {
+		pr_info("%s:%d not supported yet\n", __func__, __LINE__);
+	}
+	if (cmd.attr_mask & VIRTIO_IB_QP_SQ_PSN) {
+		pr_info("%s:%d not supported yet\n", __func__, __LINE__);
+	}
+	if (cmd.attr_mask & VIRTIO_IB_QP_MAX_DEST_RD_ATOMIC) {
+		pr_info("%s:%d not supported yet\n", __func__, __LINE__);
+	}
+	if (cmd.attr_mask & VIRTIO_IB_QP_CAP) {
+		pr_info("%s:%d not supported yet\n", __func__, __LINE__);
+	}
+	if (cmd.attr_mask & VIRTIO_IB_QP_DEST_QPN) {
+		qp->dest_qpn = cmd.dest_qp_num;
+	}
+	if (cmd.attr_mask & VIRTIO_IB_QP_RATE_LIMIT) {
+		pr_info("%s:%d not supported yet\n", __func__, __LINE__);
+	}
+
+	return 0;
+}
+
+static int epf_vnet_ep_handle_query_qp(struct epf_vnet *vnet,
+				       struct vringh_kiov *riov,
+				       struct vringh_kiov *wiov)
+{
+	// 	struct virtio_rdma_cmd_query_qp *cmd;
+	// 	struct virtio_rdma_ack_query_qp *ack;
+	return 0;
+}
+
+static int epf_vnet_ep_handle_destroy_qp(struct epf_vnet *vnet,
+					 struct vringh_kiov *riov,
+					 struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_cmd_destroy_qp __iomem *cmd;
+	struct pci_epf *epf = vnet->evio.epf;
+	size_t len;
+	phys_addr_t phys;
+	struct epf_vnet_rdma_qp *qp;
+	// 	struct epf_virtio *evio = &vnet->evio;
+	u32 qpn;
+
+	len = riov->iov[riov->i].iov_len;
+	cmd = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
+			       (u64)riov->iov[riov->i].iov_base, &phys, len);
+	if (IS_ERR(cmd)) {
+		pr_err("ep: failed to map command range for destry qp\n");
+		return PTR_ERR(cmd);
+	}
+	qpn = ioread32(&cmd->qpn);
+
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, phys, cmd,
+			   len);
+
+	qp = epf_vnet_lookup_qp(&vnet->ep_roce, qpn);
+	if (!qp)
+		return -EINVAL;
+
+	epf_vnet_dealloc_qp(&vnet->ep_roce, qpn);
+
+	return 0;
+}
+
+static int epf_vnet_ep_handle_create_ah(struct epf_vnet *vnet,
+					struct vringh_kiov *riov,
+					struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_cmd_create_ah *cmd;
+	struct virtio_rdma_ack_create_ah *ack;
+	struct epf_virtio *evio = &vnet->evio;
+	struct pci_epf *epf = evio->epf;
+	size_t clen, alen;
+	int err = 0;
+	phys_addr_t cphys, aphys;
+
+	clen = riov->iov[riov->i].iov_len;
+	cmd = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
+			       (u64)riov->iov[riov->i].iov_base, &cphys, clen);
+	if (IS_ERR(cmd)) {
+		pr_err("%s:%d\n", __func__, __LINE__);
+		return PTR_ERR(cmd);
+	}
+
+	alen = wiov->iov[wiov->i].iov_len;
+	ack = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
+			       (u64)wiov->iov[wiov->i].iov_base, &aphys, alen);
+	if (IS_ERR(ack)) {
+		pr_err("%s:%d\n", __func__, __LINE__);
+		err = PTR_ERR(ack);
+		goto unmap_cmd;
+	}
+
+	iowrite32(vnet->ep_nah++, &ack->ah);
+
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, aphys, ack,
+			   alen);
+unmap_cmd:
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, cphys, cmd,
+			   clen);
+
+	return err;
+}
+
+static int epf_vnet_ep_handle_destroy_ah(struct epf_vnet *vnet,
+					 struct vringh_kiov *riov,
+					 struct vringh_kiov *wiov)
+{
+	vnet->ep_nah--;
+	return 0;
+}
+
+static int epf_vnet_ep_handle_roce_add_gid(struct epf_vnet *vnet,
+					   struct vringh_kiov *riov,
+					   struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_cmd_add_gid __iomem *cmd;
+	struct epf_virtio *evio = &vnet->evio;
+	struct pci_epf *epf = evio->epf;
+	size_t len;
+	phys_addr_t phys;
+	u16 index;
+
+	len = riov->iov[riov->i].iov_len;
+	cmd = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
+			       (u64)riov->iov[riov->i].iov_base, &phys, len);
+	if (IS_ERR(cmd)) {
+		pr_err("%s:%d\n", __func__, __LINE__);
+		return PTR_ERR(cmd);
+	}
+
+	index = ioread16(&cmd->index);
+
+	memcpy_fromio(&vnet->ep_roce.gid_tbl[index], cmd->gid,
+		      sizeof(cmd->gid));
+
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, phys, cmd,
+			   len);
+
+	return 0;
+}
+
+static int epf_vnet_ep_handle_roce_del_gid(struct epf_vnet *vnet,
+					   struct vringh_kiov *riov,
+					   struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_cmd_del_gid *cmd;
+	struct epf_virtio *evio = &vnet->evio;
+	struct pci_epf *epf = evio->epf;
+	size_t len;
+	phys_addr_t phys;
+	u16 index;
+
+	len = riov->iov[riov->i].iov_len;
+	cmd = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
+			       (u64)riov->iov[riov->i].iov_base, &phys, len);
+	if (IS_ERR(cmd)) {
+		pr_err("%s:%d\n", __func__, __LINE__);
+		return PTR_ERR(cmd);
+	}
+
+	index = ioread16(&cmd->index);
+
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, phys, cmd,
+			   len);
+
+	return 0;
+}
+
+static int epf_vnet_ep_handle_roce_req_notify_cq(struct epf_vnet *vnet,
+						 struct vringh_kiov *riov,
+						 struct vringh_kiov *wiov)
+{
+	// 	struct virtio_rdma_cmd_req_notify *cmd;
+
+	return 0;
+}
+
+static int (*virtio_rdma_ep_cmd_handler[])(struct epf_vnet *vnet,
+					   struct vringh_kiov *riov,
+					   struct vringh_kiov *wiov) = {
+	[VIRTIO_NET_CTRL_ROCE_QUERY_DEVICE] =
+		epf_vnet_ep_handle_roce_query_device,
+	[VIRTIO_NET_CTRL_ROCE_QUERY_PORT] = epf_vnet_ep_handle_roce_query_port,
+	[VIRTIO_NET_CTRL_ROCE_CREATE_CQ] = epf_vnet_ep_handle_create_cq,
+	[VIRTIO_NET_CTRL_ROCE_DESTROY_CQ] = epf_vnet_ep_handle_destroy_cq,
+	[VIRTIO_NET_CTRL_ROCE_CREATE_PD] = epf_vnet_ep_handle_create_pd,
+	[VIRTIO_NET_CTRL_ROCE_DESTROY_PD] = epf_vnet_ep_handle_destroy_pd,
+	[VIRTIO_NET_CTRL_ROCE_GET_DMA_MR] = epf_vnet_ep_handle_get_dma_mr,
+	[VIRTIO_NET_CTRL_ROCE_REG_USER_MR] = epf_vnet_ep_handle_reg_user_mr,
+	[VIRTIO_NET_CTRL_ROCE_DEREG_MR] = epf_vnet_ep_handle_dereg_mr,
+	[VIRTIO_NET_CTRL_ROCE_CREATE_QP] = epf_vnet_ep_handle_create_qp,
+	[VIRTIO_NET_CTRL_ROCE_MODIFY_QP] = epf_vnet_ep_handle_modify_qp,
+	[VIRTIO_NET_CTRL_ROCE_QUERY_QP] = epf_vnet_ep_handle_query_qp,
+	[VIRTIO_NET_CTRL_ROCE_DESTROY_QP] = epf_vnet_ep_handle_destroy_qp,
+	[VIRTIO_NET_CTRL_ROCE_CREATE_AH] = epf_vnet_ep_handle_create_ah,
+	[VIRTIO_NET_CTRL_ROCE_DESTROY_AH] = epf_vnet_ep_handle_destroy_ah,
+	[VIRTIO_NET_CTRL_ROCE_ADD_GID] = epf_vnet_ep_handle_roce_add_gid,
+	[VIRTIO_NET_CTRL_ROCE_DEL_GID] = epf_vnet_ep_handle_roce_del_gid,
+	[VIRTIO_NET_CTRL_ROCE_REQ_NOTIFY_CQ] =
+		epf_vnet_ep_handle_roce_req_notify_cq,
+};
+
 static void epf_vnet_ep_ctrl_handler(struct work_struct *work)
 {
 	struct epf_vnet *vnet =
@@ -364,6 +1330,7 @@ static void epf_vnet_ep_ctrl_handler(struct work_struct *work)
 	u8 class, cmd;
 	void __iomem *rvirt, *wvirt;
 	phys_addr_t rphys, wphys;
+	virtio_net_ctrl_ack __iomem *ack;
 
 	vringh_kiov_init(&riov, NULL, 0);
 	vringh_kiov_init(&wiov, NULL, 0);
@@ -378,6 +1345,7 @@ static void epf_vnet_ep_ctrl_handler(struct work_struct *work)
 	rvirt = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
 				 (u64)riov.iov[riov.i].iov_base, &rphys, rlen);
 	if (IS_ERR(rvirt)) {
+		pr_info("pci_epc_map failed for cmd range\n");
 		err = PTR_ERR(rvirt);
 		goto err_out;
 	}
@@ -386,9 +1354,14 @@ static void epf_vnet_ep_ctrl_handler(struct work_struct *work)
 	wvirt = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
 				 (u64)wiov.iov[wiov.i].iov_base, &wphys, wlen);
 	if (IS_ERR(wvirt)) {
+		pr_info("pci_epc_map failed for ack range\n");
 		err = PTR_ERR(wvirt);
 		goto err_unmap_command;
 	}
+	ack = wvirt;
+
+	riov.i++;
+	wiov.i++;
 
 	hdr = rvirt;
 	class = ioread8(&hdr->class);
@@ -407,18 +1380,37 @@ static void epf_vnet_ep_ctrl_handler(struct work_struct *work)
 		epf_virtio_cfg_clear16(evio, VIRTIO_PCI_ISR,
 				       VIRTIO_PCI_ISR_CONFIG);
 
-		iowrite8(VIRTIO_NET_OK, wvirt);
+		iowrite8(VIRTIO_NET_OK, ack);
+		break;
+	case VIRTIO_NET_CTRL_ROCE:
+		if (ARRAY_SIZE(virtio_rdma_ep_cmd_handler) < hdr->cmd) {
+			err = -EIO;
+			pr_debug("found invalid command\n");
+			break;
+		}
+		// TODO this is for debug, finally should be deleted.
+		if (!virtio_rdma_ep_cmd_handler[hdr->cmd]) {
+			pr_info("A handler for cmd %d is not yet implemented\n",
+				hdr->cmd);
+			err = -ENOTSUPP;
+			iowrite8(VIRTIO_NET_ERR, ack);
+			break;
+		}
+
+		err = virtio_rdma_ep_cmd_handler[hdr->cmd](vnet, &riov, &wiov);
+		iowrite8(err ? VIRTIO_NET_ERR : VIRTIO_NET_OK, ack);
 		break;
 	default:
 		pr_err("Found unsupported class in control queue: %d\n", class);
 		break;
 	}
 
-	vringh_complete_iomem(vrh, head, total_len);
 	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, rphys, rvirt,
 			   rlen);
 	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, wphys, wvirt,
 			   wlen);
+
+	vringh_complete_iomem(vrh, head, total_len);
 
 	vringh_kiov_cleanup(&riov);
 	vringh_kiov_cleanup(&wiov);
@@ -430,6 +1422,382 @@ err_unmap_command:
 			   rlen);
 err_out:
 	return;
+}
+
+static int
+epf_vnet_roce_handle_ep_send_wr(struct epf_vnet *vnet, u32 vqn,
+				struct virtio_rdma_sq_req __iomem *sreq,
+				u64 sreq_pci)
+{
+	u32 nsge;
+	struct pci_epf *epf = vnet->evio.epf;
+	int err = 0;
+	struct epf_vnet_rdma_qp *src_qp;
+	u32 src_qpn;
+
+	if (ioread8(&sreq->send_flags) & VIRTIO_IB_SEND_INLINE) {
+		pr_info("inline data is not supported\n");
+		return -ENOTSUPP;
+	}
+
+	nsge = ioread32(&sreq->num_sge);
+	src_qpn = (vqn - VNET_VIRTQUEUE_RDMA_SQ0) / 2;
+
+	src_qp = epf_vnet_lookup_qp(&vnet->ep_roce, src_qpn);
+	if (!src_qp) {
+		err = -EINVAL;
+		pr_err("%d: failed to lookup qp\n", __LINE__);
+		goto err_out;
+	}
+
+	for (int i = 0; i < nsge; i++) {
+		struct virtio_rdma_sge src_sge;
+		struct epf_vnet_rdma_mr *src_mr;
+		void __iomem *src;
+		void *dst;
+		phys_addr_t src_phys;
+		struct virtio_rdma_rq_req *rreq;
+		struct virtio_rdma_sge __iomem *sg_list;
+		phys_addr_t sg_list_phys;
+		u32 dst_qpn;
+
+		switch (src_qp->type) {
+		case VIRTIO_IB_QPT_UD:
+			dst_qpn = ioread32(&sreq->ud.remote_qpn);
+			break;
+		case VIRTIO_IB_QPT_RC:
+			dst_qpn = src_qp->dest_qpn;
+			break;
+		case VIRTIO_IB_QPT_SMI:
+		case VIRTIO_IB_QPT_GSI:
+		case VIRTIO_IB_QPT_UC:
+			pr_info("The qp type (%d) is not yet supported\n",
+				src_qp->type);
+			return -EINVAL;
+		default:
+			pr_info("invalid qp type found\n");
+			return -EINVAL;
+		}
+
+		sg_list = pci_epc_map_addr(
+			epf->epc, epf->func_no, epf->vfunc_no,
+			sreq_pci + offsetof(struct virtio_rdma_sq_req, sg_list),
+			&sg_list_phys, sizeof(struct virtio_rdma_sge) * nsge);
+		if (IS_ERR(sg_list)) {
+			err = PTR_ERR(sg_list);
+			pr_err("Failed to map sg_list\n");
+			goto err_out;
+		}
+
+		memcpy_fromio(&src_sge, &sg_list[i], sizeof(src_sge));
+
+		pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no,
+				   sg_list_phys, sg_list,
+				   sizeof(struct virtio_rdma_sge) * nsge);
+
+		src_mr = epf_vnet_lookup_mr(&vnet->ep_roce, src_sge.lkey);
+		if (!src_mr) {
+			pr_err("Failed to found mr: %d\n", src_sge.lkey);
+			err = -EINVAL;
+			break;
+		}
+
+		switch (src_mr->type) {
+		case EPF_VNET_RDMA_MR_TYPE_DMA:
+			pr_err("not yet implemented\n");
+			break;
+		case EPF_VNET_RDMA_MR_TYPE_MR:
+
+			if (src_sge.length > PAGE_SIZE) {
+				pr_err("ep: a copy acrossing page is not yet implemented: 0x%x\n",
+				       src_sge.length);
+				break;
+			}
+
+			src = pci_epc_map_addr(epf->epc, epf->func_no,
+					       epf->vfunc_no, src_mr->pages[0],
+					       &src_phys, src_sge.length);
+			if (IS_ERR(src)) {
+				pr_info("%s:%d\n", __func__, __LINE__);
+				break;
+			}
+
+			break;
+		default:
+			err = -EINVAL;
+			goto err_out;
+		}
+
+		if (1) {
+			struct epf_vnet_rdma_qp *dst_qp;
+			struct vringh *dst_vrh;
+			struct vringh_kiov *iov;
+			u16 head;
+			struct virtio_rdma_sge *dst_sge;
+			struct epf_vnet_rdma_mr *dst_mr;
+
+			dst_qp = epf_vnet_lookup_qp(&vnet->vdev_roce, dst_qpn);
+			if (!dst_qp) {
+				pr_err("Failed to lookup qp: %d\n", dst_qpn);
+				return -EINVAL;
+			}
+
+			dst_vrh = &vnet->vdev_vrhs[dst_qp->rvq];
+			iov = &vnet->vdev_iovs[dst_qp->rvq];
+
+			err = vringh_getdesc_kern(dst_vrh, iov, NULL, &head,
+						  GFP_KERNEL);
+			if (err < 0) {
+				pr_err("ep: failed to get desc for dest\n");
+				goto err_out;
+			}
+			if (!err) {
+				pr_err("ep: not found an entry(rcv)\n");
+				goto err_out;
+			}
+
+			rreq = phys_to_virt(
+				(phys_addr_t)iov->iov[iov->i].iov_base);
+
+			dst_sge = &rreq->sg_list[0];
+
+			dst_mr = epf_vnet_lookup_mr(&vnet->vdev_roce,
+						    dst_sge->lkey);
+			if (!dst_mr) {
+				pr_info("ep: invalid lkey found\n");
+				err = -EINVAL;
+				goto err_out;
+			}
+
+			switch (dst_mr->type) {
+			case EPF_VNET_RDMA_MR_TYPE_DMA:
+				pr_err("ep: not yet implemented for mr type EPF_VNET_RDMA_MR_TYPE_DMA\n");
+				err = -EINVAL;
+				goto err_out;
+				break;
+			case EPF_VNET_RDMA_MR_TYPE_MR:
+				if (dst_sge->length > PAGE_SIZE) {
+					pr_err("vdev: a copy acrossing pages is not yet implemented: 0x%x\n\n",
+					       dst_sge->length);
+					err = -ENOTSUPP;
+					goto err_out;
+				}
+
+				dst = phys_to_virt(
+					(phys_addr_t)dst_mr->pages[0]);
+				break;
+			default:
+				pr_err("invalid mr type found\n");
+				err = -EINVAL;
+				goto err_out;
+				break;
+			}
+
+			memcpy_fromio(dst, src, src_sge.length);
+
+			vringh_complete_kern(dst_vrh, head, sizeof(rreq));
+		}
+
+		pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no,
+				   src_phys, src, src_sge.length);
+
+		// completion for ep
+		if (1) {
+			struct epf_vnet_rdma_cq *cq;
+			struct vringh_kiov *iov;
+			u16 head;
+			struct epf_virtio *evio = &vnet->evio;
+			struct virtio_rdma_cq_req __iomem *cqe;
+			struct virtio_rdma_cq_req cqe_tmp;
+			u64 cqe_pci;
+			phys_addr_t cqe_phys;
+
+			cq = epf_vnet_lookup_cq(&vnet->ep_roce, src_qp->scq);
+			if (!cq) {
+				pr_err("failed to lookup cq\n");
+				err = -EINVAL;
+				goto err_out;
+			}
+
+			iov = &vnet->rdev_iovs[cq->vqn];
+
+			err = epf_virtio_getdesc(evio, cq->vqn, NULL, iov,
+						 &head);
+			if (err <= 0) {
+				pr_err("%s:%d epf_virtio_getdesc: %d\n",
+				       __func__, __LINE__, err);
+				goto err_out;
+			}
+
+			if (iov->iov[iov->i].iov_len < sizeof(*cqe)) {
+				pr_err("not enough buffer size\n");
+				goto err_out;
+			}
+
+			cqe_pci = (u64)iov->iov[iov->i].iov_base;
+
+			cqe = pci_epc_map_addr(epf->epc, epf->func_no,
+					       epf->vfunc_no, cqe_pci,
+					       &cqe_phys, sizeof(*cqe));
+			if (IS_ERR(cqe)) {
+				pr_err("failed to map addr for cqe\n");
+				err = PTR_ERR(cqe);
+				goto err_out;
+			}
+
+			cqe_tmp.wr_id = ioread64(&sreq->wr_id);
+			cqe_tmp.status = VIRTIO_IB_WC_SUCCESS;
+			cqe_tmp.opcode = ioread8(&sreq->opcode);
+			cqe_tmp.byte_len = src_sge.length;
+			cqe_tmp.qp_num = src_qp->qpn;
+
+			memcpy_toio(cqe, &cqe_tmp, sizeof(cqe_tmp));
+
+			// 			epf_virtio_iov_complete(evio, cq->vqn, head, vringh_kiov_length(iov));
+			epf_virtio_iov_complete(evio, cq->vqn, head,
+						sizeof(*cqe));
+
+			pci_epc_unmap_addr(epf->epc, epf->func_no,
+					   epf->vfunc_no, cqe_phys, cqe,
+					   sizeof(*cqe));
+			queue_work(vnet->task_wq, &vnet->raise_irq_work);
+		}
+
+		// completion for vdev
+		{
+			struct virtio_rdma_cq_req *cqe;
+			struct epf_vnet_rdma_qp *dst_qp;
+			struct epf_vnet_rdma_cq *cq;
+			struct vringh_kiov *iov;
+			struct vringh *vrh;
+			u16 head;
+			struct virtqueue *cvq;
+
+			dst_qp = epf_vnet_lookup_qp(&vnet->vdev_roce, dst_qpn);
+			if (!dst_qp) {
+				pr_err("%d: failed to lookup qp\n", __LINE__);
+				err = -EINVAL;
+				goto err_out;
+			}
+
+			cq = epf_vnet_lookup_cq(&vnet->vdev_roce, dst_qp->rcq);
+			if (!cq) {
+				pr_err("invalid cq\n");
+				err = -EINVAL;
+				goto err_out;
+			}
+
+			vrh = &vnet->vdev_vrhs[cq->vqn];
+			iov = &vnet->vdev_iovs[cq->vqn];
+			cvq = vnet->vdev_vqs[cq->vqn];
+
+			err = vringh_getdesc_kern(vrh, NULL, iov, &head,
+						  GFP_KERNEL);
+			if (err <= 0) {
+				pr_err("failed to get cq entry: %d\n", err);
+				goto err_out;
+			}
+
+			if (iov->iov[iov->i].iov_len < sizeof(*cqe)) {
+				pr_err("not enough size\n");
+				err = -EINVAL;
+				goto err_out;
+			}
+
+			cqe = cq->buf + (u64)iov->iov[iov->i].iov_base -
+			      cq->buf_phys;
+
+			cqe->wr_id = rreq->wr_id;
+			cqe->status = VIRTIO_IB_WC_SUCCESS;
+			cqe->opcode = VIRTIO_IB_WC_RECV;
+			cqe->byte_len = src_sge.length;
+			cqe->qp_num = dst_qp->qpn;
+
+			vringh_complete_kern(vrh, head, sizeof(*cqe));
+
+			vring_interrupt(0, cvq);
+		}
+	}
+
+	return 0;
+
+err_out:
+
+	return err;
+}
+
+static void epf_vnet_ep_roce_tx_handler(struct work_struct *work)
+{
+	struct epf_vnet *vnet =
+		container_of(work, struct epf_vnet, ep_roce_tx_work);
+	struct vringh_kiov *iov;
+	struct epf_virtio *evio = &vnet->evio;
+	struct pci_epf *epf = evio->epf;
+	struct virtio_rdma_sq_req __iomem *sreq;
+	struct virtio_rdma_sq_req sreq_tmp;
+	int err;
+
+	for (int i = 0; i < 3; i++) {
+		u32 vqn = VNET_VIRTQUEUE_RDMA_SQ0 + i * 2;
+		u16 head;
+		u64 sreq_pci;
+		phys_addr_t sreq_phys;
+
+		iov = &vnet->vdev_iovs[vqn];
+
+		err = epf_virtio_getdesc(evio, vqn, iov, NULL, &head);
+		if (!err)
+			continue;
+
+		if (err < 0) {
+			pr_err("err on epf_virtio_getdesc: %d\n", err);
+			break;
+		}
+
+		sreq_pci = (u64)iov->iov[iov->i].iov_base;
+		if (sizeof(*sreq) > (size_t)iov->iov[iov->i].iov_base) {
+			pr_info("0x%lx < %px\n", sizeof(*sreq),
+				iov->iov[iov->i].iov_base);
+			break;
+		}
+
+		sreq = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
+					sreq_pci, &sreq_phys, sizeof(*sreq));
+		if (IS_ERR(sreq)) {
+			pr_err("Failed to map sreq\n");
+			err = PTR_ERR(sreq);
+			break;
+		}
+
+		memcpy(&sreq_tmp, sreq, sizeof(*sreq));
+
+		pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no,
+				   sreq_phys, sreq, sizeof(*sreq));
+
+		switch (sreq_tmp.opcode) {
+		case VIRTIO_IB_WR_SEND:
+			err = epf_vnet_roce_handle_ep_send_wr(
+				vnet, vqn, &sreq_tmp, sreq_pci);
+			if (err)
+				pr_err("[%d] failed to process send work request: %d\n",
+				       i, err);
+			break;
+			//TODO
+			// 	case VIRTIO_IB_WR_RDMA_WRITE:
+			// 	case VIRTIO_IB_WR_RDMA_WRITE_WITH_IMM:
+			// 	case VIRTIO_IB_WR_SEND_WITH_IMM:
+			// 	case VIRTIO_IB_WR_RDMA_READ:
+			// 		break;
+		default:
+			pr_err("Found unsupported work request type %d\n",
+			       sreq_tmp.opcode);
+		}
+
+		epf_virtio_iov_complete(evio, vqn, head,
+					sizeof(*sreq) +
+						sizeof(struct virtio_rdma_sge) *
+							sreq_tmp.num_sge);
+	}
 }
 
 static void epf_vnet_vdev_cfg_set_status(struct epf_vnet *vnet, u16 status)
@@ -448,6 +1816,574 @@ static void epf_vnet_vdev_announce_linkup(struct epf_vnet *vnet)
 						   VIRTIO_NET_S_ANNOUNCE);
 	virtio_config_changed(&vnet->vdev);
 }
+
+static int epf_vnet_vdev_handle_roce_query_device(struct epf_vnet *vnet,
+						  struct vringh_kiov *riov,
+						  struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_ack_query_device *ack;
+
+	ack = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
+
+	memcpy(ack, &vnet->rdma_attr, sizeof(vnet->rdma_attr));
+
+	return 0;
+}
+
+static int epf_vnet_vdev_handle_roce_query_port(struct epf_vnet *vnet,
+						struct vringh_kiov *riov,
+						struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_ack_query_port *ack;
+
+	ack = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
+	ack->gid_tbl_len = EPF_VNET_ROCE_GID_TBL_LEN;
+	ack->max_msg_sz = 0x800000;
+
+	return 0;
+}
+
+static int epf_vnet_vdev_handle_roce_create_cq(struct epf_vnet *vnet,
+					       struct vringh_kiov *riov,
+					       struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_cmd_create_cq *cmd;
+	struct virtio_rdma_ack_create_cq *ack;
+	struct epf_vnet_rdma_cq *cq;
+	struct vringh *vrh;
+
+	cmd = phys_to_virt((unsigned long)riov->iov[riov->i].iov_base);
+
+	if (cmd->cqe > virtio_queue_size)
+		return 1;
+
+	cq = epf_vnet_alloc_cq(&vnet->vdev_roce);
+	if (!cq) {
+		pr_err("failed to allocate cq\n");
+		return -EIO;
+	}
+
+	cq->buf = (void *)cmd->virt;
+	cq->buf_phys = cmd->phys;
+
+	ack = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
+	ack->cqn = cq->cqn;
+
+	vrh = &vnet->vdev_vrhs[cq->vqn];
+	vringh_reset_kern(vrh);
+
+	return 0;
+}
+
+static int epf_vnet_vdev_handle_roce_destroy_cq(struct epf_vnet *vnet,
+						struct vringh_kiov *riov,
+						struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_cmd_destroy_cq *cmd;
+	struct epf_vnet_rdma_cq *cq;
+	struct vringh *vrh;
+
+	cmd = phys_to_virt((unsigned long)riov->iov[riov->i].iov_base);
+
+	return epf_vnet_dealloc_cq(&vnet->vdev_roce, cmd->cqn);
+}
+
+static int epf_vnet_vdev_handle_roce_create_pd(struct epf_vnet *vnet,
+					       struct vringh_kiov *riov,
+					       struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_ack_create_pd *ack;
+	struct epf_vnet_rdma_pd *pd;
+
+	ack = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
+
+	pd = epf_vnet_alloc_pd(&vnet->vdev_roce);
+	if (!pd)
+		return -ENOMEM;
+
+	epf_vnet_rdma_init_pd(pd);
+
+	ack->pdn = pd->pdn;
+
+	return 0;
+}
+
+static int epf_vnet_vdev_handle_roce_destroy_pd(struct epf_vnet *vnet,
+						struct vringh_kiov *riov,
+						struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_cmd_destroy_pd *cmd;
+
+	cmd = phys_to_virt((unsigned long)riov->iov[riov->i].iov_base);
+
+	return epf_vnet_dealloc_pd(&vnet->vdev_roce, cmd->pdn);
+}
+
+static int epf_vnet_vdev_handle_roce_dma_mr(struct epf_vnet *vnet,
+					    struct vringh_kiov *riov,
+					    struct vringh_kiov *wiov)
+{
+	// 	struct virtio_rdma_cmd_get_dma_mr *cmd;
+	struct virtio_rdma_ack_get_dma_mr *ack;
+	struct epf_vnet_rdma_mr *mr;
+
+	ack = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
+
+	mr = epf_vnet_alloc_mr(&vnet->vdev_roce);
+	if (!mr)
+		return -EINVAL;
+
+	mr->type = EPF_VNET_RDMA_MR_TYPE_DMA;
+
+	ack->lkey = mr->mrn;
+	ack->rkey = mr->mrn;
+	ack->mrn = mr->mrn;
+
+	return 0;
+}
+
+static int epf_vnet_vdev_handle_roce_reg_user_mr(struct epf_vnet *vnet,
+						 struct vringh_kiov *riov,
+						 struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_cmd_reg_user_mr *cmd;
+	struct virtio_rdma_ack_reg_user_mr *ack;
+	struct epf_vnet_rdma_pd *pd;
+	struct epf_vnet_rdma_mr *mr;
+
+	cmd = phys_to_virt((unsigned long)riov->iov[riov->i].iov_base);
+
+	pd = epf_vnet_rdma_lookup_pd(&vnet->vdev_roce, cmd->pdn);
+	if (!pd)
+		return -EINVAL;
+
+	mr = epf_vnet_alloc_mr(&vnet->vdev_roce);
+	if (!mr)
+		return -EINVAL;
+
+	mr->type = EPF_VNET_RDMA_MR_TYPE_MR;
+
+	ack = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
+
+	if (cmd->access_flags & VIRTIO_IB_ACCESS_LOCAL_WRITE) {
+		ack->lkey = mr->mrn;
+	}
+
+	if (cmd->access_flags & VIRTIO_IB_ACCESS_REMOTE_WRITE) {
+		ack->rkey = mr->mrn;
+	}
+
+	if (cmd->access_flags & VIRTIO_IB_ACCESS_REMOTE_READ) {
+		ack->rkey = mr->mrn;
+	}
+
+	mr->virt_addr = cmd->virt_addr;
+	mr->length = cmd->length;
+	mr->npages = cmd->npages;
+	mr->pages =
+		kmalloc_array(cmd->npages, sizeof(mr->pages[0]), GFP_KERNEL);
+
+	memcpy(mr->pages, cmd->pages, sizeof(mr->pages[0]) * mr->npages);
+
+	ack->mrn = mr->mrn;
+
+	return 0;
+}
+
+static int epf_vnet_vdev_handle_roce_dereg_mr(struct epf_vnet *vnet,
+					      struct vringh_kiov *riov,
+					      struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_cmd_dereg_mr *cmd;
+	struct epf_vnet_rdma_mr *mr;
+
+	cmd = phys_to_virt((unsigned long)riov->iov[riov->i].iov_base);
+
+	mr = epf_vnet_lookup_mr(&vnet->vdev_roce, cmd->mrn);
+
+	switch (mr->type) {
+	case EPF_VNET_RDMA_MR_TYPE_MR:
+		break;
+	case EPF_VNET_RDMA_MR_TYPE_DMA:
+		kfree(mr->pages);
+		break;
+	default:
+		pr_err("found invalid mr type\n");
+		return -EINVAL;
+	}
+
+	return epf_vnet_dealloc_mr(&vnet->vdev_roce, cmd->mrn);
+}
+
+static int epf_vnet_vdev_handle_roce_create_qp(struct epf_vnet *vnet,
+					       struct vringh_kiov *riov,
+					       struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_cmd_create_qp *cmd;
+	struct virtio_rdma_ack_create_qp *ack;
+	struct epf_vnet_rdma_qp *qp;
+	struct vringh *vrh;
+
+	cmd = phys_to_virt((unsigned long)riov->iov[riov->i].iov_base);
+
+	switch (cmd->qp_type) {
+	case VIRTIO_IB_QPT_SMI:
+		qp = epf_vnet_lookup_qp(&vnet->vdev_roce, 0);
+		if (!qp)
+			return -EIO;
+		qp->type = VIRTIO_IB_QPT_SMI;
+		break;
+	case VIRTIO_IB_QPT_GSI:
+		qp = epf_vnet_lookup_qp(&vnet->vdev_roce, 1);
+		if (!qp)
+			return -EIO;
+		qp->type = VIRTIO_IB_QPT_GSI;
+		break;
+	case VIRTIO_IB_QPT_UD:
+	case VIRTIO_IB_QPT_RC:
+		qp = epf_vnet_alloc_qp(&vnet->vdev_roce);
+		if (!qp)
+			return -EIO;
+
+		qp->type = cmd->qp_type;
+
+		//TODO check
+		qp->svq = VNET_VIRTQUEUE_RDMA_SQ0 + qp->qpn * 2;
+		qp->rvq = VNET_VIRTQUEUE_RDMA_SQ0 + qp->qpn * 2 + 1;
+		break;
+	default:
+		return -ENOTSUPP;
+	}
+
+	qp->scq = cmd->send_cqn;
+	qp->rcq = cmd->recv_cqn;
+
+	if (qp->rvq >= VNET_VIRTQUEUE_NUM) {
+		epf_vnet_dealloc_qp(&vnet->vdev_roce, qp->qpn);
+		return -EINVAL;
+	}
+
+	ack = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
+
+	ack->qpn = qp->qpn;
+
+	vrh = &vnet->vdev_vrhs[qp->svq];
+	vringh_reset_kern(vrh);
+	vrh = &vnet->vdev_vrhs[qp->rvq];
+	vringh_reset_kern(vrh);
+
+	return 0;
+}
+
+static int epf_vnet_vdev_handle_roce_modify_qp(struct epf_vnet *vnet,
+					       struct vringh_kiov *riov,
+					       struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_cmd_modify_qp *cmd;
+	struct epf_vnet_rdma_qp *qp;
+
+	cmd = phys_to_virt((unsigned long)riov->iov[riov->i].iov_base);
+
+	qp = epf_vnet_lookup_qp(&vnet->vdev_roce, cmd->qpn);
+	if (!qp)
+		return -EINVAL;
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_STATE) {
+		pr_info("change qp state: %x -> %x\n", cmd->cur_qp_state,
+			cmd->qp_state);
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_CUR_STATE) {
+		pr_info("%s:%d\n", __func__, __LINE__);
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_ACCESS_FLAGS) {
+		pr_info("%s:%d access_flags 0x%x\n", __func__, __LINE__,
+			cmd->qp_access_flags);
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_QKEY) {
+		pr_info("set queue key 0x%x\n", cmd->qkey);
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_AV) {
+		pr_info("modify address vector\n");
+		// TODO Should be saved the address vector to qp struct
+		// 		cmd->ah_attr;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_PATH_MTU) {
+		pr_info("set mtu to %d\n", cmd->path_mtu);
+		// TODO This value should be converted to enum virtio_ib_mtu;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_TIMEOUT) {
+		pr_info("timeout %d\n", cmd->timeout);
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_RETRY_CNT) {
+		pr_info("retry cnd: %d\n", cmd->retry_cnt);
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_RNR_RETRY) {
+		pr_info("rnr retry %d\n", cmd->rnr_retry);
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_RQ_PSN) {
+		pr_info("set qp psn for rq: %d\n", cmd->rq_psn);
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_MAX_QP_RD_ATOMIC) {
+		pr_info("set max qp rd atomic: %d\n", cmd->max_rd_atomic);
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_MIN_RNR_TIMER) {
+		pr_info("set rnr timer %d\n", cmd->min_rnr_timer);
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_SQ_PSN) {
+		pr_info("set psn for sq: %d\n", cmd->sq_psn);
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_MAX_DEST_RD_ATOMIC) {
+		pr_info("set max dest rd atomic: %d", cmd->max_dest_rd_atomic);
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_CAP) {
+		pr_info("%s:%d\n", __func__, __LINE__);
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_DEST_QPN) {
+		pr_info("dest qpn %d\n", cmd->dest_qp_num);
+		qp->dest_qpn = cmd->dest_qp_num;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_RATE_LIMIT) {
+		pr_info("%s:%d\n", __func__, __LINE__);
+		goto err_out;
+	}
+
+	return 0;
+
+err_out:
+	return 1;
+}
+
+static int epf_vnet_vdev_handle_roce_query_qp(struct epf_vnet *vnet,
+					      struct vringh_kiov *riov,
+					      struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_cmd_query_qp *cmd;
+	struct virtio_rdma_ack_query_qp *ack;
+
+	cmd = phys_to_virt((unsigned long)riov->iov[riov->i].iov_base);
+
+	ack = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_STATE) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_STATE);
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_CUR_STATE) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_CUR_STATE);
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_ACCESS_FLAGS) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_ACCESS_FLAGS);
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_QKEY) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_QKEY);
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_AV) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_AV);
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_PATH_MTU) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_PATH_MTU);
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_TIMEOUT) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_TIMEOUT);
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_RETRY_CNT) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_RETRY_CNT);
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_RNR_RETRY) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_RNR_RETRY);
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_RQ_PSN) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_RQ_PSN);
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_MAX_QP_RD_ATOMIC) {
+		pr_info("not yet implemented 0x%x",
+			VIRTIO_IB_QP_MAX_QP_RD_ATOMIC);
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_MIN_RNR_TIMER) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_MIN_RNR_TIMER);
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_SQ_PSN) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_SQ_PSN);
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_MAX_DEST_RD_ATOMIC) {
+		pr_info("not yet implemented 0x%x",
+			VIRTIO_IB_QP_MAX_DEST_RD_ATOMIC);
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_CAP) {
+		pr_info("qp cap 0x%x\n", VIRTIO_IB_QP_CAP);
+		// TODO these are temporary and should be updated.
+		ack->cap.max_send_wr = 100;
+		ack->cap.max_send_sge = 32;
+		ack->cap.max_inline_data = 32 * sizeof(struct virtio_rdma_sge);
+		ack->cap.max_recv_wr = 100;
+		ack->cap.max_recv_sge = 32;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_DEST_QPN) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_DEST_QPN);
+		goto err_out;
+	}
+
+	if (cmd->attr_mask & VIRTIO_IB_QP_RATE_LIMIT) {
+		pr_info("not yet implemented 0x%x", VIRTIO_IB_QP_RATE_LIMIT);
+		goto err_out;
+	}
+
+	return 0;
+
+err_out:
+	return 1;
+}
+
+static int epf_vnet_vdev_handle_roce_destroy_qp(struct epf_vnet *vnet,
+						struct vringh_kiov *riov,
+						struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_cmd_destroy_qp *cmd;
+	struct epf_vnet_rdma_qp *qp;
+	struct vringh *svrh, *rvrh;
+
+	cmd = phys_to_virt((unsigned long)riov->iov[riov->i].iov_base);
+
+	qp = epf_vnet_lookup_qp(&vnet->vdev_roce, cmd->qpn);
+	if (!qp) {
+		pr_info("invalid qpn found: %d\n", cmd->qpn);
+		return -EINVAL;
+	}
+
+	svrh = &vnet->vdev_vrhs[qp->svq];
+	rvrh = &vnet->vdev_vrhs[qp->rvq];
+
+	vringh_reset_kern(svrh);
+	vringh_reset_kern(rvrh);
+
+	return epf_vnet_dealloc_qp(&vnet->vdev_roce, cmd->qpn);
+}
+
+static int epf_vnet_vdev_handle_roce_create_ah(struct epf_vnet *vnet,
+					       struct vringh_kiov *riov,
+					       struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_cmd_create_ah *cmd;
+	struct virtio_rdma_ack_create_ah *ack;
+
+	cmd = phys_to_virt((unsigned long)riov->iov[riov->i].iov_base);
+
+	ack = phys_to_virt((unsigned long)wiov->iov[wiov->i].iov_base);
+
+	ack->ah = vnet->nah++;
+
+	return 0;
+}
+
+static int epf_vnet_vdev_handle_roce_destroy_ah(struct epf_vnet *vnet,
+						struct vringh_kiov *riov,
+						struct vringh_kiov *wiov)
+{
+	vnet->nah--;
+	return 0;
+}
+
+static int epf_vnet_vdev_handle_roce_add_gid(struct epf_vnet *vnet,
+					     struct vringh_kiov *riov,
+					     struct vringh_kiov *wiov)
+{
+	struct virtio_rdma_cmd_add_gid *cmd;
+
+	cmd = phys_to_virt((unsigned long)riov->iov[riov->i].iov_base);
+	if (cmd->index >= EPF_VNET_ROCE_GID_TBL_LEN)
+		return -EINVAL;
+
+	memcpy(vnet->vdev_roce.gid_tbl[cmd->index].raw, cmd->gid,
+	       sizeof(cmd->gid));
+
+	return 0;
+}
+
+static int epf_vnet_vdev_handle_roce_del_gid(struct epf_vnet *vnet,
+					     struct vringh_kiov *riov,
+					     struct vringh_kiov *wiov)
+{
+	return 0;
+}
+
+static int epf_vnet_vdev_handle_roce_notify_cq(struct epf_vnet *vnet,
+					       struct vringh_kiov *riov,
+					       struct vringh_kiov *wiov)
+{
+	return 0;
+}
+
+static int (*virtio_rdma_vdev_cmd_handler[])(struct epf_vnet *vnet,
+					     struct vringh_kiov *riov,
+					     struct vringh_kiov *wiov) = {
+	[VIRTIO_NET_CTRL_ROCE_QUERY_DEVICE] =
+		epf_vnet_vdev_handle_roce_query_device,
+	[VIRTIO_NET_CTRL_ROCE_QUERY_PORT] = epf_vnet_vdev_handle_roce_query_port,
+	[VIRTIO_NET_CTRL_ROCE_CREATE_CQ] = epf_vnet_vdev_handle_roce_create_cq,
+	[VIRTIO_NET_CTRL_ROCE_DESTROY_CQ] = epf_vnet_vdev_handle_roce_destroy_cq,
+	[VIRTIO_NET_CTRL_ROCE_CREATE_PD] = epf_vnet_vdev_handle_roce_create_pd,
+	[VIRTIO_NET_CTRL_ROCE_DESTROY_PD] = epf_vnet_vdev_handle_roce_destroy_pd,
+	[VIRTIO_NET_CTRL_ROCE_GET_DMA_MR] = epf_vnet_vdev_handle_roce_dma_mr,
+	[VIRTIO_NET_CTRL_ROCE_REG_USER_MR] =
+		epf_vnet_vdev_handle_roce_reg_user_mr,
+	[VIRTIO_NET_CTRL_ROCE_DEREG_MR] = epf_vnet_vdev_handle_roce_dereg_mr,
+	[VIRTIO_NET_CTRL_ROCE_CREATE_QP] = epf_vnet_vdev_handle_roce_create_qp,
+	[VIRTIO_NET_CTRL_ROCE_MODIFY_QP] = epf_vnet_vdev_handle_roce_modify_qp,
+	[VIRTIO_NET_CTRL_ROCE_QUERY_QP] = epf_vnet_vdev_handle_roce_query_qp,
+	[VIRTIO_NET_CTRL_ROCE_DESTROY_QP] = epf_vnet_vdev_handle_roce_destroy_qp,
+	[VIRTIO_NET_CTRL_ROCE_CREATE_AH] = epf_vnet_vdev_handle_roce_create_ah,
+	[VIRTIO_NET_CTRL_ROCE_DESTROY_AH] = epf_vnet_vdev_handle_roce_destroy_ah,
+	[VIRTIO_NET_CTRL_ROCE_ADD_GID] = epf_vnet_vdev_handle_roce_add_gid,
+	[VIRTIO_NET_CTRL_ROCE_DEL_GID] = epf_vnet_vdev_handle_roce_del_gid,
+	[VIRTIO_NET_CTRL_ROCE_REQ_NOTIFY_CQ] =
+		epf_vnet_vdev_handle_roce_notify_cq,
+};
 
 static void epf_vnet_vdev_ctrl_handler(struct work_struct *work)
 {
@@ -485,6 +2421,9 @@ static void epf_vnet_vdev_ctrl_handler(struct work_struct *work)
 	hdr = phys_to_virt((unsigned long)riov.iov[riov.i].iov_base);
 	ack = phys_to_virt((unsigned long)wiov.iov[wiov.i].iov_base);
 
+	riov.i++;
+	wiov.i++;
+
 	switch (hdr->class) {
 	case VIRTIO_NET_CTRL_ANNOUNCE:
 		if (hdr->cmd != VIRTIO_NET_CTRL_ANNOUNCE_ACK) {
@@ -494,6 +2433,25 @@ static void epf_vnet_vdev_ctrl_handler(struct work_struct *work)
 
 		epf_vnet_vdev_cfg_clear_status(vnet, VIRTIO_NET_S_ANNOUNCE);
 		*ack = VIRTIO_NET_OK;
+		break;
+	case VIRTIO_NET_CTRL_ROCE:
+		if (ARRAY_SIZE(virtio_rdma_vdev_cmd_handler) < hdr->cmd) {
+			err = -EIO;
+			pr_debug("found invalid command\n");
+			break;
+		}
+		// TODO this is for debug, finally should be deleted.
+		if (!virtio_rdma_vdev_cmd_handler[hdr->cmd]) {
+			pr_info("A handler for cmd %d is not yet implemented\n",
+				hdr->cmd);
+			err = -ENOTSUPP;
+			*ack = VIRTIO_NET_ERR;
+			break;
+		}
+
+		err = virtio_rdma_vdev_cmd_handler[hdr->cmd](vnet, &riov,
+							     &wiov);
+		*ack = err ? VIRTIO_NET_ERR : VIRTIO_NET_OK;
 		break;
 	default:
 		pr_debug("Found not supported class: %d\n", hdr->class);
@@ -518,8 +2476,377 @@ static void epf_vnet_raise_irq_handler(struct work_struct *work)
 			  PCI_EPC_IRQ_INTX, 0);
 }
 
-static int epf_vnet_setup_common(struct epf_vnet *vnet)
+static void epf_vnet_roce_rx_handler(struct work_struct *work)
 {
+	// 	struct epf_vnet *vnet =
+	// 		container_of(work, struct epf_vnet, roce_rx_work);
+
+	pr_info("Should operate a receive work request\n");
+}
+
+static int epf_vnet_roce_handle_vdev_send_wr(struct epf_vnet *vnet,
+					     struct virtio_rdma_sq_req *sreq,
+					     struct virtqueue *vq)
+{
+	struct epf_virtio *evio = &vnet->evio;
+	struct vringh_kiov *iov;
+	struct epf_vnet_rdma_qp *dst_qp, *src_qp;
+	u16 head;
+	int ret;
+	size_t total_len = 0;
+	u32 dst_qpn;
+
+	if (sreq->send_flags & VIRTIO_IB_SEND_INLINE) {
+		pr_err("inline data is not supported\n");
+		return -ENOTSUPP;
+	}
+
+	src_qp = epf_vnet_lookup_qp(&vnet->vdev_roce,
+				    (vq->index - VNET_VIRTQUEUE_RDMA_SQ0) / 2);
+	if (!src_qp)
+		return -EINVAL;
+
+	switch (src_qp->type) {
+	case VIRTIO_IB_QPT_UD:
+		dst_qpn = sreq->ud.remote_qpn;
+		break;
+	case VIRTIO_IB_QPT_RC:
+		dst_qpn = src_qp->dest_qpn;
+		break;
+	case VIRTIO_IB_QPT_SMI:
+	case VIRTIO_IB_QPT_GSI:
+	case VIRTIO_IB_QPT_UC:
+		pr_info("The qp type (%d) is not yet supported\n",
+			src_qp->type);
+		return -EINVAL;
+	default:
+		pr_info("invalid qp type found\n");
+		return -EINVAL;
+	}
+
+	dst_qp = epf_vnet_lookup_qp(&vnet->ep_roce, dst_qpn);
+
+	iov = &vnet->rdev_iovs[dst_qp->rvq];
+	ret = epf_virtio_getdesc(evio, dst_qp->rvq, iov, NULL, &head);
+	if (ret <= 0) {
+		if (!ret)
+			pr_info("not found recv wr at RC side\n");
+
+		return ret;
+	}
+
+	for (int i = 0; i < sreq->num_sge; i++) {
+		struct virtio_rdma_sge *src_sge = &sreq->sg_list[i];
+		struct epf_vnet_rdma_mr *src_mr;
+		void *src;
+
+		total_len += src_sge->length;
+
+		src_mr = epf_vnet_lookup_mr(&vnet->vdev_roce, src_sge->lkey);
+		if (!src_mr)
+			return -EINVAL;
+
+		src = phys_to_virt(src_mr->pages[0]);
+
+#if 0
+		{
+			char *b = src;
+			for (int i = 0; i < src_sge->length / 16;
+			     i++, b += 16) {
+				pr_info("%02x:"
+					" %02x %02x %02x %02x %02x %02x %02x %02x "
+					" %02x %02x %02x %02x %02x %02x %02x %02x ",
+					i, b[0], b[1], b[2], b[3], b[4], b[5],
+					b[6], b[7], b[8], b[9], b[10], b[11],
+					b[12], b[13], b[14], b[15]);
+			}
+
+			for (int i = 0; i < src_sge->length % 16; i++)
+				pr_info("%02x: %02x\n", i, b[i]);
+		}
+#endif
+
+		{
+			struct virtio_rdma_rq_req __iomem *rreq;
+			struct virtio_rdma_sge __iomem *sg_list;
+			phys_addr_t rreq_phys, sg_phys;
+			u64 rreq_pci = (u64)iov->iov[iov->i].iov_base;
+			u64 sg_list_pci =
+				rreq_pci +
+				offsetof(struct virtio_rdma_rq_req, sg_list);
+			u32 num_sge;
+			struct pci_epf *epf = evio->epf;
+			struct virtio_rdma_sge dst_sge;
+			struct epf_vnet_rdma_mr *dst_mr;
+
+			rreq = pci_epc_map_addr(epf->epc, epf->func_no,
+						epf->vfunc_no, rreq_pci,
+						&rreq_phys, sizeof(*rreq));
+			if (IS_ERR(rreq)) {
+				pr_err("faild to map rreq\n");
+				break;
+			}
+
+			num_sge = ioread32(&rreq->num_sge);
+
+			sg_list = pci_epc_map_addr(epf->epc, epf->func_no,
+						   epf->vfunc_no, sg_list_pci,
+						   &sg_phys,
+						   sizeof(*sg_list) * num_sge);
+			if (IS_ERR(sg_list)) {
+				pr_err("Failed to map sg_list\n");
+				break;
+			}
+
+			memcpy_fromio(&dst_sge, sg_list, sizeof(dst_sge));
+
+			pci_epc_unmap_addr(epf->epc, epf->func_no,
+					   epf->vfunc_no, sg_phys, sg_list,
+					   sizeof(*sg_list) * num_sge);
+
+			dst_mr = epf_vnet_lookup_mr(&vnet->ep_roce,
+						    dst_sge.lkey);
+			if (!dst_mr) {
+				pr_info("ep: failed to lookup mr\n");
+				break;
+			}
+
+			{
+				phys_addr_t dst_phys;
+				void __iomem *dst;
+
+				switch (dst_mr->type) {
+				case EPF_VNET_RDMA_MR_TYPE_DMA:
+					dst = pci_epc_map_addr(
+						epf->epc, epf->func_no,
+						epf->vfunc_no, dst_sge.addr,
+						&dst_phys, src_sge->length);
+					if (IS_ERR(dst)) {
+						pr_err("failed to map dst\n");
+						break;
+					}
+
+					memcpy_toio(dst, src, src_sge->length);
+
+					pci_epc_unmap_addr(epf->epc,
+							   epf->func_no,
+							   epf->vfunc_no,
+							   dst_phys, dst,
+							   src_sge->length);
+					break;
+				case EPF_VNET_RDMA_MR_TYPE_MR:
+
+					if (src_sge->length > PAGE_SIZE) {
+						pr_err("vdev: a copy acrossing page is not yet implemented: %d\n",
+						       src_sge->length);
+						break;
+					}
+
+					dst = pci_epc_map_addr(
+						epf->epc, epf->func_no,
+						epf->vfunc_no, dst_mr->pages[0],
+						&dst_phys, src_sge->length);
+					if (IS_ERR(dst)) {
+						pr_err("Failed to map dst\n");
+						break;
+					}
+
+					memcpy_toio(dst, src, src_sge->length);
+
+					pci_epc_unmap_addr(epf->epc,
+							   epf->func_no,
+							   epf->vfunc_no,
+							   dst_phys, dst,
+							   src_sge->length);
+
+					break;
+				default:
+					pr_err("unknown MR type found: %d\n",
+					       dst_mr->type);
+					break;
+				}
+			}
+
+			{
+				struct virtio_rdma_cq_req cqe;
+				struct epf_vnet_rdma_cq *cq;
+				struct vringh_kiov *cqiov;
+				size_t cqlen;
+				u64 cq_pci;
+				u16 cqhead;
+				phys_addr_t cq_phys;
+				void __iomem *cqdst;
+
+				memset(&cqe, 0x0, sizeof(cqe));
+
+				cqe.wr_id = ioread64(&rreq->wr_id);
+				cqe.status = VIRTIO_IB_WC_SUCCESS;
+				cqe.qp_num = dst_qp->qpn;
+				cqe.opcode = VIRTIO_IB_WC_RECV;
+				cqe.byte_len = src_sge->length;
+
+				cq = epf_vnet_lookup_cq(&vnet->ep_roce,
+							dst_qp->rcq);
+				if (!cq) {
+					pr_err("epf_vnet_lookup_cq: ep_roce: %d\n",
+					       dst_qp->rcq);
+					break;
+				}
+
+				cqiov = &vnet->rdev_iovs[cq->vqn];
+
+				ret = epf_virtio_getdesc(evio, cq->vqn, NULL,
+							 cqiov, &cqhead);
+				if (ret <= 0) {
+					pr_err("%s:%d epf_virtio_getdesc: %d\n",
+					       __func__, __LINE__, ret);
+					break;
+				}
+
+				cq_pci = (u64)cqiov->iov[cqiov->i].iov_base;
+				cqlen = cqiov->iov[cqiov->i].iov_len;
+				if (sizeof(cqe) > cqlen) {
+					pr_err("not enough size: %ld > %ld\n",
+					       sizeof(cqe), cqlen);
+					break;
+				}
+
+				cqdst = pci_epc_map_addr(epf->epc, epf->func_no,
+							 epf->vfunc_no, cq_pci,
+							 &cq_phys, sizeof(cqe));
+				if (IS_ERR(cqdst)) {
+					pr_err("Failed to map cqdst\n");
+					break;
+				}
+
+				memcpy_toio(cqdst, &cqe, sizeof(cqe));
+
+				pci_epc_unmap_addr(epf->epc, epf->func_no,
+						   epf->vfunc_no, cq_phys,
+						   cqdst, sizeof(cqe));
+
+				epf_virtio_iov_complete(evio, cq->vqn, cqhead,
+							sizeof(cqe));
+			}
+
+			pci_epc_unmap_addr(epf->epc, epf->func_no,
+					   epf->vfunc_no, rreq_phys, rreq,
+					   sizeof(*rreq));
+		}
+
+		// completion for vdev
+		{
+			struct virtio_rdma_cq_req cqe;
+			struct epf_vnet_rdma_cq *cq;
+			struct vringh *vrh;
+			struct vringh_kiov *cqiov;
+			u16 scq_head;
+			int err;
+			struct virtqueue *cvq;
+			void *buf;
+
+			memset(&cqe, 0x0, sizeof(cqe));
+			cqe.wr_id = sreq->wr_id;
+			cqe.status = VIRTIO_IB_WC_SUCCESS;
+			cqe.opcode = sreq->opcode;
+			cqe.byte_len = src_sge->length;
+			cqe.qp_num = src_qp->qpn;
+
+			cq = epf_vnet_lookup_cq(&vnet->vdev_roce, src_qp->scq);
+			if (!cq) {
+				pr_err("epf_vnet_lookup_cq: vdev_roce\n");
+				break;
+			}
+
+			vrh = &vnet->vdev_vrhs[cq->vqn];
+			cqiov = &vnet->vdev_iovs[cq->vqn];
+			cvq = vnet->vdev_vqs[cq->vqn];
+
+#if 1
+			err = vringh_getdesc_kern(vrh, NULL, cqiov, &scq_head,
+						  GFP_KERNEL);
+			if (err <= 0) {
+				pr_err("failed to get desc for send completion from %d: %d\n",
+				       cq->vqn, err);
+				break;
+			}
+
+			if (cqiov->iov[cqiov->i].iov_len < sizeof(cqe)) {
+				pr_err("not enough size: %ld < %ld\n",
+				       cqiov->iov[cqiov->i].iov_len,
+				       sizeof(cqe));
+				break;
+			}
+
+			buf = cq->buf + (u64)cqiov->iov[cqiov->i].iov_base -
+			      cq->buf_phys;
+
+			memcpy(buf, &cqe, sizeof(cqe));
+
+			vringh_complete_kern(vrh, scq_head, sizeof(cqe));
+#endif
+			vring_interrupt(0, cvq);
+		}
+	}
+
+	epf_virtio_iov_complete(evio, dst_qp->rvq, head, total_len);
+	queue_work(vnet->task_wq, &vnet->raise_irq_work);
+
+	return 0;
+}
+
+static int epf_vnet_roce_tx_handler(struct epf_vnet *vnet, struct virtqueue *vq)
+{
+	struct vringh *vrh;
+	struct vringh_kiov *iov;
+	int err;
+	u16 head;
+	struct virtio_rdma_sq_req *sreq;
+
+	vrh = &vnet->vdev_vrhs[vq->index];
+	iov = &vnet->vdev_iovs[vq->index];
+
+	err = vringh_getdesc_kern(vrh, iov, NULL, &head, GFP_KERNEL);
+	if (err <= 0) {
+		if (err < 0)
+			pr_err("err on vringh_getdesc_kern: %d\n", err);
+		else
+			pr_info("not found any entries\n");
+		return err;
+	}
+
+	sreq = phys_to_virt((unsigned long)iov->iov[iov->i].iov_base);
+
+	switch (sreq->opcode) {
+	case VIRTIO_IB_WR_SEND:
+		err = epf_vnet_roce_handle_vdev_send_wr(vnet, sreq, vq);
+		if (err) {
+			pr_err("failed to process send work request: %d\n",
+			       err);
+			return err;
+		}
+		break;
+		// 	case VIRTIO_IB_WR_RDMA_WRITE:
+		// 	case VIRTIO_IB_WR_RDMA_WRITE_WITH_IMM:
+		// 	case VIRTIO_IB_WR_SEND_WITH_IMM:
+		// 	case VIRTIO_IB_WR_RDMA_READ:
+		// 		break;
+	default:
+		pr_err("Found unsupported work request type %d\n",
+		       sreq->opcode);
+	}
+
+	vringh_complete_kern(vrh, head,
+			     sizeof(*sreq) + sizeof(struct virtio_rdma_sge) *
+						     sreq->num_sge);
+
+	return 0;
+}
+
+static int epf_vnet_setup_common(struct epf_vnet *vnet, struct device *dev)
+{
+	int err;
+
 	vnet->features =
 		BIT(VIRTIO_F_ACCESS_PLATFORM) | //BIT(VIRTIO_NET_F_MTU) |
 		BIT(VIRTIO_NET_F_STATUS) |
@@ -531,10 +2858,13 @@ static int epf_vnet_setup_common(struct epf_vnet *vnet)
 		BIT(VIRTIO_NET_F_GUEST_TSO6) | BIT(VIRTIO_NET_F_GUEST_ECN) |
 		BIT(VIRTIO_NET_F_GUEST_UFO) |
 		/* The control queue is just used for linkup announcement. */
-		BIT(VIRTIO_NET_F_CTRL_VQ);
+		BIT(VIRTIO_NET_F_CTRL_VQ) | BIT(VIRTIO_NET_F_ROCE);
 
 	vnet->vnet_cfg.max_virtqueue_pairs = 1;
 	vnet->vnet_cfg.status = 0;
+	/* GSI is used 1 qps and cq */
+	vnet->vnet_cfg.max_rdma_qps = EPF_VNET_RDMA_MAX_QP;
+	vnet->vnet_cfg.max_rdma_cqs = EPF_VNET_RDMA_MAX_CQ;
 	// 	vnet->vnet_cfg.mtu = PAGE_SIZE;
 
 	memcpy(&vnet->vdev_vnet_cfg, &vnet->vnet_cfg, sizeof(vnet->vnet_cfg));
@@ -548,8 +2878,36 @@ static int epf_vnet_setup_common(struct epf_vnet *vnet)
 	INIT_WORK(&vnet->rx_work, epf_vnet_rx_handler);
 	INIT_WORK(&vnet->tx_work, epf_vnet_tx_handler);
 	INIT_WORK(&vnet->ep_ctrl_work, epf_vnet_ep_ctrl_handler);
+	INIT_WORK(&vnet->ep_roce_tx_work, epf_vnet_ep_roce_tx_handler);
 	INIT_WORK(&vnet->vdev_ctrl_work, epf_vnet_vdev_ctrl_handler);
 	INIT_WORK(&vnet->raise_irq_work, epf_vnet_raise_irq_handler);
+
+	INIT_WORK(&vnet->roce_rx_work, epf_vnet_roce_rx_handler);
+
+	err = epf_vnet_init_rdma(dev, &vnet->vdev_roce, "vdev");
+	if (err)
+		return err;
+
+	err = epf_vnet_init_rdma(dev, &vnet->ep_roce, "ep");
+	if (err)
+		return err;
+
+	// *1 There is no resone for the value.
+	vnet->rdma_attr.device_cap_flags = 0;
+	vnet->rdma_attr.max_mr_size = 1 << 30;
+	vnet->rdma_attr.page_size_cap = 0xfffff000;
+	vnet->rdma_attr.hw_ver = 0xdeafbeaf;
+	vnet->rdma_attr.max_qp_wr = virtio_queue_size;
+	vnet->rdma_attr.max_send_sge = 32; // *1
+	vnet->rdma_attr.max_recv_sge = 32; // *1
+	vnet->rdma_attr.max_sge_rd = 32; // *1
+	vnet->rdma_attr.max_cqe = virtio_queue_size;
+	vnet->rdma_attr.max_mr = EPF_VNET_RDMA_MAX_MR;
+	vnet->rdma_attr.max_pd = EPF_VNET_RDMA_MAX_PD;
+	vnet->rdma_attr.max_qp_rd_atom = 32; // *1
+	vnet->rdma_attr.max_qp_init_rd_atom = 32; // *1
+	vnet->rdma_attr.max_ah = EPF_VNET_RDMA_MAX_AH;
+	vnet->rdma_attr.local_ca_ack_delay = 15;
 
 	return 0;
 }
@@ -634,9 +2992,13 @@ static void epf_vnet_vdev_reset(struct virtio_device *vdev)
 	pr_debug("doesn't support yet");
 }
 
+static int epf_vnet_roce_tx_handler(struct epf_vnet *vnet,
+				    struct virtqueue *vq);
 static bool epf_vnet_vdev_vq_notify(struct virtqueue *vq)
 {
 	struct epf_vnet *vnet = vdev_to_vnet(vq->vdev);
+	int err;
+	bool ret = true;
 
 	/* Support only one queue pair */
 	switch (vq->index) {
@@ -648,11 +3010,23 @@ static bool epf_vnet_vdev_vq_notify(struct virtqueue *vq)
 	case VNET_VIRTQUEUE_CTRL:
 		queue_work(vnet->task_wq, &vnet->vdev_ctrl_work);
 		break;
+	case VNET_VIRTQUEUE_RDMA_RQ1:
+		queue_work(vnet->task_wq, &vnet->roce_rx_work);
+		break;
+	case VNET_VIRTQUEUE_RDMA_SQ2:
+		err = epf_vnet_roce_tx_handler(vnet, vq);
+		if (err)
+			ret = false;
+		break;
+	case VNET_VIRTQUEUE_RDMA_RQ2:
+		queue_work(vnet->task_wq, &vnet->roce_rx_work);
+		break;
 	default:
+		pr_info("Found unsupported notify for vq %d\n", vq->index);
 		return false;
 	}
 
-	return true;
+	return ret;
 }
 
 static int epf_vnet_vdev_find_vqs(struct virtio_device *vdev, unsigned int nvqs,
@@ -664,12 +3038,14 @@ static int epf_vnet_vdev_find_vqs(struct virtio_device *vdev, unsigned int nvqs,
 	struct epf_vnet *vnet = vdev_to_vnet(vdev);
 	int i;
 	int err;
-	int qidx;
 
-	if (nvqs > epf_vnet_get_nvq(vnet))
+	if (nvqs > epf_vnet_get_nvq(vnet)) {
+		pr_info("Number of queue is too much: %d > %d\n", nvqs,
+			epf_vnet_get_nvq(vnet));
 		return -EINVAL;
+	}
 
-	for (qidx = 0, i = 0; i < nvqs; i++) {
+	for (i = 0; i < nvqs; i++) {
 		struct virtqueue *vq;
 		const struct vring *vring;
 
@@ -678,9 +3054,9 @@ static int epf_vnet_vdev_find_vqs(struct virtio_device *vdev, unsigned int nvqs,
 			continue;
 		}
 
-		vq = vring_create_virtqueue(qidx++, virtio_queue_size,
-					    VIRTIO_PCI_VRING_ALIGN, vdev, true,
-					    false, ctx ? ctx[i] : false,
+		vq = vring_create_virtqueue(i, virtio_queue_size,
+					    SMP_CACHE_BYTES, vdev, true, false,
+					    ctx ? ctx[i] : false,
 					    epf_vnet_vdev_vq_notify,
 					    callback[i], names[i]);
 		if (!vq) {
@@ -693,7 +3069,7 @@ static int epf_vnet_vdev_find_vqs(struct virtio_device *vdev, unsigned int nvqs,
 		vring = virtqueue_get_vring(vq);
 
 		err = vringh_init_kern(&vnet->vdev_vrhs[i], vnet->features,
-				       virtio_queue_size, false, vring->desc,
+				       virtio_queue_size, true, vring->desc,
 				       vring->avail, vring->used);
 		if (err) {
 			pr_err("failed to init vringh for vring %d\n", i);
@@ -725,6 +3101,7 @@ static void epf_vnet_vdev_del_vqs(struct virtio_device *vdev)
 			continue;
 
 		vring_del_virtqueue(vnet->vdev_vqs[i]);
+		vnet->vdev_vqs[i] = NULL;
 	}
 }
 
@@ -767,7 +3144,7 @@ static int epf_vnet_setup_vdev(struct epf_vnet *vnet, struct device *parent)
 		vringh_kiov_init(&vnet->vdev_iovs[i], NULL, 0);
 
 	vnet->vdev_vqs =
-		kmalloc_array(nvq, sizeof(vnet->vdev_vrhs[0]), GFP_KERNEL);
+		kmalloc_array(nvq, sizeof(vnet->vdev_vqs[0]), GFP_KERNEL);
 	if (!vnet->vdev_vqs) {
 		err = -ENOMEM;
 		goto err_cleanup_kiov;
@@ -849,7 +3226,7 @@ static int epf_vnet_bind(struct pci_epf *epf)
 	struct epf_vnet *vnet = epf_get_drvdata(epf);
 	int err;
 
-	err = epf_vnet_setup_common(vnet);
+	err = epf_vnet_setup_common(vnet, &epf->dev);
 	if (err)
 		return err;
 
