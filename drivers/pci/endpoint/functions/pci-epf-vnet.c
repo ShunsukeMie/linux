@@ -2795,6 +2795,98 @@ static int epf_vnet_roce_handle_vdev_send_wr(struct epf_vnet *vnet,
 	return 0;
 }
 
+static int epf_vnet_roce_handle_vdev_rdma_write(struct epf_vnet *vnet,
+						struct virtio_rdma_sq_req *sreq,
+						struct virtqueue *vq)
+{
+	struct epf_vnet_rdma_qp *qp;
+	struct epf_vnet_rdma_mr *src_mr, *dst_mr;
+	struct virtio_rdma_sge *sge;
+	void __iomem *dst;
+	void *src;
+	phys_addr_t dst_phys;
+	int err;
+	struct pci_epf *epf = vnet->evio.epf;
+
+	qp = epf_vnet_lookup_qp(&vnet->vdev_roce,
+				(vq->index - VNET_VIRTQUEUE_RDMA_SQ0) / 2);
+	if (!qp)
+		return -EINVAL;
+
+	dst_mr = epf_vnet_lookup_mr(&vnet->ep_roce, sreq->rdma.rkey);
+	if (!dst_mr)
+		return -EINVAL;
+
+	if (sreq->num_sge > 1) {
+		pr_info("multiple sge is not supported yet\n");
+		return -EINVAL;
+	}
+
+	sge = &sreq->sg_list[0];
+
+	src_mr = epf_vnet_lookup_mr(&vnet->vdev_roce, sge->lkey);
+	if (!src_mr)
+		return -EINVAL;
+
+	src = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no,
+			       dst_mr->pages[0], &dst_phys, sge->length);
+	if (!src)
+		return -EINVAL;
+
+	memcpy_toio(dst, src, sge->length);
+
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, dst_phys, dst,
+			   sge->length);
+
+	{
+		struct vringh_kiov *iov;
+		struct epf_vnet_rdma_cq *cq;
+		u16 head;
+		struct vringh *vrh;
+		struct virtio_rdma_cq_req cqe;
+		void *buf;
+		struct virtqueue *cvq;
+
+		cq = epf_vnet_lookup_cq(&vnet->vdev_roce, qp->scq);
+		if (!cq) {
+			pr_err("epf_vnet_lookup_cq: vdev_roce: %d\n", qp->scq);
+			return -EINVAL;
+		}
+
+		iov = &vnet->vdev_iovs[cq->vqn];
+		vrh = &vnet->vdev_vrhs[cq->vqn];
+		cvq = vnet->vdev_vqs[cq->vqn];
+
+		err = vringh_getdesc_kern(vrh, NULL, iov, &head, GFP_KERNEL);
+		if (err <= 0) {
+			pr_err("failed to get desc for send completion from %d: %d\n",
+			       cq->vqn, err);
+			return -EINVAL;
+		}
+
+		if (iov->iov[iov->i].iov_len < sizeof(cqe)) {
+			pr_err("not enough size: %ld < %ld\n",
+			       iov->iov[iov->i].iov_len, sizeof(cqe));
+			return -EINVAL;
+		}
+
+		cqe.wr_id = sreq->wr_id;
+		cqe.status = VIRTIO_IB_WC_SUCCESS;
+		cqe.qp_num = qp->qpn;
+		cqe.opcode = VIRTIO_IB_WC_RDMA_WRITE;
+		cqe.byte_len = sge->length;
+
+		buf = cq->buf + (u64)iov->iov[iov->i].iov_base - cq->buf_phys;
+
+		memcpy(buf, &cqe, sizeof(cqe));
+
+		vringh_complete_kern(vrh, head, sizeof(cqe));
+		vring_interrupt(0, cvq);
+	}
+
+	return 0;
+}
+
 static int epf_vnet_roce_handle_vdev_rdma_read(struct epf_vnet *vnet,
 					     struct virtio_rdma_sq_req *sreq,
 					     struct virtqueue *vq)
@@ -2933,13 +3025,17 @@ static int epf_vnet_roce_tx_handler(struct epf_vnet *vnet, struct virtqueue *vq)
 	sreq = phys_to_virt((unsigned long)iov->iov[iov->i].iov_base);
 
 	switch (sreq->opcode) {
+	case VIRTIO_IB_WR_RDMA_WRITE:
+		err = epf_vnet_roce_handle_vdev_rdma_write(vnet, sreq, vq);
+		if (err)
+			pr_err("failed to process rdma write work request: %d\n", err);
+		break;
 	case VIRTIO_IB_WR_SEND:
 		err = epf_vnet_roce_handle_vdev_send_wr(vnet, sreq, vq);
 		if (err)
 			pr_err("failed to process send work request: %d\n",
 			       err);
 		break;
-		// 	case VIRTIO_IB_WR_RDMA_WRITE:
 	case VIRTIO_IB_WR_RDMA_READ:
 		err = epf_vnet_roce_handle_vdev_rdma_read(vnet, sreq, vq);
 		if (err)
