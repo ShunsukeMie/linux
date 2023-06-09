@@ -2003,9 +2003,9 @@ static int epf_vnet_vdev_handle_roce_dereg_mr(struct epf_vnet *vnet,
 
 	switch (mr->type) {
 	case EPF_VNET_RDMA_MR_TYPE_MR:
+		kfree(mr->pages);
 		break;
 	case EPF_VNET_RDMA_MR_TYPE_DMA:
-		kfree(mr->pages);
 		break;
 	default:
 		pr_err("found invalid mr type\n");
