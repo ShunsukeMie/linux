@@ -2795,11 +2795,126 @@ static int epf_vnet_roce_handle_vdev_send_wr(struct epf_vnet *vnet,
 	return 0;
 }
 
+static int epf_vnet_roce_handle_vdev_rdma_read(struct epf_vnet *vnet,
+					     struct virtio_rdma_sq_req *sreq,
+					     struct virtqueue *vq)
+{
+	struct epf_vnet_rdma_qp *qp;
+	struct epf_vnet_rdma_mr *src_mr, *dst_mr;
+	void __iomem *src;
+	void *dst;
+	phys_addr_t src_phys;
+	struct pci_epf *epf = vnet->evio.epf;
+	int err;
+
+	qp = epf_vnet_lookup_qp(&vnet->vdev_roce,
+				    (vq->index - VNET_VIRTQUEUE_RDMA_SQ0) / 2);
+	if (!qp)
+		return -EINVAL;
+
+	src_mr = epf_vnet_lookup_mr(&vnet->ep_roce, sreq->rdma.rkey);
+	if (!src_mr)
+		return -EINVAL;
+
+	if (src_mr->type != EPF_VNET_RDMA_MR_TYPE_MR)  {
+		pr_info("the mr is not MR type: %d\n", src_mr->type);
+		return -EINVAL;
+	}
+
+	if (src_mr->npages > 1) {
+		pr_info("multiple mr is not supported yet: %d\n", src_mr->npages);
+		return -EINVAL;
+	}
+
+	src = pci_epc_map_addr(epf->epc, epf->func_no, epf->vfunc_no, src_mr->pages[0], &src_phys,
+			src_mr->length);
+	if (IS_ERR(src)) {
+		pr_err("%s:%d failed to map src region\n", __func__, __LINE__);
+		return -EINVAL;
+	}
+
+	pr_info("num_sge %d\n", sreq->num_sge);
+	if (sreq->num_sge > 1) {
+		pr_info("num_sge should be 1: (it is a limitation of a current implementation)\n");
+		return -EINVAL;
+	}
+
+	{
+		struct virtio_rdma_sge *sge = &sreq->sg_list[0];
+
+		dst_mr = epf_vnet_lookup_mr(&vnet->vdev_roce, sge->lkey);
+
+		if (dst_mr->npages > 1) {
+			pr_info("multiple pages are not supported\n");
+			return -EINVAL;
+		}
+
+		dst = phys_to_virt(dst_mr->pages[0]);
+
+		memcpy_fromio(dst, src, sge->length);
+	}
+
+	pci_epc_unmap_addr(epf->epc, epf->func_no, epf->vfunc_no, src_phys, src,
+			src_mr->length);
+
+	{
+		struct vringh_kiov *iov;
+		struct epf_vnet_rdma_cq *cq;
+		u16 head;
+		struct vringh *vrh;
+		struct virtio_rdma_cq_req cqe;
+		void *buf;
+		struct virtqueue *cvq;
+
+		cq = epf_vnet_lookup_cq(&vnet->vdev_roce, qp->scq);
+		if (!cq) {
+			pr_err("epf_vnet_lookup_cq: vdev_roce: %d\n",
+					qp->scq);
+			return -EINVAL;
+		}
+
+		iov = &vnet->vdev_iovs[cq->vqn];
+		vrh = &vnet->vdev_vrhs[cq->vqn];
+		cvq = vnet->vdev_vqs[cq->vqn];
+
+		err = vringh_getdesc_kern(vrh, NULL, iov, &head,
+				GFP_KERNEL);
+		if (err <= 0) {
+			pr_err("failed to get desc for send completion from %d: %d\n",
+					cq->vqn, err);
+			return -EINVAL;
+		}
+
+		if (iov->iov[iov->i].iov_len < sizeof(cqe)) {
+			pr_err("not enough size: %ld < %ld\n",
+					iov->iov[iov->i].iov_len,
+					sizeof(cqe));
+			return -EINVAL;
+		}
+
+		cqe.wr_id = sreq->wr_id;
+		cqe.status = VIRTIO_IB_WC_SUCCESS;
+		cqe.qp_num = qp->qpn;
+		cqe.opcode = VIRTIO_IB_WC_RDMA_READ;
+		cqe.byte_len = src_mr->length;
+
+		buf = cq->buf + (u64)iov->iov[iov->i].iov_base -
+			cq->buf_phys;
+
+		memcpy(buf, &cqe, sizeof(cqe));
+
+		vringh_complete_kern(vrh, head, sizeof(cqe));
+		vring_interrupt(0, cvq);
+	}
+
+	return 0;
+}
+
 static int epf_vnet_roce_tx_handler(struct epf_vnet *vnet, struct virtqueue *vq)
 {
 	struct vringh *vrh;
 	struct vringh_kiov *iov;
-	int err;
+	int err = 0;
 	u16 head;
 	struct virtio_rdma_sq_req *sreq;
 
@@ -2820,27 +2935,30 @@ static int epf_vnet_roce_tx_handler(struct epf_vnet *vnet, struct virtqueue *vq)
 	switch (sreq->opcode) {
 	case VIRTIO_IB_WR_SEND:
 		err = epf_vnet_roce_handle_vdev_send_wr(vnet, sreq, vq);
-		if (err) {
+		if (err)
 			pr_err("failed to process send work request: %d\n",
 			       err);
-			return err;
-		}
 		break;
 		// 	case VIRTIO_IB_WR_RDMA_WRITE:
+	case VIRTIO_IB_WR_RDMA_READ:
+		err = epf_vnet_roce_handle_vdev_rdma_read(vnet, sreq, vq);
+		if (err)
+			pr_err("failed to process rdma read work request: %d\n", err);
+		break;
 		// 	case VIRTIO_IB_WR_RDMA_WRITE_WITH_IMM:
 		// 	case VIRTIO_IB_WR_SEND_WITH_IMM:
-		// 	case VIRTIO_IB_WR_RDMA_READ:
 		// 		break;
 	default:
 		pr_err("Found unsupported work request type %d\n",
 		       sreq->opcode);
+		err = -EINVAL;
 	}
 
 	vringh_complete_kern(vrh, head,
 			     sizeof(*sreq) + sizeof(struct virtio_rdma_sge) *
 						     sreq->num_sge);
 
-	return 0;
+	return err;
 }
 
 static int epf_vnet_setup_common(struct epf_vnet *vnet, struct device *dev)
