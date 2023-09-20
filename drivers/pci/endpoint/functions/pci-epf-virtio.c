@@ -226,12 +226,13 @@ static int epf_virtio_negotiate_vq(struct epf_virtio *evio)
 		       evio->running)
 			;
 
-		sel = epf_virtio_cfg_read16(evio, VIRTIO_PCI_QUEUE_SEL);
+		// sel = epf_virtio_cfg_read16(evio, VIRTIO_PCI_QUEUE_SEL);
 
 		epf_virtio_cfg_write32(evio, VIRTIO_PCI_QUEUE_PFN, 0);
 
 		tmp[i].pfn = pfn;
-		tmp[i].sel = sel;
+		// tmp[i].sel = sel;
+		tmp[i].sel = i;
 	}
 
 	if (!evio->running)
