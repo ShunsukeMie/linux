@@ -39,6 +39,9 @@ struct epf_vnet {
 	struct work_struct raise_irq_work, rx_work, tx_work;
 	struct work_struct vdev_ctrl_work, ep_ctrl_work;
 
+	struct dma_chan *tx_dma_chan, *rx_dma_chan;
+	bool enable_edma;
+
 #define EPF_VNET_INIT_COMPLETE_VDEV BIT(0)
 #define EPF_VNET_INIT_COMPLETE_EP_FUNC BIT(1)
 	u8 init_state;
@@ -192,6 +195,70 @@ static void epf_vnet_complete_xfer(struct epf_vnet *vnet,
 	queue_work(vnet->task_rx_wq, &vnet->raise_irq_work);
 }
 
+struct epf_vnet_dma_done_cb_param {
+	struct epf_vnet *vnet;
+	size_t total_len;
+	unsigned int local_vq_index, remote_vq_index;
+	u16 local_head, remote_head;
+};
+
+static struct epf_vnet_dma_done_cb_param *
+epf_vnet_create_dma_cb_param(struct epf_vnet *vnet,
+			     enum dma_transfer_direction dir, size_t total_len,
+			     struct vringh *vrh, struct epf_virtio *evio,
+			     u16 local_head, u16 remote_head)
+{
+	struct epf_vnet_dma_done_cb_param *cb_param;
+	unsigned int local_vq_index, remote_vq_index;
+
+	if (dir == DMA_MEM_TO_DEV) {
+		local_vq_index = VNET_VIRTQUEUE_TX;
+		remote_vq_index = VNET_VIRTQUEUE_RX;
+	} else {
+		local_vq_index = VNET_VIRTQUEUE_RX;
+		remote_vq_index = VNET_VIRTQUEUE_TX;
+	}
+
+	cb_param = kmalloc(sizeof(*cb_param), GFP_KERNEL);
+	if (!cb_param)
+		return ERR_PTR(-ENOMEM);
+
+	*cb_param = (struct epf_vnet_dma_done_cb_param){
+		.vnet = vnet,
+		.total_len = total_len,
+		.local_vq_index = local_vq_index,
+		.remote_vq_index = remote_vq_index,
+		.local_head = local_head,
+		.remote_head = remote_head,
+	};
+
+	return cb_param;
+}
+
+static void epf_vnet_complete_xfer(struct epf_vnet *vnet, unsigned int local_vq_index, unsigned int remote_vq_index,
+				   u16 remote_head, u16 local_head, size_t total_len)
+{
+	struct epf_virtio *evio = &vnet->evio;
+	struct vringh *vrh = &vnet->vdev_vrhs[local_vq_index];
+	struct virtqueue *vq = vnet->vdev_vqs[local_vq_index];
+
+	epf_virtio_iov_complete(evio, remote_vq_index, remote_head,
+	 	 total_len);
+	vringh_complete_kern(vrh, local_head, total_len);
+
+	vring_interrupt(0, vq);
+	queue_work(vnet->task_rx_wq, &vnet->raise_irq_work);
+}
+
+static void epf_vnet_dma_done(void *param)
+{
+	struct epf_vnet_dma_done_cb_param *p = param;
+	epf_vnet_complete_xfer(p->vnet, p->local_vq_index,
+			p->remote_vq_index, p->remote_head, p->local_head,
+			p->total_len);
+	kfree(p);
+}
+
 static void epf_vnet_rx_handler(struct work_struct *work)
 {
 	struct epf_vnet *vnet = container_of(work, struct epf_vnet, rx_work);
@@ -221,13 +288,33 @@ static void epf_vnet_rx_handler(struct work_struct *work)
 
 		total_len = vringh_kiov_length(siov);
 
-		ret = epf_virtio_vq2vq_memcpy(evio, siov, diov, DMA_DEV_TO_MEM);
-		if (ret) {
-			epf_virtio_abandon(evio, VNET_VIRTQUEUE_TX, 1);
-			break;
-		}
+		if (vnet->enable_edma) {
+			struct epf_vnet_dma_done_cb_param *dma_cb_param;
 
-		epf_vnet_complete_xfer(vnet, VNET_VIRTQUEUE_RX, VNET_VIRTQUEUE_TX, shead, dhead, total_len);
+			dma_cb_param = epf_vnet_create_dma_cb_param(
+				vnet, DMA_DEV_TO_MEM, total_len, dvrh, evio,
+				dhead, shead);
+			if (IS_ERR(dma_cb_param)) {
+				dev_err(&evio->epf->dev, "failed to setup dma cb param: %ld",
+					PTR_ERR(dma_cb_param));
+			}
+
+			ret = epf_virtio_vq2vq_dma(vnet->rx_dma_chan, siov,
+						   diov, DMA_DEV_TO_MEM, epf_vnet_dma_done,
+						   dma_cb_param);
+			if (ret)
+				dev_err(&evio->epf->dev, "failed the DMA: %d", ret);
+
+		} else {
+			ret = epf_virtio_vq2vq_memcpy(evio, siov, diov, DMA_DEV_TO_MEM);
+			if (ret) {
+				dev_err(&evio->epf->dev, "failed the cpu transfer: %d", ret);
+				epf_virtio_abandon(evio, VNET_VIRTQUEUE_TX, 1);
+				break;
+			}
+
+			epf_vnet_complete_xfer(vnet, VNET_VIRTQUEUE_RX, VNET_VIRTQUEUE_TX, shead, dhead, total_len);
+		}
 	} while (ret >= 0);
 }
 
@@ -246,6 +333,7 @@ static void epf_vnet_tx_handler(struct work_struct *work)
 	do {
 		u16 shead, dhead;
 		size_t total_len;
+		struct epf_vnet_dma_done_cb_param *dma_cb_param;
 
 		ret = vringh_getdesc_kern(svrh, siov, NULL, &shead, GFP_KERNEL);
 		if (ret <= 0)
@@ -260,13 +348,32 @@ static void epf_vnet_tx_handler(struct work_struct *work)
 
 		total_len = vringh_kiov_length(siov);
 
-		ret = epf_virtio_vq2vq_memcpy(evio, siov, diov, DMA_MEM_TO_DEV);
-		if (ret) {
-			vringh_abandon_kern(svrh, 1);
-			break;
-		}
+		if (vnet->enable_edma) {
+			dma_cb_param = epf_vnet_create_dma_cb_param(
+				vnet, DMA_MEM_TO_DEV, total_len, svrh, evio,
+				shead, dhead);
+			if (IS_ERR(dma_cb_param)) {
+				dev_err(&evio->epf->dev, "failed to setup dma cb param: %ld",
+					PTR_ERR(dma_cb_param));
+			}
 
-		epf_vnet_complete_xfer(vnet, VNET_VIRTQUEUE_TX, VNET_VIRTQUEUE_RX, dhead, shead, total_len);
+			ret = epf_virtio_vq2vq_dma(vnet->tx_dma_chan, siov,
+						   diov, DMA_MEM_TO_DEV, epf_vnet_dma_done,
+						   dma_cb_param);
+			if (ret)
+				dev_err(&evio->epf->dev, "failed the DMA: %d", ret);
+
+		} else {
+			ret = epf_virtio_vq2vq_memcpy(evio, siov, diov,
+						DMA_MEM_TO_DEV);
+			if (ret) {
+				dev_err(&evio->epf->dev, "failed the cpu transfer: %d", ret);
+				vringh_abandon_kern(svrh, 1);
+				break;
+			}
+
+			epf_vnet_complete_xfer(vnet, VNET_VIRTQUEUE_TX, VNET_VIRTQUEUE_RX, dhead, shead, total_len);
+		}
 	} while (ret >= 0);
 }
 
@@ -749,6 +856,36 @@ static void epf_vnet_cleanup_vdev(struct epf_vnet *vnet)
 	kfree(vnet->vdev_vrhs);
 }
 
+static int epf_vnet_setup_edma(struct epf_vnet *vnet, struct device *dma_dev)
+{
+	int err;
+
+	vnet->tx_dma_chan = epf_request_dma_chan(dma_dev, DMA_MEM_TO_DEV);
+	if (!vnet->tx_dma_chan)
+		return -ENODEV;
+
+	vnet->rx_dma_chan = epf_request_dma_chan(dma_dev, DMA_DEV_TO_MEM);
+	if (!vnet->rx_dma_chan) {
+		err = -ENODEV;
+		goto err_release_tx_chan;
+	}
+
+	return 0;
+
+err_release_tx_chan:
+	epf_release_dma_chan(vnet->tx_dma_chan);
+
+	return err;
+}
+
+static void epf_vnet_cleanup_edma(struct epf_vnet *vnet)
+{
+	if (vnet->enable_edma) {
+		epf_release_dma_chan(vnet->tx_dma_chan);
+		epf_release_dma_chan(vnet->rx_dma_chan);
+	}
+}
+
 static int epf_vnet_bind(struct pci_epf *epf)
 {
 	struct epf_vnet *vnet = epf_get_drvdata(epf);
@@ -758,19 +895,34 @@ static int epf_vnet_bind(struct pci_epf *epf)
 	if (err)
 		return err;
 
+	err = epf_vnet_setup_edma(vnet, epf->epc->dev.parent);
+	if (err) {
+		dev_info(
+			&epf->dev,
+			"PCIe embedded DMAC wasn't found. Fallback to CPU transfer\n");
+	}
+	vnet->enable_edma = !err;
+
 	err = epf_vnet_setup_ep_func(vnet, epf);
-	if (err)
-		goto err_out;
+	if (err) {
+		dev_err(&epf->dev,
+			"Failed to setup PCIe EP virtio-net function");
+		goto err_cleanup_edma;
+	}
 
 	err = epf_vnet_setup_vdev(vnet, epf->epc->dev.parent);
-	if (err)
+	if (err) {
+		dev_err(&epf->dev,
+			"Failed to setup a virtio-net device for local host");
 		goto err_cleanup_ep_func;
+	}
 
 	return 0;
 
 err_cleanup_ep_func:
 	epf_vnet_cleanup_ep_func(vnet);
-err_out:
+err_cleanup_edma:
+	epf_vnet_cleanup_edma(vnet);
 	return err;
 }
 
