@@ -120,6 +120,14 @@ void epf_virtio_abandon(struct epf_virtio *evio, int index, int num);
 void epf_virtio_iov_complete(struct epf_virtio *evio, int index, u16 head,
 			     size_t total_len);
 
+struct dma_chan *epf_request_dma_chan(struct device *dma_dev,
+				      enum dma_transfer_direction dir);
+void epf_release_dma_chan(struct dma_chan* chan);
+
+int epf_virtio_vq2vq_dma(struct dma_chan *chan, struct vringh_kiov *siov,
+			 struct vringh_kiov *diov,
+			 enum dma_transfer_direction dir, void (*cb)(void *),
+			 void *param);
 
 int epf_virtio_vq2vq_memcpy(struct epf_virtio *evio, struct vringh_kiov *siov,
 			    struct vringh_kiov *diov,

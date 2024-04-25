@@ -386,6 +386,43 @@ void epf_virtio_iov_complete(struct epf_virtio *evio, int index, u16 head,
 	vringh_complete_iomem(vrh, head, total_len);
 }
 
+struct epf_dma_filter_param {
+	struct device *dev;
+	u32 dma_mask;
+};
+
+static bool epf_dma_filter(struct dma_chan *chan, void *param)
+{
+	struct epf_dma_filter_param *fparam = param;
+	struct dma_slave_caps caps;
+
+	memset(&caps, 0, sizeof(caps));
+	dma_get_slave_caps(chan, &caps);
+
+	return chan->device->dev == fparam->dev &&
+	       fparam->dma_mask & caps.directions;
+}
+
+struct dma_chan *epf_request_dma_chan(struct device *dma_dev,
+				      enum dma_transfer_direction dir)
+{
+	struct epf_dma_filter_param param;
+	dma_cap_mask_t mask;
+
+	dma_cap_zero(mask);
+	dma_cap_set(DMA_SLAVE, mask);
+
+	param.dev = dma_dev;
+	param.dma_mask = BIT(dir);
+
+	return dma_request_channel(mask, epf_dma_filter, &param);
+}
+
+void epf_release_dma_chan(struct dma_chan *chan)
+{
+	dma_release_channel(chan);
+}
+
 /*
  * Follwing epf_virtio_vq2vq_{memcpy,dma} functions are util functions to copy
  * data from virtqueue entry to other virtqueue entry.
@@ -444,6 +481,86 @@ int epf_virtio_vq2vq_memcpy(struct epf_virtio *evio, struct vringh_kiov *siov,
 		pci_epc_unmap_aligned(epf->epc, epf->func_no, epf->vfunc_no,
 				      phys, mapped, slen);
 	}
+
+	return 0;
+}
+
+static struct dma_async_tx_descriptor *
+epf_virtio_prep_dma(struct dma_chan *chan, u64 src, u64 dst, size_t len,
+		    enum dma_transfer_direction dir, unsigned long flags)
+{
+	struct dma_slave_config config = {};
+	dma_addr_t dma;
+
+	if (dir == DMA_MEM_TO_DEV) {
+		config.dst_addr = dst;
+		dma = src;
+	} else {
+		config.src_addr = src;
+		dma = dst;
+	}
+
+	if (unlikely(dmaengine_slave_config(chan, &config)))
+		return NULL;
+
+	return dmaengine_prep_slave_single(chan, dma, len, dir, flags);
+}
+
+int epf_virtio_vq2vq_dma(struct dma_chan *chan, struct vringh_kiov *siov,
+			 struct vringh_kiov *diov,
+			 enum dma_transfer_direction dir, void (*cb)(void *),
+			 void *param)
+{
+	dma_cookie_t cookie;
+	struct dma_async_tx_descriptor *desc;
+	size_t slen, dlen;
+	u64 sbase, dbase;
+
+	for (; siov->i < siov->used - 1; siov->i++, diov->i++) {
+		slen = siov->iov[siov->i].iov_len;
+		sbase = (u64)siov->iov[siov->i].iov_base;
+		dlen = diov->iov[diov->i].iov_len;
+		dbase = (u64)diov->iov[diov->i].iov_base;
+
+		if (unlikely(dlen < slen)) {
+			dev_err(chan->slave, "dlen (0x%lx) < slen(0x%lx)\n", dlen, slen);
+			return -EIO;
+		}
+
+		desc = epf_virtio_prep_dma(chan, sbase, dbase, slen, dir, 0);
+		if (!desc) {
+			dev_err(chan->slave, "failed the preparation of DMA");
+			return -EIO;
+		}
+
+		cookie = dmaengine_submit(desc);
+		if (unlikely(dma_submit_error(cookie))) {
+			dev_err(chan->slave, "failed the dma submission");
+			return cookie;
+		}
+	}
+
+	slen = siov->iov[siov->i].iov_len;
+	sbase = (u64)siov->iov[siov->i].iov_base;
+	dlen = diov->iov[diov->i].iov_len;
+	dbase = (u64)diov->iov[diov->i].iov_base;
+
+	desc = epf_virtio_prep_dma(chan, sbase, dbase, slen, dir,
+				   DMA_CTRL_ACK | DMA_PREP_INTERRUPT);
+	if (!desc) {
+		dev_err(chan->slave, "failed the preparation of DMA");
+		return -EIO;
+	}
+
+	desc->callback = cb;
+	desc->callback_param = param;
+
+	cookie = dmaengine_submit(desc);
+	if (unlikely(dma_submit_error(cookie))) {
+		dev_err(chan->slave, "failed the dma submission");
+		return cookie;
+	}
+	dma_async_issue_pending(chan);
 
 	return 0;
 }
